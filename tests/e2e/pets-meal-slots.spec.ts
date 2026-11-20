@@ -340,11 +340,16 @@ test.describe('pets: meal slots (P2)', () => {
       const scroll = await page.evaluate(() => {
         const limit = document.documentElement.clientHeight;
         // What reaches past the bottom, for the failure message.
+        const bottomOf = (element: Element) => element.getBoundingClientRect().bottom + window.scrollY;
+        // The outermost elements that reach past the bottom (their parent does not), with where they sit.
         const below = [...document.querySelectorAll('body *')]
-          .map((element) => ({ element, bottom: element.getBoundingClientRect().bottom + window.scrollY }))
-          .filter(({ bottom }) => bottom > limit + 1)
-          .slice(-4)
-          .map(({ element, bottom }) => `${element.tagName.toLowerCase()}[${element.getAttribute('data-testid') ?? ''}] .${String(element.className).slice(0, 60)} → ${Math.round(bottom)}`);
+          .filter((element) => bottomOf(element) > limit + 1 && (!element.parentElement || bottomOf(element.parentElement) <= limit + 1))
+          .slice(0, 4)
+          .map((element) => {
+            const owner = element.closest('[data-testid]');
+            const style = getComputedStyle(element);
+            return `${element.tagName.toLowerCase()} .${String(element.getAttribute('class') ?? '').slice(0, 50)} pos ${style.position} → ${Math.round(bottomOf(element))} in [${owner?.getAttribute('data-testid') ?? 'none'}] parent .${String(element.parentElement?.getAttribute('class') ?? '').slice(0, 40)}`;
+          });
         const board = document.querySelector<HTMLElement>('[data-testid="pets-board"]');
         const strip = document.querySelector('[data-testid="pets-attention"]');
         if (board) below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`);
