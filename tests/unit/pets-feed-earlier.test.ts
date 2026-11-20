@@ -221,6 +221,25 @@ describe('the meal an earlier time counts for (lead decision: the window holding
   const at = (iso: string) => new Date(iso);
   const breakfastLog = { id: 'a', date: at('2026-11-19T13:10:00Z'), slotId: 'breakfast', loggedByName: 'Sam' }; // 7:10 am
 
+  it('an offline earlier feeding (backdated, no meal named) is attributed by the earlier-time rule, never to dinner (Codex P2)', () => {
+    // Saved offline at 8:00 am after breakfast: the queued log carries neither slotId nor extra.
+    const offline = { id: 'off', date: at('2026-11-19T14:00:00Z'), backdated: true, loggedByName: 'Ana' };
+    const plan = planForDay(pet, '2026-11-19');
+    assert.equal(plan.kind, 'slots');
+    if (plan.kind !== 'slots') return;
+    const { bySlot, extras } = attributeFeeds(plan.slots, feedsOnDay([breakfastLog, offline], '2026-11-19', now, CHICAGO));
+    const dinner = plan.slots.findIndex((slot) => slot.id === 'dinner');
+    assert.equal(bySlot[dinner].length, 0);
+    assert.deepEqual(extras.map((feed) => feed.id), ['off']);
+    // Before breakfast was logged, the same offline entry counts for breakfast (its window).
+    const alone = attributeFeeds(plan.slots, feedsOnDay([{ ...offline, date: at('2026-11-19T13:30:00Z') }], '2026-11-19', now, CHICAGO));
+    const breakfast = plan.slots.findIndex((slot) => slot.id === 'breakfast');
+    assert.deepEqual(alone.bySlot[breakfast].map((feed) => feed.id), ['off']);
+    // A live (not backdated) feeding at 8:00 after breakfast still targets dinner (D-P5).
+    const live = attributeFeeds(plan.slots, feedsOnDay([breakfastLog, { id: 'live', date: at('2026-11-19T14:00:00Z'), loggedByName: 'Ana' }], '2026-11-19', now, CHICAGO));
+    assert.deepEqual(live.bySlot[dinner].map((feed) => feed.id), ['live']);
+  });
+
   it('8:00 am after breakfast was logged is an extra feeding, not dinner', () => {
     const decision = earlierFeedSlot(pet, [breakfastLog], at('2026-11-19T14:00:00Z'), now, CHICAGO);
     assert.equal(decision.kind, 'extra');
