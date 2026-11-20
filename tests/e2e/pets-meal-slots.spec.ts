@@ -354,7 +354,7 @@ test.describe('pets: meal slots (P2)', () => {
         }
         const board = document.querySelector<HTMLElement>('[data-testid="pets-board"]');
         const strip = document.querySelector('[data-testid="pets-attention"]');
-        if (board) below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`);
+        if (board) { const cs = getComputedStyle(board); below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} offset ${board.offsetHeight} computed ${cs.height}/${cs.minHeight}/${cs.display}/${cs.gridTemplateRows} attr ${board.getAttribute('style')} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`); }
         return {
           sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
