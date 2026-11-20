@@ -352,7 +352,14 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
         {...(earlier ? handlers : {})}
       >
         {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
-        <span className="min-w-0 truncate">{compact ? 'Feed' : quick.label === quick.portion ? `Feed · ${quick.portion}` : `Feed ${quick.label}`}</span>
+        {compact ? <span className="min-w-0 truncate">Feed</span> : (
+          // "Feed" never truncates: the meal and portion show whole when they fit on the button's
+          // one line, else wrap onto a clipped second line and drop out (the accessible name keeps them).
+          <span className="flex h-5 min-w-0 flex-wrap items-center gap-x-1 overflow-hidden leading-5" data-feed-label>
+            <span className="shrink-0">Feed</span>
+            <span className="whitespace-nowrap">{quick.label === quick.portion ? ` · ${quick.portion}` : ` ${quick.label}`}</span>
+          </span>
+        )}
         <FeedPressFill press={press} />
       </Button>
   );

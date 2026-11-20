@@ -547,4 +547,27 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
       await context.close();
     }
   });
+
+  test('Feed never truncates to "Feed …": the meal and portion show whole or drop out (six pets with Set meal times, 1263 x 722)', async ({ browser }, testInfo) => {
+    desktopOnly(testInfo);
+    await seedExtraPets(4);
+    const { context, page } = await makeContext(browser, { width: 1263, height: 722 }, true);
+    try {
+      await page.goto('/pets');
+      await page.locator('[data-feed-label]').nth(5).waitFor({ timeout: 30_000 });
+      const labels = await page.locator('[data-feed-label]').evaluateAll((boxes) => boxes.map((box) => {
+        const outer = box.getBoundingClientRect();
+        const [word, rest] = [...box.children].map((child) => child.getBoundingClientRect());
+        return {
+          wordWhole: (box.children[0] as HTMLElement).scrollWidth <= (box.children[0] as HTMLElement).clientWidth + 1 && word.right <= outer.right + 1,
+          restWholeOrHidden: (rest.top >= outer.top - 1 && rest.bottom <= outer.bottom + 1 && rest.right <= outer.right + 1) || rest.top >= outer.bottom - 1,
+        };
+      }));
+      expect(labels.length).toBe(6);
+      for (const label of labels) expect(label).toEqual({ wordWhole: true, restWholeOrHidden: true });
+    } finally {
+      await context.close();
+      await restore();
+    }
+  });
 });
