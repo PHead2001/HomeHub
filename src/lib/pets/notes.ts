@@ -11,7 +11,7 @@
  * - an unpinned note is a dated **behaviour entry** with an optional tag,
  *   newest first. Pinning an entry moves it to the pinned list and back.
  */
-import { householdDayStart, householdToday } from '../household-day';
+import { householdDayStart, householdToday } from '../household-zone';
 import { toDate } from './care';
 
 export const NOTE_TAGS = ['behaviour', 'health', 'training', 'vet'] as const;

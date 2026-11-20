@@ -42,10 +42,11 @@ import {
   type CourseSchedule,
   type CourseView,
   type DosePointer,
+  type LegacyGroup,
   type Occurrence,
 } from '../../../functions/src/shared/medication-schedule';
 import { localDay } from '../../../functions/src/shared/calendar';
-import { householdDayZone } from '../household-day';
+import { householdDayZone } from '../household-zone';
 import { currentMedications, formatAgo, parseLocalDate, type MedicationDue } from './care';
 import type { PetMedicationLog } from './types';
 
@@ -515,6 +516,18 @@ export function courseFormValues(course: Partial<Pick<CourseView, 'name' | 'dosa
     firstTime: schedule?.kind === 'hours' ? schedule.firstTime : '08:00',
     startDay: course.startDay ?? today,
     endDay: course.endDay ?? '',
+  };
+}
+
+/**
+ * The course form for confirming a legacy medication's schedule (D-P8): its name, dosage and
+ * next due day; the schedule only as a suggestion when its whole history agrees, otherwise
+ * empty. Shared by the personal course form and the wall tablet's pet sheet.
+ */
+export function legacyCourseFormValues(group: Pick<LegacyGroup, 'name' | 'dosage' | 'suggestion' | 'dueDay'>, today: string): CourseFormValues {
+  return {
+    ...courseFormValues({ name: group.name, dosage: group.dosage, schedule: group.suggestion, startDay: group.dueDay }, today),
+    ...(group.suggestion ? {} : { everyDays: '', times: [] }),
   };
 }
 

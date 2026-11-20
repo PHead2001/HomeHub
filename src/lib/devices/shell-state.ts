@@ -95,7 +95,11 @@ export function shellReducer(state: ShellState, event: ShellEvent, timers: Shell
       };
     }
     case 'credit':
-      return { state: { ...state, face: creditFace(state.face, event.memberUid, event.now) }, effects: [] };
+      // An action that finished extends the person's memory; it never brings back a person
+      // ended by Done (or replaced by a pick) while the action was on its way.
+      return state.face && state.face.memberUid === event.memberUid
+        ? { state: { ...state, face: creditFace(state.face, event.memberUid, event.now) }, effects: [] }
+        : { state, effects: [] };
     case 'pin-verified': {
       const replaced = state.pin && state.pin.sessionId !== event.sessionId ? endPin(state.pin) : [];
       return {

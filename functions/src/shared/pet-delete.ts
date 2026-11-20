@@ -24,7 +24,9 @@
 //    what is left. A tombstone left behind (the server failed after step 1)
 //    is finished by a retry of the action or, without one, by the next hourly
 //    upkeep (`resumePetDeletions`).
-import type {DocumentReference, Firestore} from "firebase-admin/firestore";
+import type {
+  DocumentReference, Firestore, Transaction,
+} from "firebase-admin/firestore";
 import {ownedPhotoPath, petPhotoFolder} from "./pet-photo-path";
 
 export const PET_DELETE_PAGE_SIZE = 300;
@@ -35,6 +37,11 @@ const MEDICATION_SOURCE_TYPE = "pet_medication";
 
 export type PetDeleteActor = {
   uid: string; email?: string | null; name?: string | null;
+  /**
+   * A registered wall tablet's delete (F4b-2): the `pet.deleted` entry says
+   * so (`via: 'device'`, the tablet and the level), as device entries do.
+   */
+  device?: {deviceId: string; deviceName: string; level: "face" | "pin"};
 };
 export type PetDeleteOutcome = {
   /**
@@ -79,6 +86,17 @@ export type PetDeleteHooks = {
    * use it to simulate a crash or a late write.
    */
   afterBarrier?: () => Promise<void>;
+  /**
+   * A registered wall tablet's gate hooks (F4b-2, `pets.pet.delete`):
+   * `precheck` is the barrier transaction's first statement (a replay of the
+   * same opId writes nothing there; the sweep still finishes what is left,
+   * and a pet that exists again under that id is left alone), `finalize` its
+   * last (op ledger entry and the `device.action` activity entry).
+   */
+  device?: {
+    precheck(tx: Transaction): Promise<{replay?: unknown}>;
+    finalize(tx: Transaction, existed: boolean, name: string | null): void;
+  };
 };
 
 export type PetDeleteInput = {
@@ -194,14 +212,24 @@ export const deletePetCascade = async (
   // transaction.
   type Started = {photoUrl: unknown; existed: boolean; skipped?: true};
   const started = await db.runTransaction(async (tx): Promise<Started> => {
+    const replay = hooks.device ?
+      Boolean((await hooks.device.precheck(tx)).replay) : false;
     const [pet, tombstone] =
       await Promise.all([tx.get(petRef), tx.get(tombstoneRef)]);
     if (!pet.exists) {
-      return tombstone.exists ?
+      const found = tombstone.exists ?
         {photoUrl: tombstone.get("photoUrl") as unknown, existed: true} :
         {photoUrl: null, existed: false};
+      if (!replay) {
+        hooks.device?.finalize(tx, found.existed, tombstone.exists ?
+          (tombstone.get("name") as string | null) ?? null : null);
+      }
+      return found;
     }
-    if (input.resumeOnly) {
+    // Upkeep's resume, or a tablet's retry of a delete already done, while
+    // a pet exists again under this id: never delete it (a stale tombstone
+    // goes).
+    if (input.resumeOnly || replay) {
       if (tombstone.exists) tx.delete(tombstoneRef);
       return {photoUrl: null, existed: false, skipped: true};
     }
@@ -219,10 +247,17 @@ export const deletePetCascade = async (
       actorEmail: input.actor.email ?? null,
       actorName: input.actor.name ?? null,
       action: "pet.deleted",
+      ...(input.actor.device ? {
+        via: "device",
+        deviceId: input.actor.device.deviceId,
+        deviceName: input.actor.device.deviceName,
+        level: input.actor.device.level,
+      } : {}),
       createdAt: input.now.toISOString(),
       details: {petId: input.petId, petName: name},
     });
     tx.delete(petRef);
+    hooks.device?.finalize(tx, true, name);
     return {photoUrl: pet.get("photoUrl") as unknown, existed: true};
   });
   if (started.skipped) {

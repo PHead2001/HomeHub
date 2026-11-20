@@ -3,7 +3,7 @@
  * (the server's tablet operations for Pets read the same household day as the app).
  * `src/lib/household-day.ts` re-exports these and adds the client hook.
  */
-import { DEFAULT_TIME_ZONE } from '../../functions/src/shared/calendar';
+import { DEFAULT_TIME_ZONE, localDay, zonedMidnightIso } from '../../functions/src/shared/calendar';
 
 export const validZone = (timeZone: unknown): timeZone is string => {
   if (typeof timeZone !== 'string' || !timeZone) return false;
@@ -32,4 +32,14 @@ export function deviceTimeZone(): string {
  */
 export function householdDayZone(timeZone?: string | null): string {
   return validZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
+}
+
+/** `yyyy-MM-dd` of the household's current calendar day. */
+export function householdToday(timeZone: string | null | undefined, now: Date = new Date()): string {
+  return localDay(now, householdDayZone(timeZone));
+}
+
+/** The instant a household day (default: today) began, its local midnight. */
+export function householdDayStart(timeZone: string | null | undefined, day: string = householdToday(timeZone)): Date {
+  return new Date(zonedMidnightIso(day, householdDayZone(timeZone)));
 }

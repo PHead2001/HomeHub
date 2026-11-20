@@ -23,11 +23,11 @@ import { loggedOnDevice } from '../../src/components/pets/logged-by';
 const read = (path: string) => readFileSync(path, 'utf8');
 
 describe('what the tablet sends for pets', () => {
-  it('feeding (live and backdated) and care, each with its Undo; doses, notes, weight, deletes and profile edits stay refused', () => {
+  it('feeding (live and backdated) and care, each with its Undo (F4b-2 adds the rest: devices-pets-care.test.ts); pet create and photos stay refused', () => {
     for (const capability of ['pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old', 'pets.feed.undo', 'pets.care.add', 'pets.care.undo'] as const) {
       assert.ok(SENDABLE_CAPABILITIES.has(capability), capability);
     }
-    for (const capability of ['pets.dose.give', 'pets.note.add', 'pets.weight.add', 'pets.log.delete', 'pets.profile.edit', 'pets.log.correctTime'] as const) {
+    for (const capability of ['pets.pet.create', 'pets.photo.upload', 'pets.slots.confirm'] as const) {
       assert.equal(SENDABLE_CAPABILITIES.has(capability), false, capability);
     }
     assert.equal(UNDO_CAPABILITY_OF['pets.feed'], 'pets.feed.undo');
@@ -106,7 +106,9 @@ describe('R5: the tablet uses the same permission names as the personal paths', 
     assert.deepEqual(DEVICE_ACTION_POLICY['pets.care.add'].permissions, [PET_PERMISSIONS.addLogs]);
     assert.equal(policyOf('pets.feed.undo').actorRulePermission, PET_PERMISSIONS.deleteLogs);
     const rules = read('firestore.rules');
-    const careBlock = rules.slice(rules.indexOf('match /care-logs/{logId}'), rules.indexOf('match /care-logs/{logId}') + 1000);
+    // The whole care-logs block (P5 added a comment line to it, so a fixed-length slice no longer reached its delete rule).
+    const careStart = rules.indexOf('match /care-logs/{logId}');
+    const careBlock = rules.slice(careStart, rules.indexOf('\n        }', careStart));
     assert.match(careBlock, new RegExp(`allow create: if hasHouseholdPermission\\(householdId, '${PET_PERMISSIONS.addLogs.replace('.', '\\.')}'\\)`));
     assert.match(careBlock, new RegExp(`allow delete: if hasHouseholdPermission\\(householdId, '${PET_PERMISSIONS.deleteLogs.replace('.', '\\.')}'\\) \\|\\|\\s+feedingAuthorWithinUndoWindow\\(householdId\\)`));
     // Review B1: care entries carry a server-time loggedAt, so the tablet's care Undo is what the author may do on a phone.

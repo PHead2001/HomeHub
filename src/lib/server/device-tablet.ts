@@ -80,6 +80,17 @@ const NOTIFICATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * disabled); a failure there is reported as `authCleanup: 'pending'` and finished by a
  * retry, the Devices list or the daily sweep. Nobody's account is touched.
  */
+/**
+ * The owners' notice when "Use a different code" kept a re-pair code (D8, final review N2):
+ * that code still works until it expires, so nobody reads the notice as "nothing can pair now".
+ */
+export const keptCodeNotice = (expiresAtMs: number, timeZone: string): string => {
+  const time = expiresAtMs > 0
+    ? new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone }).format(new Date(expiresAtMs))
+    : null;
+  return `The re-pair code made for it still works${time ? ` until ${time}` : ' until it expires'}. Cancel it in Devices if you didn't expect this.`;
+};
+
 export const exitTablet = async (
   input: { idToken: unknown; householdId: unknown; actorUid: unknown; pinSessionId: unknown; exit: unknown },
   options: { clientAddress?: string; clock?: () => Date } = {},
@@ -115,15 +126,31 @@ export const exitTablet = async (
       removedByUid: actor.uid,
       endedReason: exit === 'remove' ? 'removed' : exit,
     });
+    const previous = record.get('generation') as number;
+    // The latest expiry of a re-pair code kept for the person to type (D8), for the owners' notice.
+    let keptUntil: number | null = null;
     for (const code of codes.docs) {
       if (code.get('deviceId') === authority.deviceId && codeIsLive(code, now)) {
-        tx.update(code.ref, { revokedAt: stamp, revokedByUid: actor.uid, revokedReason: 'superseded' });
+        // "Use a different code" (emulator evidence D8): an owner's or admin's live re-pair code
+        // made for this record at the generation being ended is the code the person is about to
+        // type, so it moves to the new generation instead of being cancelled. The old credential
+        // is still refused (the generation moves on here, and again when the code is redeemed).
+        // Every other code, and every code on Remove or a personal sign-in, is cancelled.
+        if (exit === 'new-code' && code.get('kind') === 'repair' && code.get('targetGeneration') === previous) {
+          tx.update(code.ref, { targetGeneration: generation, carriedFromGeneration: previous, carriedAt: stamp });
+          const expires = code.get('expiresAt');
+          const at = expires instanceof Timestamp ? expires.toMillis() : 0;
+          keptUntil = Math.max(keptUntil ?? 0, at);
+        } else {
+          tx.update(code.ref, { revokedAt: stamp, revokedByUid: actor.uid, revokedReason: 'superseded' });
+        }
       }
     }
     writeDeviceAudit(tx, householdRef, {
       action: exit === 'remove' ? 'device.removed' : 'device.exited', actorUid: actor.uid, actorName: actor.name, via: 'device',
       deviceId: authority.deviceId, deviceName: settings.name, level: 'pin',
-      details: { reason: exit, name: settings.name, room: settings.room, generation },
+      // `codeKept` (never the code): a re-pair code for this tablet still works (final review N2).
+      details: { reason: exit, name: settings.name, room: settings.room, generation, ...(keptUntil !== null ? { codeKept: true } : {}) },
     }, now);
     const reasonText = exit === 'remove'
       ? 'was removed on the tablet'
@@ -133,7 +160,7 @@ export const exitTablet = async (
         householdId: householdRef.id,
         category: 'system',
         title: exit === 'remove' ? 'Wall tablet removed' : 'Wall tablet signed out',
-        message: `${settings.name}${settings.room ? ` (${settings.room})` : ''} ${reasonText} by ${actor.name}.${exit === 'remove' ? '' : ' Re-pair it from Devices to use it again.'}`,
+        message: `${settings.name}${settings.room ? ` (${settings.room})` : ''} ${reasonText} by ${actor.name}.${exit === 'remove' ? '' : keptUntil !== null ? ` ${keptCodeNotice(keptUntil, authority.timeZone)}` : ' Re-pair it from Devices to use it again.'}`,
         createdAt: stamp,
         expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
         deepLink: '/household?tab=devices',

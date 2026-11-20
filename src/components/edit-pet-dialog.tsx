@@ -28,6 +28,7 @@ import {
   type PetFields,
   type PetFormState,
 } from "./pets/pet-form";
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 interface EditPetDialogProps {
   pet: PetProfile | null;
@@ -111,6 +112,9 @@ export function EditPetDialog({ pet, otherNames = NO_NAMES, onUpdatePet, onOpenC
       setSaving(false);
     }
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(!!pet, () => { if (saving) return false; onOpenChange(false); return true; });
 
   return (
     <Dialog open={!!pet} onOpenChange={(isOpen) => { if (!saving) onOpenChange(isOpen); }}>
