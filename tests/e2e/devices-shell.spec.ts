@@ -6,6 +6,7 @@ import {
   createDeviceCode,
   deviceRecord,
   enterPin,
+  promptReady,
   householdRef,
   openTabletContext,
   pairWithCode,
@@ -111,6 +112,7 @@ test('quick add matches locally; a Pets intent asks "Who\'s here?" first and Can
   await intent.click();
   const who = page.getByTestId('who-is-here');
   await expect(who).toBeVisible();
+  await promptReady(page, 'who-is-here');
   await who.getByRole('button', { name: 'Cancel' }).click();
   await expect(who).toHaveCount(0);
   await expect(page.getByText("That isn't available on wall tablets yet. Use your phone.")).toHaveCount(0);
@@ -129,6 +131,7 @@ test('"Who\'s here?" and the PIN pad: eligible people only, wrong then right PIN
   for (const uid of ['e2e-limited-uid', 'e2e-pending-uid']) await expect(page.getByTestId(`who-person-${uid}`)).toHaveCount(0);
   await expect(who.getByText('Kid profile')).toBeVisible();
   // A member's PIN is never enough for admin settings.
+  await promptReady(page, 'who-is-here');
   await page.getByTestId('who-person-e2e-member-uid').click();
   await expect(page.getByTestId('who-note')).toHaveText('An owner or admin PIN is needed.');
   await page.getByTestId('who-person-e2e-owner-uid').click();
@@ -205,6 +208,7 @@ test('protected exit: "Use a different code" needs a fresh owner PIN, ends the c
   await page.getByTestId('tablet-settings-button').click();
   await page.getByTestId('tablet-exit-new-code').click();
   await page.getByTestId('tablet-exit-continue').click();
+  await promptReady(page, 'who-is-here');
   await page.getByTestId('who-person-e2e-owner-uid').click();
   await enterPin(page, OWNER_PIN);
   await expect(page.getByText('This tablet was signed out. Enter a new code to set it up again.')).toBeVisible({ timeout: 30_000 });
@@ -224,6 +228,7 @@ test('PIN lockout copy, then a removal from the Devices list is observed and eve
   deviceId = await pairWithCode(page, code);
   await page.getByTestId('tablet-settings-button').click();
   await page.getByTestId('tablet-admin-settings').click();
+  await promptReady(page, 'who-is-here');
   await page.getByTestId('who-person-e2e-owner-uid').click();
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     await enterPin(page, '9137');

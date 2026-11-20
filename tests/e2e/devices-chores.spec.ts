@@ -6,6 +6,7 @@ import {
   TABLET_VIEWPORTS,
   createDeviceCode,
   enterPin,
+  promptReady,
   householdRef,
   openTabletContext,
   pairWithCode,
@@ -50,6 +51,7 @@ const openChores = async (page: Page) => {
 
 const pick = async (page: Page, uid: string) => {
   await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await promptReady(page, 'who-is-here');
   await page.getByTestId(`who-person-${uid}`).click();
 };
 

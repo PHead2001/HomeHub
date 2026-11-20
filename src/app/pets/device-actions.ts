@@ -99,6 +99,9 @@ export type DoseIntent = {
   notes?: string;
   /** The answer to "Already given?" (the dose it named). */
   confirm?: { lastLogId: string | null } | null;
+  /** The medication and dosage Give dose showed (recorded for a queued dose). */
+  medication?: string;
+  dosage?: string;
 };
 
 export async function giveDoseFromTabletAction(input: Request & DoseIntent) {

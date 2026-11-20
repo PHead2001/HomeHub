@@ -5,6 +5,7 @@ import {
   OWNER_PIN,
   TABLET_VIEWPORTS,
   enterPin,
+  promptReady,
   createDeviceCode,
   householdRef,
   openTabletContext,
@@ -70,6 +71,7 @@ const forgetFace = async (page: Page) => {
 
 const pick = async (page: Page, uid: string) => {
   await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await promptReady(page, 'who-is-here');
   await page.getByTestId(`who-person-${uid}`).click();
 };
 
@@ -151,6 +153,7 @@ test('a feed on another device a minute ago: the tablet asks "Feed again?" and w
   await expect(page.getByTestId('tablet-feed-again')).toBeVisible();
   await expect(page.getByTestId('tablet-feed-again')).toContainText('Owner fed');
   expect((await feedings('tab-rex').get()).size).toBe(1);
+  await promptReady(page, 'tablet-feed-again');
   await page.getByTestId('tablet-feed-again-yes').click();
   await expect.poll(async () => (await feedings('tab-rex').get()).size, { timeout: 15_000 }).toBe(2);
   const confirmed = (await feedings('tab-rex').where('repeat', '==', 'confirmed').get()).docs;
@@ -374,13 +377,21 @@ test('Codex #190: history merges both date shapes; Log weight tapped twice saves
   await page.getByTestId('tablet-pet-tab-history').click();
   await expect(page.getByTestId('tablet-log-new-stamped')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('tablet-pet-tab-weight').click();
-  // The first weighing chooses the person ("Who's here?" opens on the first tap, under the
-  // pointer, so the double tap is made once someone is remembered and goes straight to Save).
+  // With nobody remembered, "Who's here?" opens under the finger: the second tap of a double
+  // tap on Log weight lands on nothing (the prompts' tap guard), so nobody is credited.
   await page.getByTestId('tablet-weight-value').fill('7.5');
-  await page.getByTestId('tablet-weight-save').click();
+  await page.getByTestId('tablet-weight-save').dblclick();
+  await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('who-is-here')).toBeVisible();
+  expect((await pet('tab-care').collection('weights').get()).size).toBe(0);
+  await expect(page.getByTestId('tablet-acting')).toHaveCount(0);
+  // A deliberate tap once the guard has passed picks the face.
   await pick(page, KID.uid);
   await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
+  expect((await pet('tab-care').collection('weights').get()).docs[0].get('loggedByUid')).toBe(KID.uid);
   await expect(page.getByTestId('tablet-acting')).toBeVisible();
+  // Someone remembered: a double tap goes straight to Save, and its pending guard saves once.
   await page.getByTestId('tablet-weight-value').fill('7.6');
   await page.getByTestId('tablet-weight-save').dblclick();
   await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(2);

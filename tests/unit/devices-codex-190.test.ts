@@ -129,7 +129,7 @@ describe('6: one pending action per tablet form, one opId per open form', () => 
   it('every tablet form submits through it with its opId and disables its submit while pending', () => {
     const text = sheet();
     for (const capability of ['pets.weight.add', 'pets.note.add', 'pets.note.editPinned', 'pets.log.correctTime', 'pets.profile.edit', 'pets.slots.edit', 'pets.pet.delete', 'pets.course.edit', 'pets.medication.confirmLegacy']) {
-      assert.match(text, new RegExp(`runAction\\(\\{ capability: '${capability.replace(/\./g, '\\.')}', opId,`), capability);
+      assert.ok(text.includes(`runAction({ capability: '${capability}', opId,`), capability);
     }
     assert.match(text, /disabled=\{!value\.trim\(\) \|\| form\.busy\} data-testid="tablet-weight-save"/);
     assert.match(read('src/components/devices/tablet-views.tsx'), /runAction\(\{ capability: 'pets\.care\.add', opId,/);

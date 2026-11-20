@@ -56,7 +56,7 @@ const member: Person = { uid: 'dr-member', email: 'dr.member@example.test', disp
 const child: Person = { uid: 'dr-child', email: 'dr.child@example.test', displayName: 'Cleo', role: 'child' };
 const KID = 'kid_DevPetsRecKid0000000';
 const created = new Set<string>();
-const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin'] as const;
+const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin', 'shown'] as const;
 const tablets = {} as Record<(typeof NAMES)[number], Tablet>;
 let ownerDb: ClientFirestore;
 let memberDb: ClientFirestore;
@@ -338,6 +338,27 @@ describe('pets.dose.give: generation, the queued path, "Already given?", levels 
     assert.equal(log.clockSource, 'device');
     assert.equal((await doses('dose-offline').get()).size, 2);
     assert.deepEqual((await course('dose-offline').get()).get('lastDose'), before, 'a queued dose never moves the pointer');
+  });
+
+  test('Codex #190: a queued dose records the medication and dosage Give dose showed, even after the course was edited', async () => {
+    await seedDosePet('dose-shown');
+    const key = await prefill('dose-shown');
+    // The course's dosage changes before the tablet reconnects.
+    await course('dose-shown').update({ dosage: '2 tablets', name: 'Apoquel XL' });
+    const op = opId();
+    const sent = await giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, op, 'dose-shown', key, { medication: 'Apoquel', dosage: '1 tablet' }), ...queued(tablets.shown, 60_000) });
+    assert.equal(sent.result.status, 'saved');
+    const log = (await doses('dose-shown').doc(op).get()).data()!;
+    assert.equal(log.medication, 'Apoquel');
+    assert.equal(log.dosage, '1 tablet');
+    // An older queued entry without them: the course's values.
+    const legacy = opId();
+    await giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, legacy, 'dose-shown', key), ...queued(tablets.shown, 30_000) });
+    assert.equal((await doses('dose-shown').doc(legacy).get()).get('dosage'), '2 tablets');
+    // Strings within the rules' bounds only; a name is never empty.
+    for (const bad of [{ dosage: 'x'.repeat(201) }, { medication: '' }, { medication: 'y'.repeat(201) }, { dosage: 3 }] as Partial<DeviceDoseRequest>[]) {
+      await refused(giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, opId(), 'dose-shown', key, { medication: 'Apoquel', dosage: '1 tablet', ...bad }), ...queued(tablets.shown, 20_000) }), 'invalid_input');
+    }
   });
 
   test('"Already given?" is bound to the dose it named; a dose on another tablet meanwhile asks again naming it', async () => {
@@ -752,6 +773,13 @@ describe('the server writes exactly what the rules accept from the person (repla
     await doseParity('parity-dose', async () => {
       const op = opId();
       await giveDoseFromTablet({ ...doseRequest(tablets.parity, member.uid, op, 'parity-dose', await prefill('parity-dose')), ...queued(tablets.parity, 60_000) });
+      return op;
+    });
+    // A queued dose with the medication and dosage Give dose showed (Codex #190): the rules accept it from the member.
+    await doseParity('parity-dose', async () => {
+      const op = opId();
+      await giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, op, 'parity-dose', await prefill('parity-dose'), { medication: 'Apoquel (old name)', dosage: 'half a tablet' }), ...queued(tablets.shown, 60_000) });
+      assert.equal((await doses('parity-dose').doc(op).get()).get('dosage'), 'half a tablet');
       return op;
     });
   });

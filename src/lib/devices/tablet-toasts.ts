@@ -34,6 +34,29 @@ export function tabletToastDuration(toast: Pick<ShownToast, 'action' | 'duration
   return Math.min(toast.duration ?? TABLET_INFO_TOAST_MS, TABLET_INFO_TOAST_MS);
 }
 
+export type ToastExpiry = { ms: number; expiresAt: number };
+
+/**
+ * Every open toast's absolute expiry, shown or not (Codex #190): the display limit never
+ * pauses a toast, so one hidden behind two newer ones still leaves when its time is up and
+ * never comes back with a full duration. An expiry is kept while the toast's duration is
+ * unchanged; a new duration (an Undo offered again for the time it has left) counts from now.
+ */
+export function toastExpiries(
+  previous: ReadonlyMap<string, ToastExpiry>,
+  toasts: readonly Pick<ShownToast, 'id' | 'open' | 'action' | 'duration'>[],
+  now: number,
+): Map<string, ToastExpiry> {
+  const next = new Map<string, ToastExpiry>();
+  for (const toast of toasts) {
+    if (toast.open === false) continue;
+    const ms = tabletToastDuration(toast);
+    const known = previous.get(toast.id);
+    next.set(toast.id, known && known.ms === ms ? known : { ms, expiresAt: now + ms });
+  }
+  return next;
+}
+
 /** What to do with an offered Undo when the tablet returns from the background (D5). */
 export function resumedUndo(remainingMs: number): { kind: 'remove' } | { kind: 'reoffer'; remainingMs: number } {
   return remainingMs <= 0 ? { kind: 'remove' } : { kind: 'reoffer', remainingMs };

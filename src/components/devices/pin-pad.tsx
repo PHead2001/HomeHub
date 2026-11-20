@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 import { useTablet } from './tablet-context';
 import { PersonFace } from './who-is-here';
 import { useBackCloses } from '@/hooks/use-back-closes';
+import { usePromptTapGuard } from './use-prompt-tap-guard';
 
 const REVOKED: ReadonlySet<DeviceRefusal> = new Set(['device_revoked', 'unauthenticated', 'wrong_household', 'not_a_device', 'household_deleting']);
 
@@ -95,6 +96,8 @@ export function PinPadDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [back, press, submit]);
 
+  // The tap that opened the pad never types a digit (the tap guard); the keyboard is never held.
+  const tap = usePromptTapGuard();
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
   const keyClass = 'flex min-h-16 items-center justify-center rounded-2xl border border-border bg-card font-headline text-2xl font-semibold disabled:opacity-50';
 
@@ -103,7 +106,7 @@ export function PinPadDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !checking) onCancel(); }}>
-      <DialogContent className="max-w-md" data-testid="pin-pad">
+      <DialogContent className="max-w-md" data-testid="pin-pad" data-tap-ready={tap.ready ? 'true' : 'false'}>
         <DialogHeader className="items-center text-center">
           <PersonFace person={person} size="md" />
           <DialogTitle className="font-headline text-2xl">{person.name}&apos;s PIN</DialogTitle>
@@ -117,23 +120,23 @@ export function PinPadDialog({
         <div role="alert" aria-live="assertive" className="min-h-6 text-center text-sm font-medium text-destructive" data-testid="pin-error">{error}</div>
         <div className="grid grid-cols-3 gap-3">
           {keys.map((key) => (
-            <button key={key} type="button" className={keyClass} onClick={() => press(key)} disabled={checking} data-testid={`pin-key-${key}`}>{key}</button>
+            <button key={key} type="button" className={keyClass} onClick={(event) => { if (tap.allow(event)) press(key); }} disabled={checking} data-testid={`pin-key-${key}`}>{key}</button>
           ))}
-          <button type="button" className={keyClass} onClick={back} disabled={checking || digits.length === 0} aria-label="Delete the last digit" data-testid="pin-key-back">
+          <button type="button" className={keyClass} onClick={(event) => { if (tap.allow(event)) back(); }} disabled={checking || digits.length === 0} aria-label="Delete the last digit" data-testid="pin-key-back">
             <Delete aria-hidden className="h-6 w-6" />
           </button>
-          <button type="button" className={keyClass} onClick={() => press('0')} disabled={checking} data-testid="pin-key-0">0</button>
+          <button type="button" className={keyClass} onClick={(event) => { if (tap.allow(event)) press('0'); }} disabled={checking} data-testid="pin-key-0">0</button>
           <button
             type="button"
             className={cn(keyClass, 'bg-primary text-lg text-primary-foreground')}
-            onClick={() => void submit()}
+            onClick={(event) => { if (tap.allow(event)) void submit(); }}
             disabled={checking || digits.length < PIN_MIN_LENGTH}
             data-testid="pin-key-ok"
           >
             {checking ? <Loader2 aria-hidden className="h-6 w-6 animate-spin" /> : 'OK'}
           </button>
         </div>
-        <Button type="button" variant="ghost" className="min-h-12" onClick={onCancel} disabled={checking}>Cancel</Button>
+        <Button type="button" variant="ghost" className="min-h-12" onClick={(event) => { if (tap.allow(event)) onCancel(); }} disabled={checking}>Cancel</Button>
       </DialogContent>
     </Dialog>
   );

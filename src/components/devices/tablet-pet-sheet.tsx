@@ -40,7 +40,7 @@ import { useBehaviourEntries, usePetWeights, usePinnedNotes } from '@/components
 import { usePetLogs, type PetLogKind } from '@/components/pets/pet-log-api';
 import { useNow } from '@/components/pets/use-now';
 import { useTabletSubmit } from './use-tablet-submit';
-import { householdDateLabel } from '@/lib/pets/care';
+import { householdDateLabel, toDate } from '@/lib/pets/care';
 import { toast } from '@/hooks/use-toast';
 import { formatWeight, petWeightUnit, weightHistory, WEIGHT_UNITS, type WeightUnit } from '@/lib/pets/weights';
 import { draftFromPlan, newMealSlotId, readMealPlan, validateMealDraft, type MealSlotDraft } from '@/lib/pets/meal-plan';
@@ -97,14 +97,8 @@ export const byLine = (name: unknown): string | null => {
   return shown ? `by ${shown}` : null;
 };
 
-const toDate = (value: unknown): Date | null => {
-  if (value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function') return (value as { toDate: () => Date }).toDate();
-  if (typeof value === 'string') {
-    const at = new Date(value);
-    return Number.isNaN(at.getTime()) ? null : at;
-  }
-  return null;
-};
+// History times: `usePetLogs` gives feedings as Dates and the other kinds as strings or
+// timestamps; the shared reader takes every shape (Codex #190).
 const when = (value: unknown, timeZone: string) => {
   const at = toDate(value);
   return at ? at.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone }) : 'Unknown time';

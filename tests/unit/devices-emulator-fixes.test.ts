@@ -40,7 +40,7 @@ describe('D2: tablet toasts never block controls', () => {
     assert.match(toaster, /top-auto bottom-0 left-auto right-0/);
     // The shell times tablet toasts itself: Radix's timer pauses under a resting pointer or focus.
     assert.match(toaster, /duration: Infinity/);
-    assert.match(toaster, /<TabletToastTimer ms=\{tabletToastDuration\(/);
+    assert.match(toaster, /toastExpiries\(expiries\.current, toasts, now\)/);
     assert.match(read('src/components/ui/toast.tsx'), /"pointer-events-none fixed/);
     assert.match(read('src/components/ui/toast.tsx'), /group pointer-events-auto relative flex/);
   });
@@ -53,18 +53,23 @@ describe('D3: Done works with a dialog open', () => {
 });
 
 describe('D4: Back closes the topmost dialog', () => {
+  // A browser's session history: entries and the current index. `go` traverses later (a
+  // task), then fires popstate, as a browser does; a push drops the entries ahead of the index.
   const env = () => {
-    const history: number[] = [0];
+    const entries: number[] = [0];
+    let index = 0;
     const calls: string[] = [];
-    let pending = 0;
+    const traversals: number[] = [];
     const stack = createBackStack({
-      push: (depth) => { history.push(depth); calls.push(`push ${depth}`); },
-      go: (steps) => { history.splice(history.length + steps); pending += 1; calls.push(`go ${steps}`); },
-      currentDepth: () => { const top = history[history.length - 1]; return top === 0 ? null : top; },
+      push: (depth) => { entries.splice(index + 1); entries.push(depth); index = entries.length - 1; calls.push(`push ${depth}`); },
+      go: (steps) => { traversals.push(steps); calls.push(`go ${steps}`); },
+      currentDepth: () => { const top = entries[index]; return top === 0 ? null : top; },
     });
-    const back = () => { history.pop(); stack.pop(); };
-    const flush = () => { while (pending > 0) { pending -= 1; stack.pop(); } };
-    return { stack, history, calls, back, flush };
+    const back = () => { index -= 1; stack.pop(); };
+    const flush = () => { while (traversals.length > 0) { index += traversals.shift()!; stack.pop(); } };
+    const navigate = () => { entries.splice(index + 1); entries.push(0); index = entries.length - 1; };
+    const history = () => entries.slice(0, index + 1);
+    return { stack, history, calls, back, flush, navigate };
   };
 
   it('Back closes only the topmost of nested dialogs; nothing navigates', () => {
@@ -76,7 +81,7 @@ describe('D4: Back closes the topmost dialog', () => {
     assert.deepEqual(closed, ['give dose']);
     back();
     assert.deepEqual(closed, ['give dose', 'sheet']);
-    assert.deepEqual(history, [0], 'back on the page itself');
+    assert.deepEqual(history(), [0], 'back on the page itself');
   });
 
   it('a dialog closed by its own button takes its entry back once; that popstate never closes another dialog', () => {
@@ -87,7 +92,7 @@ describe('D4: Back closes the topmost dialog', () => {
     inner.release();
     flush();
     assert.deepEqual(closed, []);
-    assert.deepEqual(history, [0, 1]);
+    assert.deepEqual(history(), [0, 1]);
     assert.equal(stack.size(), 1);
   });
 
@@ -97,7 +102,7 @@ describe('D4: Back closes the topmost dialog', () => {
     const inner = stack.open(() => undefined);
     outer.release();
     flush();
-    assert.deepEqual(history, [0]);
+    assert.deepEqual(history(), [0]);
     assert.ok(calls.includes('go -2'));
     inner.release();
     assert.equal(calls.filter((c) => c.startsWith('go')).length, 1, 'no double back');
@@ -108,11 +113,40 @@ describe('D4: Back closes the topmost dialog', () => {
   });
 
   it('when someone navigated meanwhile (the entry is not ours), nothing is taken back', () => {
-    const { stack, history, calls } = env();
+    const { stack, navigate, calls } = env();
     const handle = stack.open(() => undefined);
-    history.push(0); // a navigation on top
+    navigate();
     handle.release();
     assert.equal(calls.filter((c) => c.startsWith('go')).length, 0);
+  });
+
+  it('Codex #190: a dialog that replaces another before its traversal lands is pushed after it, and Back closes it', () => {
+    const { stack, flush, back, history, calls } = env();
+    const closed: string[] = [];
+    const settings = stack.open(() => { closed.push('settings'); });
+    // Tablet settings hands over to its admin picker: release, then a new dialog at once.
+    settings.release();
+    stack.open(() => { closed.push('picker'); });
+    assert.deepEqual(calls, ['push 1', 'go -1'], 'the picker waits for the traversal');
+    flush();
+    assert.deepEqual(calls, ['push 1', 'go -1', 'push 1']);
+    assert.deepEqual(history(), [0, 1], 'the picker holds the current entry');
+    back();
+    assert.deepEqual(closed, ['picker'], 'Back closes the picker and nothing else');
+    assert.deepEqual(history(), [0]);
+    assert.equal(stack.size(), 0);
+  });
+
+  it('Codex #190: a waiting dialog closed before the traversal lands is never pushed or taken back', () => {
+    const { stack, flush, history, calls } = env();
+    const first = stack.open(() => undefined);
+    first.release();
+    const waiting = stack.open(() => undefined);
+    waiting.release();
+    flush();
+    assert.deepEqual(calls, ['push 1', 'go -1']);
+    assert.deepEqual(history(), [0]);
+    assert.equal(stack.size(), 0);
   });
 
   it('one shared hook is used by the tablet shell dialogs and the Pets dialogs', () => {

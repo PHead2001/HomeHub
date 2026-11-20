@@ -9,6 +9,9 @@
 //   with one `history.go(-n)` (its own entry and any nested ones above it), whose popstate is
 //   ignored, so there is never a double back. When the current entry is not ours (someone
 //   navigated meanwhile), nothing is taken back.
+// - A traversal is asynchronous in a browser: a dialog that opens before the popstate of one
+//   we started (Tablet settings handing over to its admin picker) is pushed only once that
+//   popstate has arrived, so its entry is never the one the traversal leaves (Codex #190).
 
 export type BackEnvironment = {
   /** Pushes an entry for this depth (same URL). */
@@ -22,30 +25,52 @@ export type BackEnvironment = {
 export type BackHandle = { release: () => void };
 
 export function createBackStack(env: BackEnvironment) {
-  const open: { depth: number; close: () => boolean | void }[] = [];
+  type Entry = { depth: number; close: () => boolean | void; pushed: boolean };
+  const open: Entry[] = [];
+  // Traversals we started (`go`) whose popstate has not arrived yet. A browser traverses
+  // asynchronously: an entry pushed before that popstate would be the one the traversal
+  // leaves, so a dialog that opens meanwhile waits for it (`waiting`) and is pushed after.
   let ignore = 0;
+  const waiting: Entry[] = [];
+  const pushNow = (entry: Entry) => {
+    entry.pushed = true;
+    env.push(entry.depth);
+  };
+  const flush = () => {
+    while (ignore === 0 && waiting.length > 0) {
+      const entry = waiting.shift()!;
+      if (open.includes(entry)) pushNow(entry);
+    }
+  };
 
   return {
     /**
-     * A dialog opened: its entry is pushed; `close` runs if Back is pressed while it is the
-     * topmost. `close` returns false when the dialog refuses to close (a save in flight): its
-     * entry is pushed again and it stays registered, so the next Back still closes it (Codex 5).
+     * A dialog opened: its entry is pushed (after any traversal still on its way); `close` runs
+     * if Back is pressed while it is the topmost. `close` returns false when the dialog refuses
+     * to close (a save in flight): its entry is pushed again and it stays registered, so the
+     * next Back still closes it (Codex 5).
      */
     open(close: () => boolean | void): BackHandle {
       const depth = (open[open.length - 1]?.depth ?? 0) + 1;
-      const entry = { depth, close };
+      const entry: Entry = { depth, close, pushed: false };
       open.push(entry);
-      env.push(depth);
+      if (ignore > 0) waiting.push(entry);
+      else pushNow(entry);
       return {
         release: () => {
           const index = open.indexOf(entry);
           if (index < 0) return; // closed by Back already
           // This dialog and any nested ones above it leave together.
-          const top = open[open.length - 1].depth;
-          open.splice(index);
-          if (env.currentDepth() === top) {
+          const leaving = open.splice(index);
+          for (const gone of leaving) {
+            const at = waiting.indexOf(gone);
+            if (at >= 0) waiting.splice(at, 1);
+          }
+          // Only entries already in the history are taken back.
+          const pushed = leaving.filter((gone) => gone.pushed);
+          if (pushed.length > 0 && env.currentDepth() === pushed[pushed.length - 1].depth) {
             ignore += 1;
-            env.go(-(top - depth + 1));
+            env.go(-pushed.length);
           }
         },
       };
@@ -54,13 +79,15 @@ export function createBackStack(env: BackEnvironment) {
     pop(): void {
       if (ignore > 0) {
         ignore -= 1;
+        flush();
         return;
       }
-      const top = open.pop();
-      if (!top) return;
+      const top = open[open.length - 1];
+      if (!top || !top.pushed) return;
+      open.pop();
       if (top.close() === false) {
         open.push(top);
-        env.push(top.depth);
+        pushNow(top);
       }
     },
     /** For tests: how many dialogs hold an entry. */
