@@ -29,6 +29,7 @@ import { whileBusy } from '@/lib/shell/busy';
 import { cn } from '@/lib/utils';
 import { settingsLayer } from '@/lib/devices/shell-state';
 import { useTablet, type TabletActor } from './tablet-context';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 type Exit = 'remove' | 'personal-sign-in' | 'new-code';
 
@@ -154,6 +155,12 @@ export function TabletSettingsDialog({ onClose }: { onClose: () => void }) {
   };
 
   const layer = settingsLayer({ admin: admin !== null, confirming: confirming !== null, prompting });
+  // Android Back closes the topmost layer first (emulator evidence D4): an exit's confirmation,
+  // the admin settings, then Tablet settings itself (never while a save or an exit runs).
+  const idle = saving === null && !exiting;
+  useBackCloses(layer !== 'hidden', () => { if (idle && !admin) onClose(); });
+  useBackCloses(layer === 'confirm' && confirming !== null, () => setConfirming(null));
+  useBackCloses(admin !== null, () => { setAdmin(null); onClose(); });
   if (layer === 'hidden') return null;
   if (admin) {
     return (

@@ -817,3 +817,36 @@ export const endPinSession = async (
   takeDeviceBudget('pin-end', claims, 30, now.getTime());
   return endPinSessionRecord(claims, input?.pinSessionId, now);
 };
+
+/**
+ * Whether the person chosen on a tablet has a tablet PIN (emulator evidence D6), asked by
+ * the tablet before it shows the PIN pad for a PIN-level action: a person without one is
+ * told at once instead of typing into a pad that can only refuse. The tablet's own token,
+ * its household, record and generation, and an eligible actor are checked as for a
+ * verification; the answer is only whether a PIN exists and whether it is locked (never PIN
+ * material). Rate limited per tablet.
+ */
+export const devicePinStatus = async (
+  input: { idToken: unknown; householdId: unknown; actorUid: unknown },
+  options: { now?: Date; clientAddress?: string } = {},
+): Promise<PinStatus> => {
+  const now = options.now ?? new Date();
+  if (!devicesEnabled()) throw new DeviceActionError('unavailable');
+  if (typeof input?.actorUid !== 'string' || !input.actorUid || input.actorUid.length > 128 || input.actorUid.includes('/')) {
+    throw new DeviceActionError('actor_required');
+  }
+  const actorUid = input.actorUid;
+  preAuthAddressLimit('pin', options.clientAddress, now.getTime());
+  const claims = await verifyDeviceToken(input.idToken, input.householdId, {
+    onSignatureVerified: () => preAuthInstanceLimit('pin', now.getTime()),
+  });
+  takeDeviceBudget('pin-status', claims, 30, now.getTime());
+  const householdRef = householdRefOf(claims.hh_household);
+  const [household, record, member, pinSnap, guard] = await Promise.all([
+    householdRef.get(), deviceRecordRef(householdRef, claims.hh_device).get(), householdRef.collection('members').doc(actorUid).get(),
+    pinRecordRef(householdRef, actorUid).get(), memberGuardRef(householdRef, actorUid).get(),
+  ]);
+  checkHouseholdAndRecord(household, record, claims);
+  checkActorEligible(actorUid, member);
+  return { hasPin: hasPin(pinSnap), locked: Boolean(guard.get('lockedAt')) };
+};

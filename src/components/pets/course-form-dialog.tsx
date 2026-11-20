@@ -37,6 +37,7 @@ import {
 import { confirmLegacy, saveCourse } from '@/lib/pets/medication-operation';
 import { medicationRefusal } from './give-dose-dialog';
 import { useNow } from './use-now';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 export type CourseFormMode =
   | { kind: 'create' }
@@ -156,6 +157,9 @@ export function CourseFormDialog({
   };
 
   const title = mode?.kind === 'edit' ? `Edit ${mode.course.name}` : mode?.kind === 'legacy' ? `Confirm ${mode.group.name}'s schedule` : 'New medication course';
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(mode !== null, () => { if (!saving) onOpenChange(false); });
 
   return (
     <Dialog open={mode !== null} onOpenChange={(open) => { if (!saving) onOpenChange(open); }}>

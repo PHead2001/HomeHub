@@ -20,6 +20,7 @@ import { whileBusy } from '@/lib/shell/busy';
 import { cn } from '@/lib/utils';
 import { useTablet } from './tablet-context';
 import { PersonFace } from './who-is-here';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 const REVOKED: ReadonlySet<DeviceRefusal> = new Set(['device_revoked', 'unauthenticated', 'wrong_household', 'not_a_device', 'household_deleting']);
 
@@ -96,6 +97,9 @@ export function PinPadDialog({
 
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
   const keyClass = 'flex min-h-16 items-center justify-center rounded-2xl border border-border bg-card font-headline text-2xl font-semibold disabled:opacity-50';
+
+  // Android Back closes this first (emulator evidence D4).
+  useBackCloses(true, () => { if (!checking) onCancel(); });
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !checking) onCancel(); }}>

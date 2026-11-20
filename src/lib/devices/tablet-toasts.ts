@@ -1,0 +1,34 @@
+// Toasts on a registered wall tablet (docs/modules/devices/README.md, "Tablet shell";
+// emulator evidence D1, D2, D5). Pure, shared by the tablet's Toaster and the device action
+// runtime, unit tested.
+//
+// - At most `TABLET_TOAST_LIMIT` toasts show, newest first, at the bottom right of the
+//   screen; the viewport itself never takes a tap (only a toast card does), and the tablet's
+//   main area keeps a scroll clearance at its end so its last controls can always be scrolled
+//   above them.
+// - A toast without an action (a notice, a refusal such as "Too late to undo.") leaves
+//   after at most `TABLET_INFO_TOAST_MS`; an Undo toast stays for the time its window has left.
+// - After the tablet comes back from the background, every offered Undo is measured again
+//   from its journal entry: one whose window has passed is removed, another is offered again
+//   for the time it really has left.
+
+export const TABLET_TOAST_LIMIT = 2;
+export const TABLET_INFO_TOAST_MS = 4_000;
+
+type ShownToast = { id: string; open?: boolean; action?: unknown; duration?: number };
+
+/** The toasts the tablet shows: open ones, newest first (the store keeps newest first), at most the limit. */
+export function tabletToasts<T extends ShownToast>(newestFirst: readonly T[]): T[] {
+  return newestFirst.filter((toast) => toast.open !== false).slice(0, TABLET_TOAST_LIMIT);
+}
+
+/** How long a toast stays on the tablet: an informational one at most 4 s; an Undo its own (remaining-window) duration. */
+export function tabletToastDuration(toast: Pick<ShownToast, 'action' | 'duration'>): number {
+  if (toast.action) return toast.duration ?? TABLET_INFO_TOAST_MS;
+  return Math.min(toast.duration ?? TABLET_INFO_TOAST_MS, TABLET_INFO_TOAST_MS);
+}
+
+/** What to do with an offered Undo when the tablet returns from the background (D5). */
+export function resumedUndo(remainingMs: number): { kind: 'remove' } | { kind: 'reoffer'; remainingMs: number } {
+  return remainingMs <= 0 ? { kind: 'remove' } : { kind: 'reoffer', remainingMs };
+}

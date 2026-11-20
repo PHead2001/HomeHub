@@ -145,6 +145,23 @@ export function SetupScreen() {
 
   // Then the address bar loses the code (only once no recovery is owed: recovery reloads the
   // page with the code), and the note is not shown again.
+  // A setup link opened while this screen is already showing (a fragment-only navigation:
+  // no reload, emulator evidence D7): its code fills the field too, then leaves the address bar.
+  useEffect(() => {
+    const onHash = () => {
+      const linked = codeFromSetupFragment(window.location.hash);
+      if (!linked) return;
+      setCode(linked);
+      setError(null);
+      if (shouldStripSetupFragment(hasTabletMarker())) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    };
+    window.addEventListener('hashchange', onHash);
+    window.addEventListener('popstate', onHash);
+    return () => {
+      window.removeEventListener('hashchange', onHash);
+      window.removeEventListener('popstate', onHash);
+    };
+  }, []);
   useEffect(() => {
     if (window.location.hash && shouldStripSetupFragment(hasTabletMarker())) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     try {

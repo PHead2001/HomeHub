@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { buttonVariants } from '@/components/ui/button';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 type LogType = 'feeding' | 'medication' | 'care' | 'note' | 'weight';
 
@@ -39,6 +40,9 @@ export function PetLogDeleteAlert({
     body: `This permanently removes the ${logType} history entry.`,
     action: 'Delete Log',
   };
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(open, onCancel);
+
   return (
     <AlertDialog open={open} onOpenChange={(nextOpen) => !nextOpen && onCancel()}>
       <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>

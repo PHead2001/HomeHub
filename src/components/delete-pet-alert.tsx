@@ -11,6 +11,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { buttonVariants } from "./ui/button";
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 interface DeletePetAlertProps {
   isOpen: boolean;
@@ -24,6 +25,9 @@ interface DeletePetAlertProps {
 
 export function DeletePetAlert({ isOpen, petName, onConfirm, onCancel, onCloseAutoFocus }: DeletePetAlertProps) {
   const target = petName || "this pet";
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(isOpen, onCancel);
+
   return (
     <AlertDialog open={isOpen} onOpenChange={(open) => !open && onCancel()}>
       <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>

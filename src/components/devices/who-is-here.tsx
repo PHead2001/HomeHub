@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { deviceRefusalResponse } from '@/lib/devices/action-policy';
 import { initialsOf, isOwnerOrAdmin, type RosterPerson } from '@/lib/devices/roster';
 import { cn } from '@/lib/utils';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 export function PersonFace({ person, size = 'lg' }: { person: RosterPerson; size?: 'lg' | 'md' }) {
   const box = size === 'lg' ? 'h-20 w-20 text-2xl' : 'h-14 w-14 text-lg';
@@ -45,6 +46,9 @@ export function WhoIsHereDialog({
     }
     onPick(person);
   };
+
+  // Android Back closes this first (emulator evidence D4).
+  useBackCloses(true, () => onPick(null));
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onPick(null); }}>

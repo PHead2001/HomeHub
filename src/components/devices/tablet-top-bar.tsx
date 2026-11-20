@@ -40,7 +40,10 @@ export function TabletTopBar({ now }: { now: Date }) {
       )}
       <div className="flex-1" />
       {actor && (
-        <div className="flex items-center gap-2 rounded-full bg-primary/10 py-1 pl-3 pr-1 text-sm" data-testid="tablet-acting">
+        // Above an open dialog's overlay and taking taps through its modal lock (D3): Done ends
+        // the remembered person even while a pet sheet or another dialog is open (the dialog
+        // closes as an outside tap, and the tap still reaches Done).
+        <div className="pointer-events-auto relative z-[60] flex items-center gap-2 rounded-full bg-primary/10 py-1 pl-3 pr-1 text-sm" data-testid="tablet-acting">
           <span>
             {actor.name}
             {acting?.level === 'pin' ? ' (PIN)' : ''}

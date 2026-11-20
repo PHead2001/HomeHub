@@ -39,6 +39,7 @@ import { useHistoryWindow } from './pet-log-api';
 import { createNote, deleteNote, editNote, setNotePinned, useBehaviourEntries } from './records-api';
 import { useSharedPetCare } from './care-store';
 import { useNow } from './use-now';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 const NO_TAG = 'none';
 
@@ -386,6 +387,9 @@ function EditNoteDialog({ note, petId, onClose, onCloseAutoFocus, onSave }: {
     else if (outcome === 'changed') setError('Someone changed this note meanwhile. Close and open it again to see their version.');
     else if (outcome === 'gone') setError('This note was removed meanwhile.');
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(!!note, () => { if (!saving) onClose(); });
 
   return (
     <Dialog open={!!note} onOpenChange={(open) => { if (!open && !saving) onClose(); }}>

@@ -21,6 +21,7 @@ import { loggerName } from '@/lib/pets/care';
 import { CORRECTION_FUTURE_MARGIN_MS, checkFeedCorrection } from '@/lib/pets/feed-plan';
 import { correctFeedTime, FeedCorrectionError } from '@/lib/pets/feed-operation';
 import { isBrowserOffline } from '@/lib/firestore-offline';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 const INPUT_FORMAT = "yyyy-MM-dd'T'HH:mm";
 
@@ -117,6 +118,9 @@ export function CorrectFeedTimeDialog({
       setSaving(false);
     }
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(log !== null, () => { if (!saving) onOpenChange(false); });
 
   return (
     <Dialog open={log !== null} onOpenChange={(open) => { if (!saving) onOpenChange(open); }}>

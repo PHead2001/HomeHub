@@ -36,6 +36,7 @@ import { householdToday } from '@/lib/household-zone';
 import { PORTION_UNITS } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { useTablet } from './tablet-context';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 type Tab = 'medication' | 'notes' | 'weight' | 'history' | 'profile';
 const TABS: { key: Tab; label: string }[] = [
@@ -117,6 +118,9 @@ export function TabletPetSheet({ petId, petName, initialTab = 'medication', dose
     const course = courses.value.find((entry) => entry.id === doseCourseId && entry.status === 'active');
     if (course) setGiving(course);
   }
+  // Android Back closes this first (emulator evidence D4).
+  useBackCloses(true, onClose);
+
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px))] max-w-3xl flex-col gap-3 overflow-hidden" data-testid="tablet-pet-sheet">

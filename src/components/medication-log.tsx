@@ -47,6 +47,7 @@ import { useSharedPetCare } from './pets/care-store';
 import { usePetLogs } from './pets/pet-log-api';
 import { useNow } from './pets/use-now';
 import { unavailableText } from '@/lib/pets/live-listener';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 const AUTHOR_WINDOW_MS = 10 * 60_000;
 const INPUT_FORMAT = "yyyy-MM-dd'T'HH:mm";
@@ -135,6 +136,9 @@ export function MedicationLogClient({ petId, petName = 'this pet', doseCourseId 
       else toastError(deleteError, "Couldn't remove the record");
     }
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(finishing !== null, () => setFinishing(null));
 
   return (
     <>
@@ -381,6 +385,9 @@ function OneOffDoseDialog({ petId, petName, open, courses, onOpenChange }: { pet
       setSaving(false);
     }
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(open, () => { if (!saving) onOpenChange(false); });
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>

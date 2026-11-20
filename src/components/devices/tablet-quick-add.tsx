@@ -21,6 +21,7 @@ import { personMay } from '@/lib/devices/roster';
 import { policyOf } from '@/lib/devices/action-policy';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { useTablet } from './tablet-context';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 const ICON = { feed: PawPrint, dose: Pill, complete: CheckSquare } as const;
 
@@ -66,6 +67,9 @@ export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
       intent: { choreId: intent.choreId },
     });
   };
+
+  // Android Back closes this first (emulator evidence D4).
+  useBackCloses(true, onClose);
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>

@@ -37,6 +37,7 @@ import {
 import { useTablet } from './tablet-context';
 import { TabletMedicationChips, TabletPetSheet } from './tablet-pet-sheet';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 // Every section view reads the UNCAPPED section facts (`data.sectionFacts`, SECTION_LIMITS)
 // through the selectors of src/lib/devices/tablet-sections.ts, a list's own live items, or the
@@ -218,6 +219,9 @@ function TabletCareDialog({ pet, onClose }: { pet: PetState; onClose: () => void
       setSaving(false);
     }
   };
+  // Android Back closes this first (emulator evidence D4).
+  useBackCloses(true, onClose);
+
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="max-w-xl" data-testid="tablet-care-dialog">
@@ -254,12 +258,19 @@ function PetsView() {
   const linkKey = linkedPet ? `${linkedPet}|${linkedDose ?? ''}` : null;
   const [handledLink, setHandledLink] = useState<string | null>(null);
   // Handled once the pets have loaded (state adjusted during render); a link that left the address can open again.
+  // The sheet opens only once the link has left the address (D4): its Back entry then sits on
+  // top of /pets, so Back closes it instead of returning to the link and opening it again.
+  const [pending, setPending] = useState<{ id: string; name: string; dose?: string | null } | null>(null);
   if (linkKey && linkKey !== handledLink && pets) {
     setHandledLink(linkKey);
     const pet = settings.sections.pets ? pets.find((entry) => entry.id === linkedPet) : undefined;
-    if (pet) setOpen({ id: pet.id, name: pet.name, dose: linkedDose });
+    setPending(pet ? { id: pet.id, name: pet.name, dose: linkedDose } : null);
   } else if (!linkKey && handledLink) {
     setHandledLink(null);
+    if (pending) {
+      setOpen(pending);
+      setPending(null);
+    }
   }
   useEffect(() => {
     if (linkKey && handledLink === linkKey) router.replace('/pets');

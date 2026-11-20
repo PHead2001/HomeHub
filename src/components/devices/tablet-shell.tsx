@@ -21,7 +21,7 @@ import { signOut } from 'firebase/auth';
 import { MonitorSmartphone, WifiOff } from 'lucide-react';
 import { auth } from '@/lib/firebase-app';
 import type { Principal } from '@/lib/devices/principal';
-import { deviceHeartbeatAction, endPinSessionAction } from '@/app/devices/actions';
+import { deviceHeartbeatAction, devicePinStatusAction, endPinSessionAction } from '@/app/devices/actions';
 import { browserPushClearDeps, clearPushState } from '@/lib/devices/push-clear';
 import { readDeviceSettings } from '@/lib/devices/settings';
 import { forgetHouseholdOnDevice } from '@/lib/auth/household-scope';
@@ -46,7 +46,7 @@ import { tabletListener } from '@/lib/devices/tablet-listener';
 import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
 import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tablet';
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
-import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, type DeviceRefusal } from '@/lib/devices/action-policy';
+import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, noTabletPinMessage, type DeviceRefusal } from '@/lib/devices/action-policy';
 import { rosterFrom, isOwnerOrAdmin, personMay, type RosterPerson } from '@/lib/devices/roster';
 import {
   currentActor,
@@ -402,7 +402,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
           />
         </Suspense>
       </DashboardScopeProvider>
-      <Toaster />
+      <Toaster tablet />
     </AppearanceProvider>
   );
 }
@@ -569,6 +569,22 @@ function TabletFrame(props: {
   const askPin = useCallback((who: RosterPerson) =>
     prompts.ask<string | null>((finish) => ({ kind: 'pin', person: who, resolve: finish }), null), [prompts]);
 
+  // A PIN-level action for someone with no tablet PIN (D6): said at once (no pad that can only
+  // refuse); 'no-pin' lets the caller offer someone else. A status that can't be read (offline,
+  // an outage) falls back to the pad, whose own refusal still says so.
+  const pinFor = useCallback(async (who: RosterPerson): Promise<string | null | 'no-pin'> => {
+    try {
+      const status = await devicePinStatusAction({ idToken: await idToken(), householdId, actorUid: who.uid });
+      if (status.ok && !status.data.hasPin) {
+        toast({ variant: 'destructive', description: noTabletPinMessage(who.name) });
+        return 'no-pin';
+      }
+    } catch {
+      // The pad decides.
+    }
+    return askPin(who);
+  }, [askPin, householdId, idToken]);
+
   // "Feed again?" (PE-23g, D-P5): the server's check, bound to the state it was shown for; the
   // answer goes back with the same opId. Asked on the tablet for every feeding entry point.
   const askFeedAgain = useCallback(async (check: FeedAgainCheck, petName: string): Promise<Record<string, unknown> | null> => {
@@ -619,9 +635,9 @@ function TabletFrame(props: {
     // Always a fresh verify for admin-PIN capabilities (S9).
     const current = shellRef.current.pin;
     if (current && current.memberUid === who.uid && Date.now() - current.unlockedAt < FRESH_PIN_MS) return { actorUid: who.uid, pinSessionId: current.sessionId };
-    const sessionId = await askPin(who);
-    return sessionId ? { actorUid: who.uid, pinSessionId: sessionId } : null;
-  }, [apply, askPerson, askPin, message, person]);
+    const sessionId = await pinFor(who);
+    return sessionId && sessionId !== 'no-pin' ? { actorUid: who.uid, pinSessionId: sessionId } : null;
+  }, [apply, askPerson, message, person, pinFor]);
 
   const requestAdmin = useCallback(async (reason: string, actorUid?: string): Promise<TabletActor | null> => {
     setUnlocking((n) => n + 1);
@@ -654,8 +670,8 @@ function TabletFrame(props: {
       }
       if (requiredLevel(capability, { pointsPin: household.pointsPin, actorRole: who.role }) !== 'pin') return { actorUid };
       const unlock = !forcePin ? pinSessionId ?? (shellRef.current.pin?.memberUid === who.uid ? shellRef.current.pin.sessionId : undefined) : undefined;
-      const sessionId = unlock ?? await askPin(who);
-      return sessionId ? { actorUid, pinSessionId: sessionId } : null;
+      const sessionId = unlock ?? await pinFor(who);
+      return sessionId && sessionId !== 'no-pin' ? { actorUid, pinSessionId: sessionId } : null;
     },
   });
 
@@ -672,19 +688,28 @@ function TabletFrame(props: {
       actor = await requestAdmin(request.label);
     } else {
       const remembered = activeFace(shellRef.current.face, Date.now(), isShellBusy());
-      const who = person(remembered?.memberUid) ?? await askPerson('action', request.label);
-      if (!who) return { ok: false };
-      apply({ type: 'pick', memberUid: who.uid, now: Date.now() });
-      // A face gets only that person's options (a child's face a child's, PE-17e); the server decides again.
-      if (!personMay(who, policy.permissions)) {
-        message('forbidden', who);
-        return { ok: false };
+      let who = person(remembered?.memberUid) ?? await askPerson('action', request.label);
+      actor = null;
+      for (let attempt = 0; who && !actor; attempt += 1) {
+        apply({ type: 'pick', memberUid: who.uid, now: Date.now() });
+        // A face gets only that person's options (a child's face a child's, PE-17e); the server decides again.
+        if (!personMay(who, policy.permissions)) {
+          message('forbidden', who);
+          return { ok: false };
+        }
+        const required = requiredLevel(request.capability, { pointsPin: household.pointsPin, actorRole: who.role });
+        const unlock = shellRef.current.pin?.memberUid === who.uid ? shellRef.current.pin.sessionId : undefined;
+        const sessionId = required === 'pin' && !unlock ? await pinFor(who) : unlock;
+        if (sessionId === 'no-pin') {
+          // Not remembered for the next action, and someone else may do this one (D6).
+          apply({ type: 'done' });
+          who = attempt < 2 ? await askPerson('action', `${request.label}: choose someone with a tablet PIN`) : null;
+          continue;
+        }
+        if (required === 'pin' && !sessionId) return { ok: false };
+        actor = { actorUid: who.uid, ...(sessionId ? { pinSessionId: sessionId } : {}) };
       }
-      const required = requiredLevel(request.capability, { pointsPin: household.pointsPin, actorRole: who.role });
-      const unlock = shellRef.current.pin?.memberUid === who.uid ? shellRef.current.pin.sessionId : undefined;
-      const sessionId = required === 'pin' && !unlock ? await askPin(who) : unlock;
-      if (required === 'pin' && !sessionId) return { ok: false };
-      actor = { actorUid: who.uid, ...(sessionId ? { pinSessionId: sessionId } : {}) };
+      if (!actor) return { ok: false };
     }
     if (!actor) return { ok: false };
     const who = person(actor.actorUid);
@@ -711,7 +736,7 @@ function TabletFrame(props: {
     if (answer.code === 'pin_session_invalid' || answer.code === 'pin_required' || answer.code === 'pin_fresh_required') apply({ type: 'pin-invalid' });
     message(answer.code, who, answer.retryAfterSec);
     return { ok: false };
-  }, [apply, askDoseAgain, askFeedAgain, askPerson, askPin, deviceActions, household.pointsPin, message, person, requestAdmin]);
+  }, [apply, askDoseAgain, askFeedAgain, askPerson, deviceActions, household.pointsPin, message, person, pinFor, requestAdmin]);
 
   const done = useCallback(() => apply({ type: 'done' }), [apply]);
   const goStart = useCallback(() => router.push(startPath()), [router, startPath]);
@@ -769,7 +794,8 @@ function TabletFrame(props: {
         <TabletRail />
         <div className="flex min-w-0 flex-1 flex-col">
           <TabletTopBar now={now} />
-          <main id="tablet-main" className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-testid="tablet-main">
+          {/* Section views keep a scroll clearance at their end (D2): the last controls can always be scrolled above the bottom-right toasts. Home has no controls there and must not scroll. */}
+          <main id="tablet-main" className={view.kind === 'home' ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : 'min-h-0 flex-1 overflow-y-auto overscroll-contain pb-40'} data-testid="tablet-main">
             <TabletViewContent />
           </main>
         </div>

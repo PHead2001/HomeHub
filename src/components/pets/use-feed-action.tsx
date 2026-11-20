@@ -21,6 +21,7 @@ import { feedPet, undoFeed, type FeedPetInput, type FeedPetResult } from '@/lib/
 import { TabletContext } from '@/components/devices/tablet-context';
 import { backdatedCapability } from '@/lib/devices/action-policy';
 import { PET_PERMISSIONS } from '@/lib/permissions';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 /** A feeding request as an entry point describes it; who, where and the zone come from the session. */
 export type FeedRequest = Pick<FeedPetInput, 'portion' | 'portionFromSlot' | 'food' | 'comments' | 'backdatedAt' | 'known'>;
@@ -223,6 +224,9 @@ export function FeedAgainDialog({
   petName: string;
   returnFocus?: () => void;
 }) {
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(action.prompt !== null, action.cancelPrompt);
+
   return (
     <AlertDialog open={action.prompt !== null} onOpenChange={(open) => !open && action.cancelPrompt()}>
       <AlertDialogContent

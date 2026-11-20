@@ -46,6 +46,7 @@ import { finishCourse, giveDose, MedicationActionError, resumeCourse, undoDose }
 import { useNow } from './use-now';
 import { TabletContext } from '@/components/devices/tablet-context';
 import { backdatedCapability } from '@/lib/devices/action-policy';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 const INPUT_FORMAT = "yyyy-MM-dd'T'HH:mm";
 
@@ -297,6 +298,9 @@ export function GiveDoseDialog({
     event.preventDefault();
     void record(null);
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(course !== null, () => { if (!saving) onOpenChange(false); });
 
   return (
     <Dialog open={course !== null} onOpenChange={(open) => { if (!saving) onOpenChange(open); }}>

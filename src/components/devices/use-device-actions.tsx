@@ -14,6 +14,7 @@
 //   the tablet, which is removed together with its Undo.
 
 import { useCallback, useEffect, useRef } from 'react';
+import { resumedUndo } from '@/lib/devices/tablet-toasts';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
@@ -337,7 +338,10 @@ export function useDeviceActions(deps: {
     }
   }, [authorizeUndo, currentEntry, personOf, refuse, send, step, storesOf]);
 
+  // Every Undo toast on screen, by opId, so a return from the background can measure it again (D5).
+  const offered = useRef(new Map<string, { dismiss: () => void; entry: UndoJournalEntry; actor: TabletActor; who: RosterPerson | null; message: string }>());
   const offerUndo = useCallback((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => {
+    offered.current.get(entry.opId)?.dismiss();
     const handle = toast({
       // Per pet for feeds (stored in the journal, so a restored toast keeps it): another pet's
       // feed or a chore never displaces this Undo; same-group actions replace the older one.
@@ -345,12 +349,35 @@ export function useDeviceActions(deps: {
       description: message,
       duration: Math.max(1000, remainingMs),
       action: (
-        <ToastAction altText={`Undo: ${entry.label}`} onClick={() => { handle.dismiss(); void undoOf(entry, actor, who); }} data-testid="tablet-undo">
+        // 48 px on the tablet's coarse pointer (D1).
+        <ToastAction altText={`Undo: ${entry.label}`} className="min-h-12 min-w-12 px-4 text-base" onClick={() => { offered.current.delete(entry.opId); handle.dismiss(); void undoOf(entry, actor, who); }} data-testid="tablet-undo">
           Undo
         </ToastAction>
       ),
     });
+    offered.current.set(entry.opId, { dismiss: handle.dismiss, entry, actor, who, message });
   }, [undoOf]);
+
+  // Back from the background (or a frozen page resumed): the toast's own timer may have slept
+  // past the window, so each offered Undo is measured again from its journal entry (D5).
+  useEffect(() => {
+    const resume = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      for (const [opId, shown] of [...offered.current]) {
+        const current = mirror.current.get(opId.toLowerCase()) ?? shown.entry;
+        const decision = resumedUndo(undoOffer(current, Date.now()).remainingMs);
+        offered.current.delete(opId);
+        shown.dismiss();
+        if (decision.kind === 'reoffer') offerUndoRef.current?.(current, shown.actor, shown.who, shown.message, decision.remainingMs);
+      }
+    };
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('pageshow', resume);
+    return () => {
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('pageshow', resume);
+    };
+  }, []);
   useEffect(() => { offerUndoRef.current = offerUndo; }, [offerUndo]);
 
   // After a reload: Undo toasts come back for the time that is left (the server's window decides).

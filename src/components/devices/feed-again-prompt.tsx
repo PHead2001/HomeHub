@@ -16,6 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 export function FeedAgainPrompt({ title, body, onAnswer, yesLabel = 'Feed again' }: { title: string; body: string; onAnswer: (yes: boolean) => void; yesLabel?: string }) {
   // One answer: the dialog's own close after "Feed again" is not a Cancel.
@@ -25,6 +26,9 @@ export function FeedAgainPrompt({ title, body, onAnswer, yesLabel = 'Feed again'
     answered.current = true;
     onAnswer(yes);
   };
+  // Android Back closes this first (emulator evidence D4).
+  useBackCloses(true, () => answer(false));
+
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) answer(false); }}>
       <AlertDialogContent data-testid="tablet-feed-again">

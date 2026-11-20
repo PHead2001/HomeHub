@@ -115,9 +115,19 @@ export const exitTablet = async (
       removedByUid: actor.uid,
       endedReason: exit === 'remove' ? 'removed' : exit,
     });
+    const previous = record.get('generation') as number;
     for (const code of codes.docs) {
       if (code.get('deviceId') === authority.deviceId && codeIsLive(code, now)) {
-        tx.update(code.ref, { revokedAt: stamp, revokedByUid: actor.uid, revokedReason: 'superseded' });
+        // "Use a different code" (emulator evidence D8): an owner's or admin's live re-pair code
+        // made for this record at the generation being ended is the code the person is about to
+        // type, so it moves to the new generation instead of being cancelled. The old credential
+        // is still refused (the generation moves on here, and again when the code is redeemed).
+        // Every other code, and every code on Remove or a personal sign-in, is cancelled.
+        if (exit === 'new-code' && code.get('kind') === 'repair' && code.get('targetGeneration') === previous) {
+          tx.update(code.ref, { targetGeneration: generation, carriedFromGeneration: previous, carriedAt: stamp });
+        } else {
+          tx.update(code.ref, { revokedAt: stamp, revokedByUid: actor.uid, revokedReason: 'superseded' });
+        }
       }
     }
     writeDeviceAudit(tx, householdRef, {

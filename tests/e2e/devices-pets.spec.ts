@@ -112,8 +112,18 @@ test('a face-chosen kid feeds and is credited (by Mia on Pets tablet); Undo remo
   // Measured once the toast's slide-in has settled.
   await expect.poll(async () => (await page.getByTestId('tablet-undo').first().boundingBox())!.y, { timeout: 5_000 })
     .toBeGreaterThanOrEqual(bar!.y + bar!.height);
+  // D1, D2: the Undo is a 48 px target in a toast at the bottom right, clear of the first pet row's buttons.
+  const undoBox = (await page.getByTestId('tablet-undo').first().boundingBox())!;
+  expect(undoBox.height).toBeGreaterThanOrEqual(48);
+  expect(undoBox.width).toBeGreaterThanOrEqual(48);
+  const feedBox = (await page.getByTestId('tablet-pet-feed-tab-maple').boundingBox())!;
+  expect(undoBox.y).toBeGreaterThan(feedBox.y + feedBox.height);
+  // The toast region takes no tap outside its card: Maple's Feed is what a tap there hits.
+  expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="tablet-pet-feed-tab-maple"]') !== null, [feedBox.x + feedBox.width / 2, feedBox.y + feedBox.height / 2])).toBe(true);
   await page.getByTestId('tablet-undo').first().click();
   await expect.poll(async () => (await feedings('tab-maple').get()).size, { timeout: 15_000 }).toBe(0);
+  // The informational "Undone." leaves within 4 s (D2).
+  await expect(page.getByText('Undone.')).toHaveCount(0, { timeout: 6_000 });
   // Done ends the remembered person straight away, even with a toast on screen.
   await page.getByTestId('tablet-done').click({ timeout: 5_000 });
   await expect(page.getByTestId('tablet-acting')).toHaveCount(0);
@@ -273,3 +283,49 @@ for (const viewport of TABLET_VIEWPORTS) {
     await page.keyboard.press('Escape');
   });
 }
+
+test('D3 and D4: Done with the pet sheet open ends the remembered person; Back closes the topmost dialog and stays on Pets', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await page.setViewportSize(TABLET_VIEWPORTS[0]);
+  await forgetFace(page);
+  await openPets(page);
+  // Someone is remembered (a note as the kid).
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await page.getByTestId('tablet-pet-tab-notes').click();
+  await page.getByTestId('tablet-note-text').fill('Napped in the sun');
+  await page.getByTestId('tablet-note-save').click();
+  await pick(page, KID.uid);
+  await expect(page.getByTestId('tablet-acting')).toBeVisible();
+  await page.getByTestId('tablet-done').click();
+  await expect(page.getByTestId('tablet-acting')).toHaveCount(0);
+  // Back: the Give dose dialog first, then the sheet, never leaving Pets.
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await page.getByTestId('tablet-give-course-e2e').click();
+  await expect(page.getByTestId('give-dose-dialog')).toBeVisible();
+  await page.goBack();
+  await expect(page.getByTestId('give-dose-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible();
+  await page.goBack();
+  await expect(page.getByTestId('tablet-pet-sheet')).toHaveCount(0);
+  await expect(page.getByTestId('tablet-view-pets')).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe('/pets');
+});
+
+test('D6: a PIN-level action for someone with no tablet PIN says so at once (no pad) and offers someone else', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await page.getByTestId('tablet-pet-tab-notes').click();
+  const noteId = (await pet('tab-meds').collection('notes').get()).docs[0].id;
+  await page.getByTestId(`tablet-note-${noteId}`).getByRole('button', { name: /^(Pin|Unpin)$/ }).click();
+  await pick(page, KID.uid);
+  await expect(page.getByText(`${KID.name} has no tablet PIN. An adult can set one in Household > Members.`).first()).toBeVisible();
+  await expect(page.getByTestId('pin-pad')).toHaveCount(0);
+  // Someone else may act: "Who's here?" again.
+  await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+});
