@@ -274,7 +274,8 @@ test('a behaviour note and a weighing are face-level with Undo; pinning a note a
   await page.getByTestId('tablet-weight-value').fill('12.4');
   await page.getByTestId('tablet-weight-save').click();
   await expect.poll(async () => (await pet('tab-meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
-  await page.getByTestId('tablet-undo').last().click();
+  // The weighing's own Undo (the note's may still be offered beside it).
+  await page.locator('li', { hasText: 'Weight for' }).getByTestId('tablet-undo').click();
   await expect.poll(async () => (await pet('tab-meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(0);
   await closeDialogs(page);
 });
