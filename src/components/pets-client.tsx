@@ -27,7 +27,7 @@ import { createPet, deletePet, updatePet } from './pets/pet-profile-api';
 import { returnFocusToPet } from './pets/focus';
 import type { PetFields } from './pets/pet-form';
 import type { PetPhotoChoice } from './pets/pet-photo-draft';
-import { DuplicatePetNameError, otherPetNames } from '@/lib/pets/profile';
+import { DuplicatePetNameError, otherPetNames, petDeletedMessage } from '@/lib/pets/profile';
 import { boardGrid, showHoldCaption } from '@/lib/pets/board';
 import { useHoldCaptionDone, usePetsLayout, usePointerFine } from './pets/use-pets-layout';
 
@@ -257,8 +257,8 @@ export function PetsClient() {
     if (!householdId || !target) return;
     try {
       // On the server: the pet, its histories, notes, weights, photos and open reminders (D-P12).
-      await deletePet(householdId, target.id);
-      toast({ title: 'Pet deleted', description: `${target.name} and everything logged for them have been removed.` });
+      const status = await deletePet(householdId, target.id);
+      toast({ title: 'Pet deleted', description: petDeletedMessage(target.name, status) });
     } catch (error) {
       console.error('Error deleting pet:', error);
       toastError(error, "Couldn't delete the pet");

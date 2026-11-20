@@ -281,9 +281,11 @@ test.describe('pets: meal slots (P2)', () => {
       const status = biscuit.getByTestId('meal-slots-status');
       await expect(status).toContainText('Breakfast due 7:00 am');
       await expect(status).toContainText('Dinner 6:00 pm');
-      const cardBox = await biscuit.boundingBox();
-      const statusBox = await status.boundingBox();
-      expect(statusBox!.x + statusBox!.width).toBeLessThanOrEqual(cardBox!.x + cardBox!.width + 1);
+      // Measured together in one poll: a card re-rendering between two reads has no box for a moment.
+      await expect.poll(async () => {
+        const [cardBox, statusBox] = [await biscuit.boundingBox(), await status.boundingBox()];
+        return cardBox && statusBox ? statusBox.x + statusBox.width - (cardBox.x + cardBox.width) : Number.POSITIVE_INFINITY;
+      }).toBeLessThanOrEqual(1);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
 
       // The editor on a legacy pet: the suggestion, then the rows with their weekday toggles.

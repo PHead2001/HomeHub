@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { format } from 'date-fns';
 import { ArrowUpToLine, Loader2, Pencil, Pin, PinOff, PlusCircle, Trash2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
@@ -16,7 +15,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { PetLogDeleteAlert } from '@/components/pet-log-delete-alert';
 import { householdToday } from '@/lib/household-day';
-import { loggerName } from '@/lib/pets/care';
+import { householdDateLabel, loggerName } from '@/lib/pets/care';
 import { unavailableText } from '@/lib/pets/live-listener';
 import {
   NOTE_TAGS,
@@ -25,6 +24,7 @@ import {
   newRecordOpId,
   noteDate,
   noteTagLabel,
+  pinRefusal,
   validateNoteDraft,
   type NoteDraft,
   type NoteDraftErrors,
@@ -36,7 +36,7 @@ import { NoteChangedError } from '@/lib/pets/record-transaction';
 import { LoggedBy } from './logged-by';
 import { LoadMoreHistory } from './load-more';
 import { useHistoryWindow } from './pet-log-api';
-import { createNote, deleteNote, editNote, setNotePinned, useBehaviourEntries } from './records-api';
+import { createNote, deleteNote, editNote, PINNED_PAGE, setNotePinned, useBehaviourEntries, usePinnedNotes } from './records-api';
 import { useSharedPetCare } from './care-store';
 import { useNow } from './use-now';
 
@@ -76,8 +76,15 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
   const householdId = currentUser?.householdId ?? null;
   const actor = { uid: currentUser?.uid, permissions };
   const canAdd = mayPet('pets.note.add', permissions);
-  // The pinned list is the care store's (PE-21a), shared with the headline line.
-  const pinned = useSharedPetCare(householdId, petId).pinned;
+  // Every pinned note, newest pin first, paged (none is ever dropped from both lists).
+  // The first page is the care store's (PE-21a), the same query the headline line
+  // reads, so the pet is subscribed once; only after "Load more" does the tab open
+  // its own longer listener, and it keeps showing the first page until that loads.
+  const [pinnedMax, setPinnedMax] = useState(PINNED_PAGE);
+  const firstPage = useSharedPetCare(householdId, petId).pinned;
+  const paging = pinnedMax > PINNED_PAGE;
+  const paged = usePinnedNotes(paging ? householdId : null, petId, pinnedMax);
+  const pinned = !paging ? firstPage : paged.loading ? { ...firstPage, loadingMore: true } : paged;
   const history = useHistoryWindow(petId);
   const entries = useBehaviourEntries(householdId, petId, history.max);
 
@@ -137,6 +144,12 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
 
   const pinChange = async (note: PetNote, pin: boolean) => {
     if (!householdId) return;
+    // Pinning an entry is held to the same cap as pinning a new note.
+    const refusal = pin && !note.pinned ? pinRefusal(pinned.loading || pinned.error ? null : pinned.items.length) : null;
+    if (refusal) {
+      toast({ variant: 'destructive', title: "Couldn't pin the note", description: refusal });
+      return;
+    }
     try {
       await setNotePinned({ householdId, petId, noteId: note.id, pinned: pin, onLateError: lateError });
       toast({ title: pin ? (note.pinned ? 'Shown first' : 'Note pinned') : 'Note unpinned' });
@@ -161,24 +174,24 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
     if (!canEdit && !canDelete) return null;
     const label = note.text.slice(0, 40);
     return (
-      <div className="flex flex-shrink-0 items-center gap-1">
+      <div className="ml-auto flex flex-shrink-0 items-center gap-1" data-testid="note-actions">
         {canEdit && note.pinned && !first && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Show "${label}" first`} onClick={() => void pinChange(note, true)}>
+          <Button variant="ghost" size="icon" aria-label={`Show "${label}" first`} onClick={() => void pinChange(note, true)}>
             <ArrowUpToLine className="h-4 w-4" />
           </Button>
         )}
         {canEdit && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={note.pinned ? `Unpin "${label}"` : `Pin "${label}"`} onClick={() => void pinChange(note, !note.pinned)}>
+          <Button variant="ghost" size="icon" aria-label={note.pinned ? `Unpin "${label}"` : `Pin "${label}"`} onClick={() => void pinChange(note, !note.pinned)}>
             {note.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
           </Button>
         )}
         {canEdit && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Edit "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setEditing(note); }}>
+          <Button variant="ghost" size="icon" aria-label={`Edit "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setEditing(note); }}>
             <Pencil className="h-4 w-4" />
           </Button>
         )}
         {canDelete && (
-          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Delete "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setToDelete(note); }}>
+          <Button variant="ghost" size="icon" aria-label={`Delete "${label}"`} onClick={(event) => { setReturnTo(event.currentTarget); setToDelete(note); }}>
             <Trash2 className="h-4 w-4" />
           </Button>
         )}
@@ -189,7 +202,7 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
   const meta = (note: PetNote, showDate: boolean) => (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
       {note.tag && <span className="rounded-full border border-border px-2 py-0.5 text-foreground">{noteTagLabel(note.tag)}</span>}
-      {showDate && <span>{note.date ? format(note.date, 'PPP') : 'Unknown date'}</span>}
+      {showDate && <span>{note.date ? householdDateLabel(note.date, timeZone) : 'Unknown date'}</span>}
       <LoggedBy entry={{ loggedByUid: note.loggedByUid ?? undefined, loggedByName: note.loggedByName ?? undefined }} />
       {note.editedAt && <span>· edited{note.editedByName ? ` by ${note.editedByName}` : ''}</span>}
     </p>
@@ -302,8 +315,8 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
             {!pinned.loading && !pinned.error && pinned.items.length > 0 && (
               <ul className="space-y-2" data-testid="pinned-notes">
                 {pinned.items.map((note, index) => (
-                  <li key={note.id} className="flex items-start justify-between gap-3 rounded-md border border-border bg-secondary/40 p-3 text-sm">
-                    <div className="min-w-0 space-y-1">
+                  <li key={note.id} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-md border border-border bg-secondary/40 p-3 text-sm">
+                    <div className="min-w-0 flex-1 basis-48 space-y-1">
                       <p className="flex items-start gap-2 break-words font-medium text-foreground [overflow-wrap:anywhere]">
                         <Pin aria-hidden className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
                         <span>{note.text}</span>
@@ -314,6 +327,9 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
                   </li>
                 ))}
               </ul>
+            )}
+            {!pinned.loading && !pinned.error && (
+              <LoadMoreHistory hasMore={pinned.hasMore} loadingMore={pinned.loadingMore} onLoadMore={() => setPinnedMax((max) => max + PINNED_PAGE)} what="pinned notes" />
             )}
           </section>
 
@@ -332,8 +348,8 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
               <p className="py-4 text-center text-sm text-muted-foreground">No entries yet.</p>
             )}
             {!entries.loading && !entries.error && entries.items.map((note) => (
-              <div key={note.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
-                <div className="min-w-0 space-y-1">
+              <div key={note.id} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 rounded-md bg-secondary/50 p-3 text-sm">
+                <div className="min-w-0 flex-1 basis-48 space-y-1">
                   <p className="break-words text-foreground [overflow-wrap:anywhere]">{note.text}</p>
                   {meta(note, true)}
                 </div>

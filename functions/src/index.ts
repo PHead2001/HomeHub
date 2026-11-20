@@ -16,6 +16,8 @@ import {
   readMemberContacts, runHouseholdReminders, sweepDeviceRevocations,
 } from "./reminders";
 import {getAuth} from "firebase-admin/auth";
+import {getStorage} from "firebase-admin/storage";
+import {resumePetDeletions, type PetPhotoBucket} from "./shared/pet-delete";
 import {withContactEmails} from "./shared/member-contact";
 import {
   clampText,
@@ -221,9 +223,10 @@ export const sendPushOnRenotify = onDocumentUpdated(
   },
 );
 
-// Hourly upkeep for every household: maintenance and chore reminders, and the
-// next recurring chores. Runs without anyone opening the app. Each household is
-// isolated so one failure is logged and never blocks the others.
+// Hourly upkeep for every household: maintenance and chore reminders, the
+// next recurring chores, and finishing interrupted pet deletes. Runs without
+// anyone opening the app. Each household is isolated so one failure is
+// logged and never blocks the others.
 export const householdUpkeep = onSchedule(
   {schedule: "every 60 minutes", timeZone: "UTC", retryCount: 0},
   async () => {
@@ -260,6 +263,24 @@ export const householdUpkeep = onSchedule(
     } catch (error) {
       totals.failed++;
       logger.error("Wall-tablet sign-out sweep failed.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Finish any pet delete that stopped after its pet was gone (its
+    // tombstone is still there): histories, photos and reminders
+    // (docs/modules/pets/README.md). Isolated like a household.
+    try {
+      const bucket = getApp().options.storageBucket ?
+        getStorage().bucket() as unknown as PetPhotoBucket : null;
+      const pets = await resumePetDeletions(db, bucket, now, ts,
+        (path, error) => logger.error("Resuming a pet delete failed.", {
+          path, error: error instanceof Error ? error.message : String(error),
+        }));
+      if (pets.found > 0) logger.info("Pet delete resume finished.", pets);
+      if (pets.failed > 0) totals.failed++;
+    } catch (error) {
+      totals.failed++;
+      logger.error("Pet delete resume failed.", {
         error: error instanceof Error ? error.message : String(error),
       });
     }

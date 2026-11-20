@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { format } from 'date-fns';
 import { ArrowDownRight, ArrowUpRight, Loader2, Minus, PlusCircle, Scale, Trash2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
@@ -14,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { PetLogDeleteAlert } from '@/components/pet-log-delete-alert';
 import { householdDayStart, householdToday } from '@/lib/household-day';
-import { loggerName } from '@/lib/pets/care';
+import { loggerName, householdDateLabel } from '@/lib/pets/care';
 import { unavailableText } from '@/lib/pets/live-listener';
 import { newRecordOpId } from '@/lib/pets/notes';
 import { mayDeleteWeight, mayPet } from '@/lib/pets/pet-actions';
@@ -225,7 +224,7 @@ export function WeightCard({ pet }: { pet: PetProfile }) {
             <ul className="space-y-2" aria-label={`Weight history in ${WEIGHT_UNIT_LABELS[unit]}`}>
               {entries.map((entry) => {
                 const shown = formatWeight(weightIn(entry, unit), unit);
-                const when = entry.date ? format(entry.date, 'PPP') : 'Unknown date';
+                const when = entry.date ? householdDateLabel(entry.date, timeZone) : 'Unknown date';
                 return (
                   <li key={entry.id} className="flex items-center justify-between gap-3 rounded-md bg-secondary/50 px-3 py-2">
                     <div className="min-w-0">
@@ -239,7 +238,7 @@ export function WeightCard({ pet }: { pet: PetProfile }) {
                       </p>
                     </div>
                     {mayDeleteWeight(entry, actor, now) && (
-                      <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" aria-label={`Delete the weight from ${when}`} onClick={() => setToDelete(entry)}>
+                      <Button variant="ghost" size="icon" className="flex-shrink-0" aria-label={`Delete the weight from ${when}`} onClick={() => setToDelete(entry)}>
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     )}
