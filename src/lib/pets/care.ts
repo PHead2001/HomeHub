@@ -178,6 +178,19 @@ export function formatPortion(amount: number, unit?: string | null): string {
 /* Dates                                                                      */
 /* ------------------------------------------------------------------------- */
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * A dated record's calendar date in the household's zone ("November 19, 2026"):
+ * the day the person picked in the form (a note's or weight's household day),
+ * whatever zone this device is in. Never the device zone, which can show the
+ * next or previous day.
+ */
+export function householdDateLabel(date: Date, timeZone: string | null | undefined): string {
+  const [year, month, day] = localDay(date, householdDayZone(timeZone)).split('-').map(Number);
+  return `${MONTH_NAMES[month - 1]} ${day}, ${year}`;
+}
+
 /** Firestore Timestamp, Date, ISO string or millis → Date (null when unreadable). */
 export function toDate(value: unknown): Date | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
@@ -484,7 +497,8 @@ export type PetFormErrors = Partial<Record<keyof PetFormValues, string>>;
  * being edited. When editing, pass the stored values as `original`: a value the
  * member did not change is never rejected by a rule newer than the document (name
  * or schedule length, feedings per day, portion bounds), so older pets stay
- * editable. (The name cannot be changed while editing.)
+ * editable. A changed name (a rename, PE-30c) is checked against the other pets'
+ * names, case-insensitively.
  */
 export function validatePetForm(values: PetFormValues, existingNames: string[] = [], original?: PetFormValues, options: { hasMealTimes?: boolean } = {}): PetFormErrors {
   const errors: PetFormErrors = {};
@@ -526,7 +540,7 @@ export function petHref(petId: string): string {
 }
 
 /** The pet page's tabs, selectable with `?tab=`. */
-export const PET_TABS = ['feeding', 'medication', 'care'] as const;
+export const PET_TABS = ['feeding', 'medication', 'care', 'notes'] as const;
 export type PetTab = (typeof PET_TABS)[number];
 
 /** The tab a `?tab=` value selects (Feeding for a missing or unknown value). */

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, use } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { doc, onSnapshot, type DocumentSnapshot } from 'firebase/firestore';
-import { ArrowLeft, CalendarDays, Edit, MoreVertical, Pill, Sparkles, Trash2, Utensils } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Edit, MoreVertical, NotebookPen, Pill, Sparkles, Trash2, Utensils } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
@@ -16,7 +16,7 @@ import { feedingPlan, formatPortion, loggerName, petPhotoMorphName } from '@/lib
 import { readMealPlan } from '@/lib/pets/meal-plan';
 import { morphStyle } from '@/lib/motion';
 import type { PetProfile } from '@/lib/pets/types';
-import { Skeleton } from '@/components/ui/skeleton';
+import { DuplicatePetNameError } from '@/lib/pets/profile';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,12 @@ import { PetCareSummary } from '@/components/pets/pet-care-summary';
 import { MealPlanList, SetMealTimesButton } from '@/components/pets/meal-status';
 import { deletePet, updatePet } from '@/components/pets/pet-profile-api';
 import type { PetFields } from '@/components/pets/pet-form';
+import type { PetPhotoChoice } from '@/components/pets/pet-photo-draft';
+import { NotesTab } from '@/components/pets/notes-tab';
+import { PinnedNoteLine } from '@/components/pets/pinned-note-line';
+import { VetContact } from '@/components/pets/vet-contact';
+import { WeightCard } from '@/components/pets/weight-card';
+import { PetDetailSkeletonBody } from '@/components/pets/pets-skeleton';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { returnFocusToPet } from '@/components/pets/focus';
 
@@ -131,16 +137,18 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
   const missing = ready && loaded.loaded && !loaded.value;
   const notice = ready && pet ? liveNotice(loaded) : null;
 
-  const handleUpdatePet = async (fields: PetFields, photoFile: File | null, isPhotoRemoved: boolean): Promise<boolean> => {
+  const handleUpdatePet = async (fields: PetFields, photo: PetPhotoChoice): Promise<boolean | 'name-taken'> => {
     if (!householdId || !pet) return false;
     try {
       // Meal times are confirmed by the signed-in member, on the household's day (PE-22k).
       const confirmer = currentUser ? { uid: currentUser.uid, name: loggerName(currentUser), timeZone: household?.timeZone ?? null } : undefined;
-      await updatePet(householdId, pet.id, fields, { file: photoFile, removed: isPhotoRemoved, currentUrl: pet.photoUrl }, confirmer);
+      // A rename keeps this page's id and every history under it (PE-30b); the duplicate check reads the other pets fresh.
+      await updatePet(householdId, pet.id, fields, photo, pet.name, confirmer);
       setPetToEdit(null);
-      toast({ title: 'Pet updated', description: `${pet.name}'s details are saved.` });
+      toast({ title: 'Pet updated', description: `${fields.name}'s details are saved.` });
       return true;
     } catch (error) {
+      if (error instanceof DuplicatePetNameError) return 'name-taken';
       console.error('Error updating pet:', error);
       toastError(error, "Couldn't update the pet");
       return false;
@@ -151,8 +159,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
     setConfirmDelete(false);
     if (!householdId || !pet) return;
     try {
+      // On the server: the pet, its histories, notes, weights, photos and open reminders (D-P12).
       await deletePet(householdId, pet.id);
-      toast({ title: 'Pet deleted', description: `${pet.name} has been removed.` });
+      toast({ title: 'Pet deleted', description: `${pet.name} and everything logged for them have been removed.` });
       router.push('/pets');
     } catch (error) {
       console.error('Error deleting pet:', error);
@@ -173,19 +182,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
 
   if (loading) {
     return (
-      <div className="container mx-auto px-4 py-8" role="status" aria-label="Loading pet details">
-        <Skeleton className="mb-4 h-10 w-44" />
-        <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
-          <div className="space-y-6 md:col-span-1">
-            {/* Lands the /pets card → hero morph (H12) while the pet loads. */}
-            <Skeleton className="h-80 w-full rounded-lg" style={morphStyle(petPhotoMorphName(petId))} />
-            <Skeleton className="h-32 w-full rounded-lg" />
-          </div>
-          <div className="space-y-4 md:col-span-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-80 w-full rounded-lg" />
-          </div>
-        </div>
+      // The route's own skeleton (PE-21g); its photo placeholder lands the /pets card → hero morph (H12).
+      <div className="container mx-auto px-4 py-8" role="status" aria-busy="true" aria-label="Loading pet details">
+        <PetDetailSkeletonBody />
       </div>
     );
   }
@@ -270,6 +269,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
               <div>
                 <h1 tabIndex={-1} data-pets-heading className="break-words font-headline text-3xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none">{pet.name}</h1>
                 <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
+                <PinnedNoteLine householdId={householdId} petId={pet.id} className="mt-2" />
               </div>
               <div className="flex flex-col gap-3">
                 <PetCareSummary pet={pet} householdId={householdId} maxMedicationChips={4} showWeek onSetMealTimes={canEdit ? () => setPetToEdit(pet) : undefined} />
@@ -318,16 +318,20 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
                   </div>
                 </div>
               ) : null}
+              <VetContact pet={pet} onEdit={canEdit ? () => setPetToEdit(pet) : undefined} />
             </CardContent>
           </Card>
+
+          <WeightCard pet={pet} />
         </div>
 
         <div className="scroll-mt-20 md:col-span-2" ref={tabsRef}>
           <Tabs value={tab} onValueChange={(value) => { if ((PET_TABS as readonly string[]).includes(value)) chooseTab(value as PetTab); }}>
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 md:grid-cols-2 lg:grid-cols-4">
               <TabsTrigger value="feeding"><Utensils className="mr-2" /> Feeding</TabsTrigger>
               <TabsTrigger value="medication"><Pill className="mr-2" /> Medication</TabsTrigger>
               <TabsTrigger value="care"><Sparkles className="mr-2" /> Care</TabsTrigger>
+              <TabsTrigger value="notes"><NotebookPen className="mr-2" /> Notes</TabsTrigger>
             </TabsList>
             <TabsContent value="feeding">
               <FeedingLogClient petId={pet.id} petName={pet.name} plan={plan} pet={pet} />
@@ -337,6 +341,9 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
             </TabsContent>
             <TabsContent value="care">
               <CareLogClient petId={pet.id} />
+            </TabsContent>
+            <TabsContent value="notes">
+              <NotesTab petId={pet.id} petName={pet.name} />
             </TabsContent>
           </Tabs>
         </div>

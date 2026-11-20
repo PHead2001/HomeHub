@@ -188,12 +188,21 @@ describe('Pets listeners wait for a settled access key (no second subscription, 
 
   it('every Pets listener keyed on access uses the settled access and reads as loading until then', () => {
     const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
-    for (const file of ['src/components/pets-client.tsx', 'src/app/pets/[petId]/page.tsx', 'src/components/pets/pet-log-api.ts', 'src/components/pets/medication-api.ts']) {
+    // P5: notes, pinned notes and weights (records-api) follow the same rule.
+    for (const file of ['src/components/pets-client.tsx', 'src/app/pets/[petId]/page.tsx', 'src/components/pets/pet-log-api.ts', 'src/components/pets/medication-api.ts', 'src/components/pets/records-api.ts']) {
       const text = read(file);
       assert.match(text, /useSettledPetAccess\(\)/, file);
       assert.doesNotMatch(text, /canView: Boolean\(permissions/, `${file} keys on raw permissions`);
     }
     assert.match(read('src/components/pets/pet-log-api.ts'), /if \(householdId && !access\) return \{ logs: \[\], loading: true/);
+    assert.match(read('src/components/pets/records-api.ts'), /if \(scope && !access\) return \{ items: \[\], loading: true/);
+    // Every P5 listener goes through the keyed, resilient helper (no raw onSnapshot elsewhere in the Notes and Weight UI).
+    const records = read('src/components/pets/records-api.ts');
+    assert.match(records, /petListenerKey\(scope, access\)/);
+    assert.match(records, /petSnapshotListener<QuerySnapshot>/);
+    for (const file of ['src/components/pets/notes-tab.tsx', 'src/components/pets/weight-card.tsx', 'src/components/pets/pinned-note-line.tsx', 'src/components/pets/vet-contact.tsx']) {
+      assert.doesNotMatch(read(file), /onSnapshot\(/, `${file} subscribes directly`);
+    }
     assert.match(read('src/app/pets/[petId]/page.tsx'), /\(Boolean\(householdId\) && !access\)/);
   });
 });

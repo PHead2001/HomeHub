@@ -23,6 +23,9 @@ import {
 } from '@/lib/pets/care';
 import { draftFromPlan, readMealPlan, slotsFromDraft, validateMealDraft, type MealSlotDraft, type MealSlotErrors } from '@/lib/pets/meal-plan';
 import { PET_SPECIES, PORTION_UNITS, type MealSlot, type PetProfile, type PortionUnit } from '@/lib/pets/types';
+import { EMPTY_VET, VET_PHONE_MAX, VET_TEXT_MAX, validateVet, vetDraftFrom, vetFields, type VetDraft, type VetErrors } from '@/lib/pets/profile';
+import { DEFAULT_WEIGHT_UNIT, WEIGHT_UNITS, WEIGHT_UNIT_LABELS, petWeightUnit, type WeightUnit } from '@/lib/pets/weights';
+import { cn } from '@/lib/utils';
 import { MealPlanEditor, mealFieldId } from './meal-plan-editor';
 
 export type PetFormState = PetFormValues & {
@@ -30,7 +33,9 @@ export type PetFormState = PetFormValues & {
   portionUnit: PortionUnit;
   /** Meal time rows (PE-22k); empty keeps the legacy daily count. */
   meals: MealSlotDraft[];
-};
+  /** The unit weights are shown in (PE-28c). */
+  weightUnit: WeightUnit;
+} & VetDraft;
 
 export const EMPTY_PET_FORM: PetFormState = {
   name: '',
@@ -40,6 +45,8 @@ export const EMPTY_PET_FORM: PetFormState = {
   portionAmount: '',
   portionUnit: 'Cups',
   meals: [],
+  weightUnit: DEFAULT_WEIGHT_UNIT,
+  ...EMPTY_VET,
 };
 
 export function petFormFromProfile(pet: PetProfile): PetFormState {
@@ -52,11 +59,13 @@ export function petFormFromProfile(pet: PetProfile): PetFormState {
     portionAmount: pet.portionAmount ? String(pet.portionAmount) : '',
     portionUnit: pet.portionUnit ?? portion?.unit ?? 'Cups',
     meals: draftFromPlan(readMealPlan(pet)),
+    weightUnit: petWeightUnit(pet),
+    ...vetDraftFrom(pet),
   };
 }
 
 /** Field errors of the whole form: the pet fields, each meal row, and the plan. */
-export type PetDraftErrors = { fields: PetFormErrors; meals: MealSlotErrors[]; plan: string | null };
+export type PetDraftErrors = { fields: PetFormErrors; meals: MealSlotErrors[]; plan: string | null; vet: VetErrors };
 
 /**
  * Validates the add and edit forms. With meal times the free-text schedule is
@@ -67,14 +76,16 @@ export function validatePetDraft(values: PetFormState, existingNames: string[] =
   const fields = validatePetForm(values, existingNames, original, { hasMealTimes: values.meals.length > 0 });
   const meals = validateMealDraft(values.meals);
   const plan = meals.plan ?? (confirmed && values.meals.length === 0 ? 'Keep at least one meal time.' : null);
-  return { fields, meals: meals.rows, plan };
+  const vet = validateVet(values, original);
+  return { fields, meals: meals.rows, plan, vet };
 }
 
 export function hasDraftErrors(errors: PetDraftErrors): boolean {
-  return Object.keys(errors.fields).length > 0 || errors.plan !== null || errors.meals.some((row) => Object.keys(row).length > 0);
+  return Object.keys(errors.fields).length > 0 || errors.plan !== null || errors.meals.some((row) => Object.keys(row).length > 0)
+    || Object.keys(errors.vet).length > 0;
 }
 
-export const NO_DRAFT_ERRORS: PetDraftErrors = { fields: {}, meals: [], plan: null };
+export const NO_DRAFT_ERRORS: PetDraftErrors = { fields: {}, meals: [], plan: null, vet: {} };
 
 /** Types offered in the picker: the known species plus any legacy value already stored. */
 function typeOptions(current: string): string[] {
@@ -96,13 +107,16 @@ export type PetFormFieldsProps = {
   onChange: (patch: Partial<PetFormState>) => void;
   onPhotoChange: (file: File | null) => void;
   existingPhotoUrl?: string;
-  nameDisabled?: boolean;
+  /** The picked photo is being shrunk (PE-21e). */
+  photoBusy?: boolean;
+  /** Why the picked photo can't be used (the shared downscale copy), or null. */
+  photoError?: string | null;
   /** The stored pet (edit): its legacy target, and whether it already has confirmed meal times. */
   pet?: PetProfile | null;
 };
 
 /** Shared fields for the add and edit pet dialogs, with inline field errors. */
-export function PetFormFields({ idPrefix, values, errors: draftErrors, onChange, onPhotoChange, existingPhotoUrl, nameDisabled, pet }: PetFormFieldsProps) {
+export function PetFormFields({ idPrefix, values, errors: draftErrors, onChange, onPhotoChange, existingPhotoUrl, photoBusy, photoError, pet }: PetFormFieldsProps) {
   const id = (field: string) => `${idPrefix}-${field}`;
   const errors = draftErrors.fields;
   const parsedPerDay = parseFeedingsPerDay(values.foodSchedule);
@@ -114,17 +128,32 @@ export function PetFormFields({ idPrefix, values, errors: draftErrors, onChange,
   return (
     <div className="grid gap-4 py-2">
       <div className="grid gap-2">
-        <Label>Photo</Label>
+        <p className="text-sm font-medium leading-none" id={id('photo-label')}>Photo</p>
         {/* The shared uploader's Remove button has no `type`, so inside the dialog form it
-            would submit. Cancel only the submit default; its own click handler still runs. */}
-        <div onClick={preventImplicitSubmit}>
+            would submit. Cancel only the submit default; its own click handler still runs.
+            A rejected photo is pointed at (focus) instead of saving without it, as in the barcode library. */}
+        <div
+          id={id('photo')}
+          tabIndex={-1}
+          role="group"
+          aria-labelledby={id('photo-label')}
+          aria-describedby={photoError ? `${id('photo')}-error` : undefined}
+          className={cn('rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring', photoError && 'ring-2 ring-destructive')}
+          onClick={preventImplicitSubmit}
+        >
           <ImageUpload
             onFileChange={onPhotoChange}
             existingImageUrl={existingPhotoUrl}
             previewAlt={values.name ? `Photo preview for ${values.name}` : 'New pet photo preview'}
           />
         </div>
-        <p className="text-xs text-muted-foreground">Optional. Without a photo, your pet gets an illustrated avatar.</p>
+        {photoError ? (
+          <FieldError id={id('photo')}>{photoError}</FieldError>
+        ) : (
+          <p role="status" className="text-xs text-muted-foreground">
+            {photoBusy ? 'Shrinking the photo…' : 'Optional. Without a photo, your pet gets an illustrated avatar.'}
+          </p>
+        )}
       </div>
 
       <div className="grid gap-2">
@@ -134,7 +163,6 @@ export function PetFormFields({ idPrefix, values, errors: draftErrors, onChange,
           maxLength={PET_NAME_MAX + 10}
           onChange={(event) => onChange({ name: event.target.value })}
           placeholder="Buddy"
-          disabled={nameDisabled}
           autoComplete="off"
           {...fieldErrorProps(id('name'), errors.name)}
         />
@@ -231,6 +259,63 @@ export function PetFormFields({ idPrefix, values, errors: draftErrors, onChange,
       </p>
       </>
       )}
+
+      <div className="grid gap-2">
+        <Label htmlFor={id('weight-unit')}>Weight unit</Label>
+        <Select value={values.weightUnit} onValueChange={(unit) => onChange({ weightUnit: unit as WeightUnit })}>
+          <SelectTrigger id={id('weight-unit')} className="w-28">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {WEIGHT_UNITS.map((unit) => (
+              <SelectItem key={unit} value={unit}>{WEIGHT_UNIT_LABELS[unit]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">Weights show in this unit; entries logged in the other unit are converted.</p>
+      </div>
+
+      <fieldset className="grid gap-3 rounded-lg border p-3">
+        <legend className="px-1 text-sm font-medium">Vet (optional)</legend>
+        <div className="grid gap-2">
+          <Label htmlFor={id('vet-clinic')}>Clinic</Label>
+          <Input
+            value={values.vetClinic}
+            maxLength={VET_TEXT_MAX + 10}
+            onChange={(event) => onChange({ vetClinic: event.target.value })}
+            placeholder="Riverside Animal Hospital"
+            autoComplete="off"
+            {...fieldErrorProps(id('vet-clinic'), draftErrors.vet.vetClinic)}
+          />
+          <FieldError id={id('vet-clinic')}>{draftErrors.vet.vetClinic}</FieldError>
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor={id('vet-name')}>Veterinarian</Label>
+          <Input
+            value={values.vetName}
+            maxLength={VET_TEXT_MAX + 10}
+            onChange={(event) => onChange({ vetName: event.target.value })}
+            placeholder="Dr. Rivera"
+            autoComplete="off"
+            {...fieldErrorProps(id('vet-name'), draftErrors.vet.vetName)}
+          />
+          <FieldError id={id('vet-name')}>{draftErrors.vet.vetName}</FieldError>
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor={id('vet-phone')}>Phone</Label>
+          <Input
+            type="tel"
+            inputMode="tel"
+            value={values.vetPhone}
+            maxLength={VET_PHONE_MAX + 10}
+            onChange={(event) => onChange({ vetPhone: event.target.value })}
+            placeholder="(512) 555-0134"
+            autoComplete="off"
+            {...fieldErrorProps(id('vet-phone'), draftErrors.vet.vetPhone)}
+          />
+          <FieldError id={id('vet-phone')}>{draftErrors.vet.vetPhone}</FieldError>
+        </div>
+      </fieldset>
     </div>
   );
 }
@@ -254,6 +339,8 @@ export function petFieldsFromForm(values: PetFormState, previous?: Pick<PetProfi
     portionAmount: slots ? null : amount,
     portionUnit: !slots && amount ? values.portionUnit : null,
     slots,
+    ...vetFields(values),
+    weightUnit: values.weightUnit,
   };
 }
 
@@ -290,5 +377,11 @@ export function focusFirstError(idPrefix: string, draft: PetDraftErrors) {
     ['portionAmount', 'portion'],
   ];
   const next = legacy.find(([key]) => errors[key]);
-  if (next) document.getElementById(`${idPrefix}-${next[1]}`)?.focus();
+  if (next) {
+    document.getElementById(`${idPrefix}-${next[1]}`)?.focus();
+    return;
+  }
+  const vet = (['vetClinic', 'vetName', 'vetPhone'] as const).find((key) => draft.vet[key]);
+  const vetIds = { vetClinic: 'vet-clinic', vetName: 'vet-name', vetPhone: 'vet-phone' } as const;
+  if (vet) document.getElementById(`${idPrefix}-${vetIds[vet]}`)?.focus();
 }

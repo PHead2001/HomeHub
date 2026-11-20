@@ -19,6 +19,7 @@ import { feedingHeadline, formatPortion, petHref, petPhotoMorphName, SPECIES_ART
 import { morphStyle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import type { PetProfile } from '@/lib/pets/types';
+import { PinnedNoteLine } from './pinned-note-line';
 import { PetCareSummary, petAttention, usePetCare, type PetCare } from './pet-care-summary';
 import { mealHeadline } from '@/lib/pets/meal-plan';
 
@@ -193,6 +194,8 @@ export function LivingPetCard({ pet, householdId, canEdit, onEdit, onDelete, pri
           </h2>
           <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
         </PeekCard>
+        {/* The most important pinned note as one small line (PE-29c); the board (P4) places the same component. */}
+        <PinnedNoteLine householdId={householdId} petId={pet.id} />
 
         <PetCareSummary
           pet={pet}

@@ -29,7 +29,8 @@ import { Checkbox } from './ui/checkbox';
 import { Input } from './ui/input';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
-import { usePetLogs } from './pets/pet-log-api';
+import { useHistoryWindow, usePetLogs } from './pets/pet-log-api';
+import { LoadMoreHistory } from './pets/load-more';
 import { FeedAgainDialog, useFeedAction } from './pets/use-feed-action';
 import { useNow } from './pets/use-now';
 import { unavailableText } from '@/lib/pets/live-listener';
@@ -91,7 +92,10 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
-  const { logs, loading, error, failure } = usePetLogs<PetFeedingLog>(householdId, petId, 'feeding-logs', 100);
+  // A paginated window (PE-21h): today's feedings are always in the first page, so the meal status and the
+  // last-fed check never depend on how much history is shown.
+  const history = useHistoryWindow(petId);
+  const { logs, loading, error, failure, hasMore, loadingMore } = usePetLogs<PetFeedingLog>(householdId, petId, 'feeding-logs', history.max);
   const [useCurrentTime, setUseCurrentTime] = useState(true);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [logToCorrect, setLogToCorrect] = useState<CorrectableFeeding | null>(null);
@@ -430,6 +434,7 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
               </div>
             );
           })}
+          {!loading && !error && <LoadMoreHistory hasMore={hasMore} loadingMore={loadingMore} onLoadMore={history.loadMore} what="feedings" />}
         </section>
       </CardContent>
     </Card>
