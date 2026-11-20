@@ -334,7 +334,8 @@ export function PetsClient() {
           </p>
         )}
         {/* On the board each card's band already says what needs attention. */}
-        {layout !== 'board' && <AttentionStrip pets={pets} attention={attentionByPet} />}
+        {/* PE-26a: the strip heads /pets in every view, the board included (the board measures its height below it). */}
+        <AttentionStrip pets={pets} attention={attentionByPet} />
         {layout === 'board' ? (
           <PetsBoard count={pets.length}>
             {pets.map((pet, index) => <div key={pet.id} className="min-h-0 min-w-0">{card(pet, index)}</div>)}

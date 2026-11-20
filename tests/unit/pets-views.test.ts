@@ -230,6 +230,22 @@ describe('the household care store (PE-21a)', () => {
 });
 
 describe('chips, phone header, pet page order, form targets (PE-16, PE-13b/c, PE-14e)', () => {
+  it('keeps P2/P3 behaviour on the board and rows: Give dose from a course chip, the slot status, the attention strip (PE-24b, PE-22b, PE-26a)', () => {
+    const card = read('src/components/pets/living-pet-card.tsx');
+    // A course chip opens Give dose in place (a button, never a link to another page).
+    assert.match(card, /onSelect=\{\(due\) => \{\s*if \(due\.courseId\) setGivingId\(due\.courseId\);/);
+    assert.match(card, /<GiveDoseDialog petId=\{pet\.id\}/);
+    assert.doesNotMatch(card, /hrefFor=/);
+    // The board and the rows carry the slot status hooks and one line per meal.
+    assert.equal(card.match(/data-testid=\{slots \? 'meal-slots-status' : undefined\}/g)?.length, 2);
+    assert.equal(card.match(/data-meal-state=\{slots \? mealStateOf\(slots\) : undefined\}/g)?.length, 2);
+    assert.equal(card.match(/<MealSlotList /g)?.length, 2);
+    // The needs-attention strip is in every view.
+    const client = read('src/components/pets-client.tsx');
+    assert.match(client, /\n\s*<AttentionStrip pets=\{pets\} attention=\{attentionByPet\} \/>/);
+    assert.doesNotMatch(client, /layout !== 'board' && <AttentionStrip/);
+  });
+
   it('truncates only the name, shows the due date on touch and makes "+N" a button', () => {
     const chip = read('src/components/pets/medication-chip.tsx');
     assert.match(chip, /min-w-0 truncate font-semibold" data-testid="chip-name"/);

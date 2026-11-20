@@ -39,9 +39,16 @@ async function restore() {
   await household.collection('pets').doc('pixel').collection('feeding-state').doc('current').delete();
 }
 
-/** A legacy medication countdown on a pet, `days` from today (negative: overdue). */
+/** The household's day (America/Chicago), `days` from today: the day the chips count from, never UTC's. */
+function householdDay(days = 0): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(Date.now() + days * 86_400_000));
+  const get = (type: string) => parts.find((part) => part.type === type)!.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/** A legacy medication countdown on a pet, `days` household days from today (negative: overdue). */
 async function seedMedication(petId: string, name: string, days: number) {
-  const due = new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+  const due = householdDay(days);
   await household.collection('pets').doc(petId).collection('medication-logs').add({
     date: new Date(Date.now() - 30 * 86_400_000).toISOString(), medication: name, dosage: '1 dose', notes: 'e2e-board', nextDueDate: due,
   });
@@ -115,7 +122,7 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
         // The extra pets have only a legacy schedule, so the owner sees Set meal times on them.
         expect(await board.getByTestId('set-meal-times').count()).toBeGreaterThanOrEqual(EXTRA.length);
         // Maple's medication chip is reachable: the card body scrolls (never the page) and the chip takes the tap.
-        const chip = page.getByTestId('pet-card-maple').getByTestId('medication-chips').getByRole('link').first();
+        const chip = page.getByTestId('pet-card-maple').getByTestId('medication-chips').getByRole('button').first();
         await chip.scrollIntoViewIfNeeded();
         await expect(chip).toBeInViewport();
         const chipBox = (await chip.boundingBox())!;
@@ -259,15 +266,15 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
     try {
       await openPets(page);
       const chips = page.getByTestId('pet-card-maple').getByTestId('medication-chips');
-      const first = chips.getByRole('link').first();
+      const first = chips.getByRole('button').first();
       await expect(first.getByTestId('chip-status')).toHaveText('Due in 3 days');
       await expect(first.getByTestId('chip-date')).toBeVisible();
       expect(await first.getByTestId('chip-status').evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
       const more = chips.getByTestId('medication-chips-more');
       await expect(more).toHaveText(/\+\d/);
       await more.click();
-      // Maple has exactly the four countdowns seeded above: two chips and "+2" (a button), then all four links.
-      await expect(chips.getByRole('link')).toHaveCount(4);
+      // Maple has exactly the four countdowns seeded above: two chips and "+2", then all four chips (buttons, PE-24b).
+      await expect(chips.locator('[data-medication-state]')).toHaveCount(4);
       await expect(chips.getByTestId('medication-chips-more')).toHaveCount(0);
     } finally {
       await context.close();
