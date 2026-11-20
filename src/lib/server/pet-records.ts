@@ -39,7 +39,7 @@ import {
   type DoseRefusal,
   type Occurrence,
 } from '@/lib/pets/medication-course';
-import { noteCreateFields, noteDate, recordDocId, validateNoteDraft, NOTE_TAGS, type NoteTag } from '@/lib/pets/notes';
+import { noteCreateFields, noteDate, pinRefusal, recordDocId, validateNoteDraft, NOTE_TAGS, type NoteTag } from '@/lib/pets/notes';
 import { validateWeightDraft, isWeightUnit, type WeightUnit } from '@/lib/pets/weights';
 import { mayDeleteNote, mayDeleteWeight, mayEditNote, AUTHOR_DELETE_WINDOW_MS, type ActorPermissions } from '@/lib/pets/pet-actions';
 import { mayMedication } from '@/lib/pets/medication-permissions';
@@ -200,6 +200,13 @@ export type DoseAsInput = {
   notes?: unknown;
   /** The answer to "Already given?": the dose it named. */
   confirm?: unknown;
+  /**
+   * The medication and dosage Give dose showed, carried in the tablet's queued intent: a
+   * queued dose records them, so a course edited before the tablet reconnects does not
+   * rewrite what was given (as the personal offline path, `doseLogData`). Absent: the course's.
+   */
+  medication?: unknown;
+  dosage?: unknown;
 };
 
 type PlainOccurrence = { key: string; day: string; time: string | null; at: number };
@@ -237,6 +244,13 @@ const confirmOf = (value: unknown): DoseConfirm | null => {
   return { lastLogId: raw, ...bound };
 };
 
+/** A shown medication name (1-200 characters, the rules' bound) or dosage (0-200); undefined when absent. */
+const shownOf = (value: unknown, required: boolean): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || value.length > 200 || (required && !value.trim())) throw new PetFeedingError('invalid');
+  return value;
+};
+
 const notesOf = (value: unknown, max = 2000): string => {
   if (value === undefined || value === null) return '';
   if (typeof value !== 'string' || value.length > max) throw new PetFeedingError('invalid');
@@ -265,6 +279,8 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
   const givenAt = chosenTime(input.givenAt, ctx.now);
   const notes = notesOf(input.notes);
   const confirm = confirmOf(input.confirm);
+  const shownMedication = shownOf(input.medication, true);
+  const shownDosage = shownOf(input.dosage, false);
   const logId = doseLogId(ctx.opId ?? randomUUID());
   const pet = house.collection('pets').doc(petId);
   const logs = pet.collection('medication-logs');
@@ -309,8 +325,8 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
         occurrenceAt: Timestamp.fromMillis(occurrence.at),
         date: Timestamp.fromDate(at),
         loggedAt: FieldValue.serverTimestamp(),
-        medication: course.name,
-        dosage: course.dosage,
+        medication: shownMedication ?? course.name,
+        dosage: shownDosage ?? course.dosage,
         notes,
         loggedByUid: actor.uid,
         loggedByName: byName,
@@ -531,6 +547,9 @@ async function undoCreatedRecord(db: Firestore, householdId: string, input: { pe
       const courseRef = pet.collection('medication-courses').doc(courseId);
       const courseSnap = await tx.get(courseRef);
       const course = courseSnap.exists ? readCourse(courseId, courseSnap.data() ?? {}) : null;
+      // A course that exists but can't be read: never remove its dose without the course write
+      // the rules require (final review N4).
+      if (courseSnap.exists && !course) throw new DeviceActionError('changed_since');
       if (course) {
         const doses = await courseDoses(tx, pet.collection('medication-logs'), courseId, record.id);
         const next = pointerAfter(course, doses.records);
@@ -612,6 +631,11 @@ export function setNotePinnedAs(db: Firestore, householdId: string, input: { pet
     // The author with pets.addLogs, or pets.editProfiles (the rules' petNoteUpdate, D-P11).
     if (!mayEditNote(authored(snap), actor)) throw new DeviceActionError('forbidden');
     if (!input.pinned && snap.get('pinned') !== true) return { targetPath: ref.path, result: { status: 'already', petId: pet.id } };
+    // The shared cap on pinned notes (P5's `pinRefusal`): pinning another note past it is refused, as on a phone.
+    if (input.pinned && snap.get('pinned') !== true) {
+      const pinnedNow = await tx.get(pet.collection('notes').where('pinned', '==', true));
+      if (pinRefusal(pinnedNow.size)) return refused('pin-limit');
+    }
     return {
       targetPath: ref.path,
       result: { status: 'saved', petId: pet.id },
@@ -711,6 +735,8 @@ export function deleteLogAs(db: Firestore, householdId: string, input: { petId: 
         const courseRef = pet.collection('medication-courses').doc(courseId);
         const courseSnap = await tx.get(courseRef);
         const course = courseSnap.exists ? readCourse(courseId, courseSnap.data() ?? {}) : null;
+        // A course that exists but can't be read: refused, never deleted without the course write (final review N4).
+        if (courseSnap.exists && !course) return refused('changed');
         if (course) {
           const doses = await courseDoses(tx, pet.collection('medication-logs'), courseId, logId);
           const next = pointerAfter(course, doses.records);

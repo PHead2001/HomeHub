@@ -441,3 +441,10 @@ export const deviceRefusalResponse = (
       return { kind: 'message', message: "Couldn't save. Try again." };
   }
 };
+
+/**
+ * Said at once when the person chosen for a PIN-level action has no tablet PIN (emulator
+ * evidence D6), instead of a PIN pad that can only refuse; the tablet then offers choosing
+ * someone else.
+ */
+export const noTabletPinMessage = (name: string): string => `${name.trim() || 'This person'} has no tablet PIN. An adult can set one in Household > Members.`;

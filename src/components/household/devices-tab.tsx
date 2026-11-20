@@ -246,7 +246,8 @@ export function DevicesTab({ householdId }: { householdId: string }) {
 
   const repair = async (device: DeviceRow) => {
     const created = await run('Could not create a re-pair code', idToken => createDeviceRepairCodeAction({ idToken, householdId, deviceId: device.id }));
-    if (created) setShownCode({ ...created, name: device.settings.name });
+    // A tablet still signed in uses the code through its protected exit (D8): the dialog says how.
+    if (created) setShownCode({ ...created, name: device.settings.name, stillPaired: device.status === 'active' });
   };
 
   const remove = (device: DeviceRow) => setConfirm({

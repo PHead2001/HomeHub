@@ -178,6 +178,19 @@ export function formatPortion(amount: number, unit?: string | null): string {
 /* Dates                                                                      */
 /* ------------------------------------------------------------------------- */
 
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * A dated record's calendar date in the household's zone ("November 19, 2026"):
+ * the day the person picked in the form (a note's or weight's household day),
+ * whatever zone this device is in. Never the device zone, which can show the
+ * next or previous day.
+ */
+export function householdDateLabel(date: Date, timeZone: string | null | undefined): string {
+  const [year, month, day] = localDay(date, householdDayZone(timeZone)).split('-').map(Number);
+  return `${MONTH_NAMES[month - 1]} ${day}, ${year}`;
+}
+
 /** Firestore Timestamp, Date, ISO string or millis → Date (null when unreadable). */
 export function toDate(value: unknown): Date | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;

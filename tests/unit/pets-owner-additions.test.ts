@@ -18,6 +18,7 @@ import {
   newRecordOpId,
   noteCreateFields,
   noteDate,
+  pinRefusal,
   pinnedNotes,
   readNote,
   recordDocId,
@@ -36,6 +37,9 @@ import {
   validateWeightDraft,
   weightHistory,
   weightTrend,
+  trendEntries,
+  trendWindowStart,
+  WEIGHT_TREND_POINTS,
   type WeightEntry,
 } from '../../src/lib/pets/weights';
 import {
@@ -47,13 +51,14 @@ import {
   newPetId,
   otherPetNames,
   ownedPhotoPath,
+  petDeletedMessage,
   storagePathOfUrl,
   telHref,
   validateVet,
   vetFields,
 } from '../../src/lib/pets/profile';
 import { newPetData } from '../../src/lib/pets/profile-transaction';
-import { PET_TABS, petTabFromParam, validatePetForm } from '../../src/lib/pets/care';
+import { PET_TABS, householdDateLabel, petTabFromParam, validatePetForm } from '../../src/lib/pets/care';
 import { parseQuickAdd, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { computePetFacts } from '../../src/lib/dashboard/facts';
 import { DEFAULT_MAX_EDGE, planDownscale } from '../../src/lib/images/downscale';
@@ -360,5 +365,142 @@ describe('pet page tabs and ambient work', () => {
     assert.match(read('src/components/pets-client.tsx'), /<PetsGridSkeleton \/>/);
     assert.match(read('src/app/pets/[petId]/loading.tsx'), /PetDetailSkeletonBody/);
     assert.match(read('src/app/pets/[petId]/page.tsx'), /<PetDetailSkeletonBody \/>/);
+  });
+});
+
+describe('Codex P2 follow-ups on P5 (#186)', () => {
+  it('every pin operation is held to the cap: a new pinned note and pinning an entry alike', () => {
+    assert.equal(pinRefusal(0), null);
+    assert.equal(pinRefusal(PINNED_NOTES_MAX - 1), null);
+    assert.match(String(pinRefusal(PINNED_NOTES_MAX)), /Up to 12 pinned notes/);
+    assert.match(String(pinRefusal(null)), /still loading/, 'an unknown count never lets a pin past the cap');
+    assert.equal(validateNoteDraft({ text: 'Microchip 123', tag: '', pinned: true, day: '' }, '2026-11-10', PINNED_NOTES_MAX).pinned, pinRefusal(PINNED_NOTES_MAX));
+    const tab = read('src/components/pets/notes-tab.tsx');
+    const pinChange = tab.slice(tab.indexOf('const pinChange'), tab.indexOf('const remove'));
+    assert.match(pinChange, /pinRefusal\(/, 'pinning an existing entry checks the cap');
+  });
+
+  it('the pinned read is complete: ordered by pinnedAt (newest pin first) and paged, never cut', () => {
+    const api = read('src/components/pets/records-api.ts');
+    const hook = api.slice(api.indexOf('export function usePinnedNotes'), api.indexOf('export function useBehaviourEntries'));
+    assert.match(hook, /orderBy\('pinnedAt', 'desc'\)/);
+    assert.doesNotMatch(hook, /hasMore: false/, 'more pinned notes than a page report hasMore');
+    assert.match(read('src/components/pets/notes-tab.tsx'), /what="pinned notes"/, 'the Notes tab can load the rest');
+    // The rules keep pinnedAt on exactly the pinned notes, which is what makes the order-by query complete.
+    const rules = read('firestore.rules');
+    assert.match(rules, /data\.pinned \? data\.get\('pinnedAt', null\) == request\.time : !\('pinnedAt' in data\)/);
+    assert.match(rules, /after\.pinned \? after\.get\('pinnedAt', null\) == request\.time : !\('pinnedAt' in after\)/);
+  });
+
+  it('dated records show the household day, whatever the device zone', () => {
+    // 23:30 on Nov 19 in Los Angeles is Nov 20 in UTC.
+    const lateEvening = new Date('2026-11-20T07:30:00Z');
+    assert.equal(householdDateLabel(lateEvening, 'America/Los_Angeles'), 'November 19, 2026');
+    assert.equal(householdDateLabel(lateEvening, 'UTC'), 'November 20, 2026');
+    assert.equal(householdDateLabel(lateEvening, 'Asia/Tokyo'), 'November 20, 2026');
+    // An earlier day's entry is stored at household noon (noteDate) and reads as that day.
+    const earlier = noteDate({ pinned: false, day: '2026-03-08' }, new Date('2026-03-10T12:00:00Z'), 'America/Los_Angeles');
+    assert.equal(householdDateLabel(earlier, 'America/Los_Angeles'), 'March 8, 2026', 'across the spring DST change');
+    assert.equal(householdDateLabel(new Date('2026-11-01T06:30:00Z'), 'America/Chicago'), 'November 1, 2026', 'just after midnight on the fall-back day');
+    assert.equal(householdDateLabel(new Date('2026-11-20T05:30:00Z'), null), 'November 19, 2026', 'no zone: the server default (Chicago)');
+    for (const path of ['src/components/pets/notes-tab.tsx', 'src/components/pets/weight-card.tsx']) {
+      const source = read(path);
+      assert.doesNotMatch(source, /format\([^)]*'PPP'\)/, `${path} formats no date in the device zone`);
+      assert.match(source, /householdDateLabel\([^)]*timeZone\)/, path);
+    }
+  });
+
+  it('a delete the server could not finish says the rest clears on its own, never asks for a retry', () => {
+    assert.equal(petDeletedMessage('Rex', 'deleted'), 'Rex and everything logged for them have been removed.');
+    assert.equal(petDeletedMessage('Rex', 'already'), 'Rex and everything logged for them have been removed.');
+    assert.match(petDeletedMessage('Rex', 'finishing'), /Rex has been removed\. Their history and photos finish clearing on their own within the hour\./);
+    const upkeep = read('functions/src/index.ts');
+    assert.match(upkeep, /resumePetDeletions\(/, 'the hourly upkeep resumes tombstones');
+  });
+});
+
+describe('Notes and weight icon buttons meet the touch target rule (D-2)', () => {
+  const button = read('src/components/ui/button.tsx');
+  it('the shared icon size grows to 48 px on coarse pointers and has a 44 px hit area on fine pointers', () => {
+    assert.match(button, /icon: "touch-target h-10 w-10"/);
+    assert.match(button, /"hit-slop relative /);
+    const css = read('src/app/globals.css');
+    assert.match(css, /--target-min: 2\.75rem;/, '44 px floor');
+    assert.match(css, /@media \(pointer: coarse\) \{\s*:root \{\s*--target-min: 3rem;/, '48 px on touch');
+    assert.match(css, /\.touch-target \{\s*min-width: var\(--target-min\);\s*min-height: var\(--target-min\);/);
+  });
+
+  for (const path of ['src/components/pets/notes-tab.tsx', 'src/components/pets/weight-card.tsx']) {
+    it(`${path}: icon buttons keep the shared size (never shrunk below 40 px)`, () => {
+      const source = read(path);
+      const icons = source.match(/<Button[^>]*size="icon"[^>]*>/g) ?? [];
+      assert.ok(icons.length > 0);
+      for (const tag of icons) {
+        assert.doesNotMatch(tag, /\b(h|w|size)-(\d|1[01]|\[)/, `no h-/w-/size- override: ${tag}`);
+      }
+    });
+  }
+
+  it('neighbouring note actions are 40 px with a 4 px gap, so 44 px hit areas never overlap, and wrap under the text when narrow', () => {
+    const tab = read('src/components/pets/notes-tab.tsx');
+    assert.match(tab, /className="ml-auto flex flex-shrink-0 items-center gap-1" data-testid="note-actions"/);
+    // 40 + 4 = 44: centres of neighbours are at least --target-min apart on a fine pointer;
+    // on touch each grows to 48 and the 4 px gap stays.
+    assert.equal((tab.match(/flex flex-wrap items-start justify-between gap-x-3 gap-y-1/g) ?? []).length, 2, 'pinned and behaviour rows wrap');
+    assert.equal((tab.match(/min-w-0 flex-1 basis-48/g) ?? []).length, 2, 'the text keeps at least 12rem before the actions wrap (no sideways scroll at 390 px)');
+  });
+});
+
+describe('the weight trend reads its own window, never the paged history (Codex P2 on #186)', () => {
+  const weigh = (id: string, value: number, iso: string): WeightEntry =>
+    readWeight(id, { value, unit: 'kg', date: new Date(iso), loggedAt: new Date(iso), loggedByUid: 'sam' });
+  // What the two bounded queries return: the newest WEIGHT_TREND_POINTS, and the earliest from the window start on.
+  const trendQueries = (all: WeightEntry[]) => {
+    const newestFirst = weightHistory(all);
+    const recent = newestFirst.slice(0, WEIGHT_TREND_POINTS);
+    const since = trendWindowStart(recent[0].date!).getTime();
+    const baseline = newestFirst.filter((entry) => entry.date!.getTime() >= since).slice(-1);
+    return trendEntries(recent, baseline);
+  };
+
+  it('Codex repro: 12 daily weighings give one trend, whatever page of history is loaded', () => {
+    // Nov 8 .. Nov 19: 4 kg, then up to 7 kg by Nov 10, then down to 6 kg.
+    const values = [4, 5, 7, 7, 7, 7, 7, 7, 7, 6.5, 6.2, 6];
+    const all = values.map((value, index) => weigh(`w${index}`, value, `2026-11-${String(8 + index).padStart(2, '0')}T12:00:00Z`));
+    const firstPage = weightHistory(all).slice(0, 10);
+    // The old bug: the paged first page has no Nov 8 baseline.
+    assert.equal(weightTrend(firstPage, 'kg', { timeZone: TZ })!.summary, 'Down 1 kg since Nov 10');
+    const trend = weightTrend(trendQueries(all), 'kg', { timeZone: TZ })!;
+    assert.equal(trend.summary, 'Up 2 kg since Nov 8');
+    assert.equal(trend.summary, weightTrend(all, 'kg', { timeZone: TZ })!.summary, 'the same as with every entry loaded');
+  });
+
+  it('a baseline beyond the newest points is still found, bounded to 13 documents, in either unit', () => {
+    // 40 weighings, every 3 days over 120 days: the 90-day baseline is far past the newest 12.
+    const start = Date.UTC(2026, 6, 22, 12);
+    const all = Array.from({ length: 40 }, (_, index) => weigh(`w${index}`, 10 + index * 0.1, new Date(start + index * 3 * 86_400_000).toISOString()));
+    const inputs = trendQueries(all);
+    assert.ok(inputs.length <= WEIGHT_TREND_POINTS + 1);
+    for (const unit of ['kg', 'lb'] as const) {
+      const full = weightTrend(all, unit, { timeZone: TZ })!;
+      const windowed = weightTrend(inputs, unit, { timeZone: TZ })!;
+      assert.equal(windowed.summary, full.summary, unit);
+      assert.deepEqual(windowed.series, full.series, `${unit}: the sparkline too`);
+    }
+    assert.equal(trendWindowStart(new Date('2026-11-19T12:00:00Z')).toISOString(), '2026-08-21T12:00:00.000Z');
+    // Fewer weighings than the window holds, or one: unchanged.
+    assert.equal(weightTrend(trendQueries(all.slice(0, 1)), 'kg')!.summary, 'First weighing');
+    assert.deepEqual(trendEntries([all[0]], [all[0]]).map((entry) => entry.id), ['w0'], 'each entry once');
+  });
+
+  it('the card takes the trend from useWeightTrend (two bounded queries), not from the paged list', () => {
+    const card = read('src/components/pets/weight-card.tsx');
+    assert.doesNotMatch(card, /weightTrend\(/, 'no trend from weights.items');
+    assert.match(card, /useWeightTrend\(householdId, pet\.id, unit, timeZone\)/);
+    const api = read('src/components/pets/records-api.ts');
+    const hook = api.slice(api.indexOf('export function useWeightTrend'));
+    assert.match(hook, /orderBy\('date', 'desc'\), limitTo\(WEIGHT_TREND_POINTS\)/);
+    assert.match(hook, /where\('date', '>=', new Date\(since\)\), orderBy\('date', 'asc'\), limitTo\(1\)/);
+    assert.match(hook, /loading && kept\?\.signature === signature/, 'the last settled trend stays while a window reloads');
   });
 });

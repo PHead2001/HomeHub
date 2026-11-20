@@ -26,6 +26,11 @@ export type BoardStatus = {
   detail: string | null;
   /** The overdue medication, when the band is red for it. */
   medication: string | null;
+  /**
+   * The medication read failed: the card says so, and a "Fed" band is not green
+   * (it would imply no dose is due when that is unknown).
+   */
+  medicationUnavailable: boolean;
 };
 
 export type BoardInput = {
@@ -42,11 +47,12 @@ export type BoardInput = {
 /** The band and lines of one pet on the board, from the shared slot status (P2) and medication attention (P3). */
 export function boardStatus(input: BoardInput): BoardStatus {
   const medication = input.medicationFailed ? null : medicationAttention(input.dues);
+  const medicationUnavailable = input.medicationFailed;
   if (input.feedingsLoading) {
-    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Checking', line: 'Checking feedings…', detail: null, medication };
+    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Checking', line: 'Checking feedings…', detail: null, medication, medicationUnavailable };
   }
   if (input.feedingsFailed || !input.meal || !input.status) {
-    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Unavailable', line: 'Feeding status unavailable', detail: null, medication };
+    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Unavailable', line: 'Feeding status unavailable', detail: null, medication, medicationUnavailable };
   }
   const { meal, status } = input;
   let tone: BoardTone;
@@ -77,8 +83,10 @@ export function boardStatus(input: BoardInput): BoardStatus {
     tone = done ? 'fed' : 'neutral';
     label = done ? 'Fed' : status.fedToday > 0 ? 'Fed today' : status.nonDaily ? 'No daily plan' : 'Not fed today';
   }
-  if (medication) return { tone: 'overdue', label: 'Medication overdue', line, detail, medication };
-  return { tone, label, line, detail, medication: null };
+  if (medication) return { tone: 'overdue', label: 'Medication overdue', line, detail, medication, medicationUnavailable };
+  // An unknown medication state never shows as an all-clear green band.
+  if (medicationUnavailable && tone === 'fed') return { tone: 'unknown', label: 'Fed · medication unknown', line, detail, medication: null, medicationUnavailable };
+  return { tone, label, line, detail, medication: null, medicationUnavailable };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -114,6 +122,28 @@ export function boardGrid(count: number): { columns: number; rows: number; scrol
   if (count === 4) return { columns: 2, rows: 2, scroll: false };
   if (count <= BOARD_FIT) return { columns: 3, rows: 2, scroll: false };
   return { columns: 3, rows: Math.ceil(count / 3), scroll: true };
+}
+
+/**
+ * The smallest board row that still shows a card's band, its status (two lines
+ * of the 24 px line, with a little room for its detail line) and Feed (PE-9e): below it the board keeps this height and
+ * scrolls inside itself instead of squeezing the status out of the card.
+ */
+export const BOARD_ROW_MIN = 216;
+
+/**
+ * The board's rows for a measured height: they share the height while each row
+ * is at least `BOARD_ROW_MIN`; past six pets, or when the space above the board
+ * (the attention strip, the hold caption) leaves less, rows keep their height
+ * (the six-up height, never under the minimum) and the board scrolls inside
+ * itself. The page never scrolls (PE-9e, D-P14).
+ */
+export function boardRowPlan(count: number, height: number | null, gap = 16): { columns: number; rows: number; scroll: boolean; rowHeight: number | null } {
+  const grid = boardGrid(count);
+  if (height === null) return { ...grid, rowHeight: null };
+  if (grid.scroll) return { ...grid, rowHeight: Math.max(BOARD_ROW_MIN, Math.floor((height - gap) / 2)) };
+  const fit = Math.floor((height - gap * (grid.rows - 1)) / grid.rows);
+  return fit < BOARD_ROW_MIN ? { ...grid, scroll: true, rowHeight: BOARD_ROW_MIN } : { ...grid, rowHeight: null };
 }
 
 /* ------------------------------------------------------------------------- */

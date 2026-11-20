@@ -2,7 +2,7 @@
 
 import { DeviceError, recordDeviceHeartbeat } from '@/lib/server/device-management';
 import { DeviceActionError } from '@/lib/server/device-errors';
-import { endPinSession, verifyDevicePin } from '@/lib/server/pins';
+import { devicePinStatus, endPinSession, verifyDevicePin } from '@/lib/server/pins';
 import { updateDeviceComfort } from '@/lib/server/device-comfort';
 import { exitTablet, updateDeviceSettingsFromTablet, type TabletExit } from '@/lib/server/device-tablet';
 import type { DeviceRefusal } from '@/lib/devices/action-policy';
@@ -114,5 +114,14 @@ export async function exitTabletAction(input: { idToken: string; householdId: st
     return { ok: true, data: await exitTablet(input, { clientAddress: await requestAddress() }) };
   } catch (error) {
     return refusal(error, 'Tablet exit');
+  }
+}
+
+/** Whether the chosen person has a tablet PIN (D6): asked before the PIN pad opens. */
+export async function devicePinStatusAction(input: { idToken: string; householdId: string; actorUid: string }): Promise<TabletActionResult<{ hasPin: boolean; locked: boolean }>> {
+  try {
+    return { ok: true, data: await devicePinStatus(input, { clientAddress: await requestAddress() }) };
+  } catch (error) {
+    return refusal(error, 'PIN status');
   }
 }

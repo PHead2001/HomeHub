@@ -22,6 +22,7 @@ import { feedPet, undoFeed, type FeedPetInput, type FeedPetResult } from '@/lib/
 import { TabletContext } from '@/components/devices/tablet-context';
 import { backdatedCapability } from '@/lib/devices/action-policy';
 import { PET_PERMISSIONS } from '@/lib/permissions';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 /** A feeding request as an entry point describes it; who, where and the zone come from the session. */
 export type FeedRequest = Pick<FeedPetInput, 'portion' | 'portionFromSlot' | 'food' | 'comments' | 'backdatedAt' | 'known'>;
@@ -171,7 +172,7 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
     retryRef.current = (attempt) => void execute(attempt);
   }, [execute]);
 
-  const runOnTablet = React.useCallback(async (request: FeedRequest): Promise<FeedPetResult | null> => {
+  const runOnTablet = React.useCallback(async (request: FeedRequest, opId?: string): Promise<FeedPetResult | null> => {
     if (!tablet || !allowed || savingRef.current) return null;
     savingRef.current = true;
     setSaving(true);
@@ -179,6 +180,8 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
       const capability = request.backdatedAt ? backdatedCapability('feed', request.backdatedAt, new Date()) : 'pets.feed';
       const outcome = await tablet.runAction({
         capability,
+        // A form's opId (the earlier-time dialog keeps one across its retries); else the runtime makes one.
+        ...(opId ? { opId } : {}),
         // A chosen earlier time names it ("Fed Maple at 7:30 am"), household zone.
         label: request.backdatedAt ? `Fed ${petName} at ${formatClock(request.backdatedAt, tablet.household?.timeZone)}` : `Fed ${petName}`,
         subject: petName,
@@ -208,8 +211,8 @@ export function useFeedAction(petId: string, petName: string, callbacks: Callbac
 
   // A new press: a new operation id (on a tablet, the device runtime makes it).
   // A caller that keeps its own press id (the earlier-time dialog) passes it; on a tablet the runtime makes it.
-  const run = React.useCallback((request: FeedRequest, options?: { opId?: string }) => (options?.opId && !tablet
-    ? execute({ request, opId: options.opId, confirm: null })
+  const run = React.useCallback((request: FeedRequest, options?: { opId?: string }) => (options?.opId
+    ? (tablet ? runOnTablet(request, options.opId) : execute({ request, opId: options.opId, confirm: null }))
     : tablet ? runOnTablet(request) : execute({ request, opId: newFeedOpId(), confirm: null })), [execute, runOnTablet, tablet]);
   const acceptPrompt = React.useCallback(async () => {
     if (!asked) return null;
@@ -233,6 +236,9 @@ export function FeedAgainDialog({
   petName: string;
   returnFocus?: () => void;
 }) {
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(action.prompt !== null, action.cancelPrompt);
+
   return (
     <AlertDialog open={action.prompt !== null} onOpenChange={(open) => !open && action.cancelPrompt()}>
       <AlertDialogContent

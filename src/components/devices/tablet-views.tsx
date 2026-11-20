@@ -13,7 +13,7 @@ import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
 import { tabletListener } from '@/lib/devices/tablet-listener';
-import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
+import type { QuerySnapshot } from 'firebase/firestore';
 import { Bell, CalendarDays, Check, CheckSquare, Clock, Hand, HeartPulse, PawPrint, ShoppingCart, UtensilsCrossed, Wrench } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -24,7 +24,8 @@ import type { QuickFeedController } from '@/components/pets/quick-feed-button';
 import { FeedEarlierDialog } from '@/components/pets/feed-earlier-dialog';
 import { FeedPressFill, useFeedPress } from '@/components/pets/feed-press';
 import type { FeedAction } from '@/components/pets/use-feed-action';
-import type { FeedingEntry } from '@/lib/pets/care';
+import { usePetLogs } from '@/components/pets/pet-log-api';
+import type { PetFeedingLog } from '@/lib/pets/types';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { playFeedback } from '@/lib/feedback';
 import { formatPortion } from '@/lib/pets/care';
@@ -39,8 +40,10 @@ import {
   shoppingListsSection,
 } from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
-import { TabletMedicationChips, TabletPetSheet, usePetLive } from './tablet-pet-sheet';
+import { TabletMedicationChips, TabletPetSheet, usePetDocument } from './tablet-pet-sheet';
+import { useTabletSubmit } from './use-tablet-submit';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 // Every section view reads the UNCAPPED section facts (`data.sectionFacts`, SECTION_LIMITS)
 // through the selectors of src/lib/devices/tablet-sections.ts, a list's own live items, or the
@@ -235,14 +238,12 @@ function TabletPetRow({ pet, onCare, onOpen }: { pet: PetState; onCare: (pet: Pe
 function TabletFeedEarlier({ pet, action, onClose }: { pet: PetState; action: FeedAction; onClose: () => void }) {
   const { householdId, household } = useTablet();
   const feed = pet.feed;
-  const profile = usePetLive(householdId, ['pets', pet.id], 'doc', (snapshot) => ((snapshot as DocumentSnapshot).data?.() ?? null) as Record<string, unknown> | null);
-  const logs = usePetLive(
-    householdId,
-    ['pets', pet.id, 'feeding-logs'],
-    'collection',
-    (snapshot) => ('docs' in snapshot ? snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data({ serverTimestamps: 'estimate' }) }) as FeedingEntry) : []),
-    { field: 'date', max: 40 },
-  );
+  // The pet's meal times (its document, through the tablet's listener) and its recent feedings
+  // (the shared Pets reader the pet sheet uses, both date shapes).
+  const profile = usePetDocument(householdId, pet.id);
+  const logs = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', 40);
+  // One pending save at a time (the tap guard), one opId across its retries until it is applied.
+  const form = useTabletSubmit();
   if (!feed) return null;
   return (
     <FeedEarlierDialog
@@ -251,17 +252,25 @@ function TabletFeedEarlier({ pet, action, onClose }: { pet: PetState; action: Fe
       petName={pet.name}
       timeZone={household?.timeZone ?? null}
       pet={profile && !profile.failed && profile.value ? (profile.value as Parameters<typeof FeedEarlierDialog>[0]['pet']) : null}
-      logs={logs && !logs.failed ? logs.value : null}
+      logs={logs.loading || logs.error ? null : logs.logs}
       fallbackPortion={{ amount: feed.amount, unit: feed.unit }}
       lastFed={pet.headline}
-      saving={action.saving}
-      onSave={async (choice) => (await action.run({
-        portion: choice.portion,
-        portionFromSlot: !choice.backdatedAt,
-        food: feed.foodType,
-        known: feed.known,
-        ...(choice.backdatedAt ? { backdatedAt: choice.backdatedAt } : {}),
-      })) !== null}
+      saving={action.saving || form.busy}
+      onSave={async (choice) => {
+        let saved = false;
+        await form.submit(async (opId) => {
+          const result = await action.run({
+            portion: choice.portion,
+            portionFromSlot: !choice.backdatedAt,
+            food: feed.foodType,
+            known: feed.known,
+            ...(choice.backdatedAt ? { backdatedAt: choice.backdatedAt } : {}),
+          }, { opId });
+          saved = result !== null;
+          return { ok: saved };
+        });
+        return saved;
+      }}
     />
   );
 }
@@ -271,19 +280,22 @@ function TabletCareDialog({ pet, onClose }: { pet: PetState; onClose: () => void
   const { runAction } = useTablet();
   const [activity, setActivity] = useState('');
   const [notes, setNotes] = useState('');
-  const [saving, setSaving] = useState(false);
+  // One entry per submit (a ref, not only state, holds a double tap), one opId across retries.
+  const form = useTabletSubmit();
+  const saving = form.busy;
   useUnsavedInput(activity.trim().length > 0 || notes.trim().length > 0);
   const valid = activity.trim().length >= 3 && activity.trim().length <= 80 && notes.length <= 2000;
   const save = async () => {
-    if (!valid || saving) return;
-    setSaving(true);
-    try {
-      const outcome = await runAction({ capability: 'pets.care.add', label: `${pet.name}: ${activity.trim()}`, subject: pet.name, intent: { petId: pet.id, activity: activity.trim(), notes: notes.trim() } });
+    if (!valid) return;
+    await form.submit(async (opId) => {
+      const outcome = await runAction({ capability: 'pets.care.add', opId, label: `${pet.name}: ${activity.trim()}`, subject: pet.name, intent: { petId: pet.id, activity: activity.trim(), notes: notes.trim() } });
       if (outcome.ok) onClose();
-    } finally {
-      setSaving(false);
-    }
+      return outcome;
+    });
   };
+  // Android Back closes this first (emulator evidence D4).
+  useBackCloses(true, onClose);
+
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="max-w-xl" data-testid="tablet-care-dialog">
@@ -320,12 +332,19 @@ function PetsView() {
   const linkKey = linkedPet ? `${linkedPet}|${linkedDose ?? ''}` : null;
   const [handledLink, setHandledLink] = useState<string | null>(null);
   // Handled once the pets have loaded (state adjusted during render); a link that left the address can open again.
+  // The sheet opens only once the link has left the address (D4): its Back entry then sits on
+  // top of /pets, so Back closes it instead of returning to the link and opening it again.
+  const [pending, setPending] = useState<{ id: string; name: string; dose?: string | null } | null>(null);
   if (linkKey && linkKey !== handledLink && pets) {
     setHandledLink(linkKey);
     const pet = settings.sections.pets ? pets.find((entry) => entry.id === linkedPet) : undefined;
-    if (pet) setOpen({ id: pet.id, name: pet.name, dose: linkedDose });
+    setPending(pet ? { id: pet.id, name: pet.name, dose: linkedDose } : null);
   } else if (!linkKey && handledLink) {
     setHandledLink(null);
+    if (pending) {
+      setOpen(pending);
+      setPending(null);
+    }
   }
   useEffect(() => {
     if (linkKey && handledLink === linkKey) router.replace('/pets');

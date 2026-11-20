@@ -26,6 +26,7 @@ import {
 } from '../../src/lib/server/device-pets';
 import { giveDoseFromTabletAction } from '../../src/app/pets/device-actions';
 import { createDeviceRepairCode, redeemDeviceCode } from '../../src/lib/server/device-management';
+import { resumePetDeletions } from '../../src/lib/server/pet-delete';
 import { setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
 import { UNDO_PROVEN } from '../../src/lib/devices/action-policy';
 import { runGiveDose, runUndoDose } from '../../src/lib/pets/medication-transaction';
@@ -55,7 +56,7 @@ const member: Person = { uid: 'dr-member', email: 'dr.member@example.test', disp
 const child: Person = { uid: 'dr-child', email: 'dr.child@example.test', displayName: 'Cleo', role: 'child' };
 const KID = 'kid_DevPetsRecKid0000000';
 const created = new Set<string>();
-const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin'] as const;
+const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin', 'shown'] as const;
 const tablets = {} as Record<(typeof NAMES)[number], Tablet>;
 let ownerDb: ClientFirestore;
 let memberDb: ClientFirestore;
@@ -337,6 +338,27 @@ describe('pets.dose.give: generation, the queued path, "Already given?", levels 
     assert.equal(log.clockSource, 'device');
     assert.equal((await doses('dose-offline').get()).size, 2);
     assert.deepEqual((await course('dose-offline').get()).get('lastDose'), before, 'a queued dose never moves the pointer');
+  });
+
+  test('Codex #190: a queued dose records the medication and dosage Give dose showed, even after the course was edited', async () => {
+    await seedDosePet('dose-shown');
+    const key = await prefill('dose-shown');
+    // The course's dosage changes before the tablet reconnects.
+    await course('dose-shown').update({ dosage: '2 tablets', name: 'Apoquel XL' });
+    const op = opId();
+    const sent = await giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, op, 'dose-shown', key, { medication: 'Apoquel', dosage: '1 tablet' }), ...queued(tablets.shown, 60_000) });
+    assert.equal(sent.result.status, 'saved');
+    const log = (await doses('dose-shown').doc(op).get()).data()!;
+    assert.equal(log.medication, 'Apoquel');
+    assert.equal(log.dosage, '1 tablet');
+    // An older queued entry without them: the course's values.
+    const legacy = opId();
+    await giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, legacy, 'dose-shown', key), ...queued(tablets.shown, 30_000) });
+    assert.equal((await doses('dose-shown').doc(legacy).get()).get('dosage'), '2 tablets');
+    // Strings within the rules' bounds only; a name is never empty.
+    for (const bad of [{ dosage: 'x'.repeat(201) }, { medication: '' }, { medication: 'y'.repeat(201) }, { dosage: 3 }] as Partial<DeviceDoseRequest>[]) {
+      await refused(giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, opId(), 'dose-shown', key, { medication: 'Apoquel', dosage: '1 tablet', ...bad }), ...queued(tablets.shown, 20_000) }), 'invalid_input');
+    }
   });
 
   test('"Already given?" is bound to the dose it named; a dose on another tablet meanwhile asks again naming it', async () => {
@@ -753,6 +775,13 @@ describe('the server writes exactly what the rules accept from the person (repla
       await giveDoseFromTablet({ ...doseRequest(tablets.parity, member.uid, op, 'parity-dose', await prefill('parity-dose')), ...queued(tablets.parity, 60_000) });
       return op;
     });
+    // A queued dose with the medication and dosage Give dose showed (Codex #190): the rules accept it from the member.
+    await doseParity('parity-dose', async () => {
+      const op = opId();
+      await giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, op, 'parity-dose', await prefill('parity-dose'), { medication: 'Apoquel (old name)', dosage: 'half a tablet' }), ...queued(tablets.shown, 60_000) });
+      assert.equal((await doses('parity-dose').doc(op).get()).get('dosage'), 'half a tablet');
+      return op;
+    });
   });
 
   test("the dose Undo: the same delete and pointer the person may write (author within 10 minutes)", async () => {
@@ -1148,5 +1177,49 @@ describe('P3 rounds 5-7 on the tablet: dose revision, the confirm binding, the o
     assert.equal((await course('edit-conflict').get()).get('dosage'), 'Half a tablet');
     const ok = await saveCourseFromTablet({ ...pinBase(tablets.line, member.uid, memberPin), petId: 'edit-conflict', courseId: 'course-a', create: false, values, base: { ...opened, dosage: 'Half a tablet' } });
     assert.equal(ok.status, 'saved');
+  });
+});
+
+describe('P5 final on the tablet: the pinned-note cap and the shared pet-delete cascade', () => {
+  test('pinning a note past the shared cap (PINNED_NOTES_MAX) is refused at PIN level, as on a phone', async () => {
+    await seedPet('pin-cap');
+    for (let index = 0; index < 12; index += 1) {
+      await notes('pin-cap').doc(`pinned-${index}`).set({ text: `Fact ${index}`, pinned: true, pinnedAt: Timestamp.now(), date: Timestamp.now(), loggedAt: Timestamp.now(), loggedByUid: owner.uid, loggedByName: 'Olive' });
+    }
+    const note = opId();
+    await addNote(tablets.pin2, owner.uid, note, 'pin-cap');
+    const ownerPin = await pinOf(tablets.line, owner);
+    const answer = await setNotePinnedFromTablet({ ...pinBase(tablets.line, owner.uid, ownerPin), petId: 'pin-cap', noteId: note, pinned: true });
+    assert.deepEqual(answer, { status: 'refused', reason: 'pin-limit' });
+    assert.equal((await notes('pin-cap').doc(note).get()).get('pinned'), false);
+    // Unpinning one makes room.
+    await notes('pin-cap').doc('pinned-0').update({ pinned: false });
+    assert.equal((await setNotePinnedFromTablet({ ...pinBase(tablets.line, owner.uid, ownerPin), petId: 'pin-cap', noteId: note, pinned: true })).status, 'saved');
+  });
+
+  test("a tablet-started delete that stopped after its barrier is finished by the hourly upkeep's resume", async () => {
+    await seedPet('resume-pet');
+    await notes('resume-pet').doc('left').set({ text: 'Left behind', pinned: false, date: Timestamp.now(), loggedAt: Timestamp.now(), loggedByUid: KID });
+    // What a tablet delete leaves when it stops after step 1: the pet gone, its tombstone (by the kid) and its histories.
+    await house(H).collection('pet-deletions').doc('resume-pet').set({ petId: 'resume-pet', name: 'Pet resume-pet', photoUrl: null, byUid: KID, startedAt: later(-20 * 60_000).toISOString() });
+    await pet('resume-pet').delete();
+    const sweep = await resumePetDeletions(adminDb, null, new Date(), (d) => Timestamp.fromDate(d));
+    assert.ok(sweep.resumed >= 1);
+    assert.equal((await notes('resume-pet').doc('left').get()).exists, false);
+    assert.equal((await house(H).collection('pet-deletions').doc('resume-pet').get()).exists, false);
+  });
+});
+
+describe('final review N4: a dose under a course that exists but cannot be read', () => {
+  test('its Undo and its PIN-level delete refuse instead of removing it without the course write', async () => {
+    await seedDosePet('bad-course');
+    const op = opId();
+    await give(tablets.extra, member.uid, op, 'bad-course');
+    // The course document is malformed (no schedule, no name): readCourse cannot read it.
+    await course('bad-course').set({ garbage: true });
+    await refused(undoDose(tablets.extra, member.uid, op), 'changed_since');
+    const ownerPin = await pinOf(tablets.extra, owner);
+    assert.deepEqual(await deleteLogFromTablet({ ...pinBase(tablets.extra, owner.uid, ownerPin), petId: 'bad-course', kind: 'medication-logs', logId: op }), { status: 'refused', reason: 'changed' });
+    assert.equal((await doses('bad-course').doc(op).get()).exists, true);
   });
 });

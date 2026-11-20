@@ -397,7 +397,7 @@ describe('pets components use tokens only', () => {
   it('every live-log consumer handles load errors separately from empty results', () => {
     // A failed subscription returns { logs: [], error }; rendering it as an empty
     // history would read as "not fed" or "nothing due".
-    const files = ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx', 'src/components/pets/medication-api.ts'];
+    const files = ['src/components/feeding-log.tsx', 'src/components/medication-log.tsx', 'src/components/care-log.tsx', 'src/components/pets/medication-api.ts', 'src/components/devices/tablet-pet-sheet.tsx'];
     // The household care store (P4, PE-21a) runs the hooks for every card and publishes their
     // state unchanged; its readers handle the errors.
     const store = readFileSync(resolve(process.cwd(), 'src/components/pets/care-store.tsx'), 'utf8');

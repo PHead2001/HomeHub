@@ -32,6 +32,7 @@ import type { planForDay } from '@/lib/pets/meal-plan';
 import type { PortionUnit } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { useNow } from './use-now';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 /** What the dialog asks to log: the chosen time (`backdatedAt` when more than a minute ago) and the portion it counts for. */
 export type FeedEarlierChoice = {
@@ -105,6 +106,12 @@ export function FeedEarlierDialog({
       setSubmitted(false);
     }
   }
+
+  // Android Back closes it first, as the other Pets dialogs (refused while a save is in flight).
+  useBackCloses(open, () => {
+    if (saving) return false;
+    onOpenChange(false);
+  });
 
   const at = chip ? chip.at : time ? earlierInstant(day, time, now, timeZone) : null;
   const check = at ? checkEarlierTime(at, now, timeZone) : null;

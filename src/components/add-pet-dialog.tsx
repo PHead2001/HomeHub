@@ -25,6 +25,7 @@ import {
 } from "./pets/pet-form";
 import { usePetPhotoDraft } from "./pets/pet-photo-draft";
 import { newPetId } from "@/lib/pets/profile";
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 interface AddPetDialogProps {
   open: boolean;
@@ -95,6 +96,9 @@ export function AddPetDialog({ open, onOpenChange, existingNames, onAddPet }: Ad
       setSaving(false);
     }
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(open, () => { if (saving) return false; onOpenChange(false); reset(); return true; });
 
   return (
     <Dialog

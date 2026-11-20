@@ -13,14 +13,14 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { copyText } from '@/lib/utils';
-import { DEVICE_CODE_TTL_MINUTES, deviceSetupUrl } from '@/lib/devices/device-codes';
+import { DEVICE_CODE_TTL_MINUTES, deviceCodeInstructions, deviceSetupUrl } from '@/lib/devices/device-codes';
 import { relativeTime } from '@/components/household/household-model';
 
 // The code an owner or admin just created, as a QR (the setup link, code in the URL
 // fragment) and as text, with live status from its `deviceCodes/{code}` document: the
 // creator sees at once when a tablet used it (S15), and who it says it is.
 
-export type ShownDeviceCode = { code: string; expiresAt: string; kind: 'pair' | 'repair'; name: string };
+export type ShownDeviceCode = { code: string; expiresAt: string; kind: 'pair' | 'repair'; name: string; /** A re-pair code for a tablet that is still signed in (D8). */ stillPaired?: boolean };
 
 type CodeStatus =
   | { state: 'waiting' }
@@ -85,7 +85,7 @@ export function DeviceCodeDialog({ shown, onClose }: { shown: ShownDeviceCode | 
         <DialogHeader>
           <DialogTitle className="font-headline">{shown?.kind === 'repair' ? `Re-pair ${shown.name}` : `Set up ${shown?.name ?? 'the tablet'}`}</DialogTitle>
           <DialogDescription>
-            On the tablet, open HomeHub and choose Set up a wall tablet. Scan this QR code or type the code. It works once and lasts {DEVICE_CODE_TTL_MINUTES} minutes.
+            {deviceCodeInstructions(shown?.kind ?? 'pair', Boolean(shown?.stillPaired), DEVICE_CODE_TTL_MINUTES)}
           </DialogDescription>
         </DialogHeader>
         {shown && (

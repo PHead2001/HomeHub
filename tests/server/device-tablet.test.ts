@@ -4,13 +4,13 @@ import { adminDb } from '../../src/lib/server/firebase-admin';
 import { DeviceActionError } from '../../src/lib/server/device-gate';
 import { exitTablet, updateDeviceSettingsFromTablet } from '../../src/lib/server/device-tablet';
 import { createDeviceRepairCode, redeemDeviceCode, recordDeviceHeartbeat } from '../../src/lib/server/device-management';
-import { setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
+import { devicePinStatus, setMyPin, verifyDevicePin } from '../../src/lib/server/pins';
 import { QuietHoursError, updateQuietHours } from '../../src/lib/server/quiet-hours';
 import { transferOwnership } from '../../src/lib/server/household-membership';
 import { exitTabletAction, updateDeviceSettingsFromTabletAction } from '../../src/app/devices/actions';
 import { updateQuietHoursAction } from '../../src/app/household/quiet-hours-actions';
 import { deleteDeviceUsers, nonce, personToken, seedHousehold, signIn, userState, type Person } from './device-test-helpers';
-import { clock, house, pairTablet, type Tablet } from './device-actor-helpers';
+import { clock, house, pairTablet, seedKid, type Tablet } from './device-actor-helpers';
 
 
 /** A clock fixed at `at` (the gate reads it at authorization and again at every precheck). */
@@ -169,9 +169,10 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     await signIn(again.customToken);
   });
 
-  test('"Use a different code": unpaired with its own reason; the tablet\'s unused re-pair code is cancelled', async () => {
+  test('"Use a different code": unpaired with its own reason; the owner\'s re-pair code for this tablet stays usable (D8), the old credential is refused', async () => {
     const tablet = await pairTablet(H, owner, created, 'New code');
     const repair = await createDeviceRepairCode(owner, { householdId: H, deviceId: tablet.deviceId });
+    const before = await record(tablet.deviceId);
     // The real clock: the code's 15 minutes count from when Firestore stored it.
     const at = new Date();
     const session = (await verifyDevicePin({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pin: PIN.owner }, { now: at })).pinSessionId;
@@ -179,7 +180,48 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     const stored = await record(tablet.deviceId);
     assert.equal(stored.status, 'unpaired');
     assert.equal(stored.endedReason, 'new-code');
-    assert.equal((await adminDb.collection('deviceCodes').doc(repair.code).get()).get('revokedReason'), 'superseded');
+    assert.equal(stored.generation, before.generation + 1);
+    const code = (await adminDb.collection('deviceCodes').doc(repair.code).get()).data()!;
+    assert.equal(code.revokedAt, undefined, 'not cancelled');
+    assert.equal(code.targetGeneration, stored.generation, 'moved to the new generation');
+    assert.equal(code.carriedFromGeneration, before.generation);
+    // Owners see that a code still works (final review N2): codeKept in Activity, never the code.
+    const exited = (await audits('device.exited')).find(e => e.deviceId === tablet.deviceId)!;
+    assert.equal(exited.details.codeKept, true);
+    assert.equal(JSON.stringify(exited).includes(repair.code), false);
+    const notices = await house(H).collection('notifications').where('sourceId', '==', tablet.deviceId).where('sourceType', '==', 'device-removed').get();
+    assert.ok(notices.size > 0);
+    for (const notice of notices.docs) {
+      assert.match(notice.get('message'), /The re-pair code made for it still works until .+\. Cancel it in Devices if you didn't expect this\./);
+      assert.equal(String(notice.get('message')).includes(repair.code), false);
+    }
+    // The old credential is refused at once; the same code then re-pairs the same record.
+    await assert.rejects(recordDeviceHeartbeat({ idToken: tablet.idToken, householdId: H, appVersion: 'x' }, new Date()));
+    const again = await redeemDeviceCode({ code: repair.code, nonce: nonce() });
+    assert.equal(again.deviceId, tablet.deviceId);
+    const repaired = await record(tablet.deviceId);
+    assert.equal(repaired.status, 'active');
+    assert.equal(repaired.generation, before.generation + 2);
+    assert.equal(repaired.name, 'New code', 'settings kept');
+    await signIn(again.customToken);
+  });
+
+  test('D8 limits: a pair code, and a re-pair code made for an older generation, are still cancelled by the exit; Remove cancels every code', async () => {
+    const tablet = await pairTablet(H, owner, created, 'Limits');
+    const stale = await createDeviceRepairCode(owner, { householdId: H, deviceId: tablet.deviceId });
+    await adminDb.collection('deviceCodes').doc(stale.code).update({ targetGeneration: 0 });
+    const at = new Date();
+    const session = (await verifyDevicePin({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pin: PIN.owner }, { now: at })).pinSessionId;
+    await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'new-code' }, { clock: () => at });
+    assert.equal((await adminDb.collection('deviceCodes').doc(stale.code).get()).get('revokedReason'), 'superseded');
+    const staleExit = (await audits('device.exited')).find(e => e.deviceId === tablet.deviceId)!;
+    assert.equal(staleExit.details.codeKept, undefined, 'nothing kept, nothing claimed');
+    const removed = await pairTablet(H, owner, created, 'Removed');
+    const kept = await createDeviceRepairCode(owner, { householdId: H, deviceId: removed.deviceId });
+    const at2 = new Date();
+    const s2 = (await verifyDevicePin({ idToken: removed.idToken, householdId: H, actorUid: owner.uid, pin: PIN.owner }, { now: at2 })).pinSessionId;
+    await exitTablet({ idToken: removed.idToken, householdId: H, actorUid: owner.uid, pinSessionId: s2, exit: 'remove' }, { clock: () => at2 });
+    assert.equal((await adminDb.collection('deviceCodes').doc(kept.code).get()).get('revokedReason'), 'superseded');
   });
 
   test('every exit needs a fresh owner/admin PIN', async () => {
@@ -280,5 +322,17 @@ describe('household-wide notices carry no email (review 6)', () => {
     } finally {
       await adminDb.recursiveDelete(house(HT));
     }
+  });
+});
+
+describe('D6: whether the chosen person has a tablet PIN, before the pad opens', () => {
+  test('a person with a PIN, a kid profile without one, an ineligible uid, a personal token', async () => {
+    const tablet = await pairTablet(H, owner, created, 'Pin status');
+    const kid = 'kid_PinStatusKid00000000';
+    await seedKid(H, kid, 'Mia');
+    assert.deepEqual(await devicePinStatus({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid }), { hasPin: true, locked: false });
+    assert.deepEqual(await devicePinStatus({ idToken: tablet.idToken, householdId: H, actorUid: kid }), { hasPin: false, locked: false });
+    await refused(devicePinStatus({ idToken: tablet.idToken, householdId: H, actorUid: 'nobody-here' }), 'actor_not_member');
+    await refused(devicePinStatus({ idToken: await personToken(owner), householdId: H, actorUid: owner.uid }), 'not_a_device');
   });
 });

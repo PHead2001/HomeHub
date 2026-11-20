@@ -17,7 +17,9 @@ jobs:
   validate-and-smoke:
     name: Validate and run authenticated smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The smoke list (~290 tests across three projects) plus validation takes 28-45 min
+    # on hosted runners; 45 cut off passing runs on slower machines.
+    timeout-minutes: 60
     env:
       CI: "true"
       NEXT_TELEMETRY_DISABLED: "1"

@@ -6,7 +6,7 @@ import { db } from '@/lib/firebase';
 import { useSettledPetAccess } from './pet-access';
 import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
 import { behaviourEntries, headlineNote, pinnedNotes, PINNED_NOTES_MAX, readNote, type PetNote } from '@/lib/pets/notes';
-import { readWeight, type WeightEntry } from '@/lib/pets/weights';
+import { readWeight, trendEntries, trendWindowStart, weightHistory, weightTrend, WEIGHT_TREND_POINTS, type WeightEntry, type WeightTrend, type WeightUnit } from '@/lib/pets/weights';
 import {
   runCreateNote,
   runCreateWeight,
@@ -111,20 +111,24 @@ function useLiveDocs<T>(scope: string | null, max: number, build: (() => Query) 
 const notesRef = (householdId: string, petId: string) => collection(db, 'households', householdId, 'pets', petId, 'notes');
 const weightsRef = (householdId: string, petId: string) => collection(db, 'households', householdId, 'pets', petId, 'weights');
 
-/** How many pinned notes are read (more than the form allows, so a race past the cap still shows). */
-const PINNED_READ = PINNED_NOTES_MAX * 2;
+/** One page of pinned notes (more than the cap, so a race past it still shows on the first page). */
+export const PINNED_PAGE = PINNED_NOTES_MAX * 2;
 
 /**
- * A pet's pinned notes, live (PE-29b/c): one small query (`pinned == true`,
- * single-field index), sorted newest pin first on the client. The card's
- * headline line and the Notes tab use the same query, which Firestore serves
- * from one listener target.
+ * A pet's pinned notes, live (PE-29b/c), newest pin first: ordered by
+ * `pinnedAt` (single-field index). The rules keep `pinnedAt` on exactly the
+ * pinned notes (stamped on pin, removed on unpin), so this query returns every
+ * pinned note and nothing else, and the newest pin (the card's headline) is
+ * always on the first page. More than a page is paged (`hasMore`, "Load
+ * more"), never silently cut: the behaviour list leaves pinned notes out, so a
+ * dropped one would be in neither list. The card line and the Notes tab's
+ * first page are the same query (one listener target).
  */
-export function usePinnedNotes(householdId: string | null | undefined, petId: string): LiveList<PetNote> & { headline: PetNote | null } {
+export function usePinnedNotes(householdId: string | null | undefined, petId: string, max: number = PINNED_PAGE): LiveList<PetNote> & { headline: PetNote | null } {
   const base = householdId ? `${householdId}/${petId}/pinned` : null;
-  const list = useLiveDocs(base, PINNED_READ, householdId ? () => query(notesRef(householdId, petId), where('pinned', '==', true), limitTo(PINNED_READ)) : null, readNote);
+  const list = useLiveDocs(base, max, householdId ? () => query(notesRef(householdId, petId), orderBy('pinnedAt', 'desc'), limitTo(max)) : null, readNote);
   const items = pinnedNotes(list.items);
-  return { ...list, items, hasMore: false, headline: headlineNote(items) };
+  return { ...list, items, headline: headlineNote(items) };
 }
 
 /** A pet's behaviour entries (unpinned notes), newest first, live, paginated (PE-29d, PE-21h). */
@@ -139,4 +143,39 @@ export function useBehaviourEntries(householdId: string | null | undefined, petI
 export function usePetWeights(householdId: string | null | undefined, petId: string, max: number): LiveList<WeightEntry> {
   const base = householdId ? `${householdId}/${petId}/weights` : null;
   return useLiveDocs(base, max, householdId ? () => query(weightsRef(householdId, petId), orderBy('date', 'desc'), limitTo(max)) : null, readWeight);
+}
+
+export type LiveTrend = { trend: WeightTrend | null; loading: boolean; error: unknown; failure?: LiveFailure };
+
+/**
+ * A pet's weight trend, live (PE-28c), independent of the paged history: the
+ * newest `WEIGHT_TREND_POINTS` weighings (the latest, the one before it and the
+ * sparkline) and the earliest weighing in the 90 days before the latest
+ * (`trendWindowStart`, one document), so the baseline and direction never change
+ * when "Load more" grows the history. Both queries are bounded and on `date`
+ * alone (single-field index). While a query reloads (a new latest weighing
+ * moves the window) the last settled trend for this pet and unit stays shown,
+ * so the card never flickers to a skeleton.
+ */
+export function useWeightTrend(householdId: string | null | undefined, petId: string, unit: WeightUnit, timeZone: string | null): LiveTrend {
+  const recent = useLiveDocs(householdId ? `${householdId}/${petId}/weight-trend` : null, WEIGHT_TREND_POINTS, householdId ? () => query(weightsRef(householdId, petId), orderBy('date', 'desc'), limitTo(WEIGHT_TREND_POINTS)) : null, readWeight);
+  const newest = recent.loading || recent.error ? null : (weightHistory(recent.items)[0]?.date ?? null);
+  const since = newest ? trendWindowStart(newest).getTime() : null;
+  const baseline = useLiveDocs(
+    householdId && since !== null ? `${householdId}/${petId}/weight-trend-since-${since}` : null,
+    1,
+    householdId && since !== null ? () => query(weightsRef(householdId, petId), where('date', '>=', new Date(since)), orderBy('date', 'asc'), limitTo(1)) : null,
+    readWeight,
+  );
+  const error = recent.error || baseline.error;
+  const loading = !error && (recent.loading || (since !== null && baseline.loading));
+  const trend = loading || error ? null : weightTrend(trendEntries(recent.items, baseline.items), unit, { timeZone });
+
+  const signature = `${householdId}|${petId}|${unit}`;
+  const [kept, setKept] = useState<{ signature: string; trend: WeightTrend | null; text: string } | null>(null);
+  const text = loading || error ? null : JSON.stringify(trend);
+  if (text !== null && (kept?.signature !== signature || kept.text !== text)) setKept({ signature, trend, text });
+  if (error) return { trend: null, loading: false, error, failure: recent.failure || baseline.failure || 'retrying' };
+  if (loading && kept?.signature === signature) return { trend: kept.trend, loading: false, error: null };
+  return { trend, loading, error: null };
 }

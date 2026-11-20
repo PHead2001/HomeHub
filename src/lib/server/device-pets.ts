@@ -39,7 +39,7 @@ import {
   type ProfileAsInput,
   type RecordAsResult,
 } from '@/lib/server/pet-records';
-import { deletePetCascade, PetDeleteIncomplete, type PetPhotoBucket } from '@/lib/server/pet-delete';
+import { deletePetCascade, petDeletePending, PetDeleteIncomplete, type PetPhotoBucket } from '@/lib/server/pet-delete';
 import { isPetId } from '@/lib/pets/profile';
 import { publicDisplayName } from '@/lib/member-directory';
 
@@ -163,6 +163,8 @@ export type DeviceDoseRequest = DevicePetsRequest & {
   givenAt?: unknown;
   notes?: unknown;
   confirm?: unknown;
+  medication?: unknown;
+  dosage?: unknown;
 };
 
 /**
@@ -183,6 +185,7 @@ export async function giveDoseFromTablet(input: DeviceDoseRequest, options: Devi
   const authority = await authorize(capability, input, options, DOSE_CAPABILITIES);
   const result = await giveDoseAs(adminDb, authority.householdId, {
     petId: input.petId, courseId: input.courseId, occurrenceKey: input.occurrenceKey, givenAt: input.givenAt, notes: input.notes, confirm: input.confirm,
+    medication: input.medication, dosage: input.dosage,
   }, deviceOperationContext(authority), { queuedAt: queuedAtOf(authority.queuedCreatedAt) }).catch(asDeviceError);
   return { result: withoutEmails(result), level: authority.level === 'pin' ? 'pin' : 'face', capability: authority.capability };
 }
@@ -263,10 +266,13 @@ export const saveMealPlanFromTablet = (input: DevicePetsRequest & { petId: unkno
 /**
  * `pets.pet.delete` (D-P12): the existing cascade (`deletePetCascade`) with the gate's hooks
  * in its barrier transaction (precheck first, finalize last: op ledger and the activity
- * entry). A retry with the same opId finishes whatever the sweep left (the barrier is a
- * replay); an incomplete sweep answers `unavailable` (try again, never a removal).
+ * entry), shared with the hourly upkeep (functions/src/shared/pet-delete.ts). A retry with
+ * the same opId finishes whatever the sweep left (the barrier is a replay). A failure after
+ * the barrier (the tombstone is there) answers `finishing`, as the personal action: the pet
+ * has left every list and the upkeep's `resumePetDeletions` finishes it; any other failure is
+ * `unavailable` (try again).
  */
-export async function deletePetFromTablet(input: DevicePetsRequest & { petId: unknown }, options: DevicePetsOptions = {}): Promise<{ status: 'deleted' | 'already'; petId: string }> {
+export async function deletePetFromTablet(input: DevicePetsRequest & { petId: unknown }, options: DevicePetsOptions = {}): Promise<{ status: 'deleted' | 'already' | 'finishing'; petId: string }> {
   const authority = await authorize('pets.pet.delete', input, options);
   if (!isPetId(input.petId)) throw new DeviceActionError('invalid_input');
   const petId = input.petId;
@@ -299,7 +305,9 @@ export async function deletePetFromTablet(input: DevicePetsRequest & { petId: un
     const replayed = (stored as { status?: unknown } | null)?.status;
     return { status: replayed === 'deleted' || replayed === 'already' ? replayed : outcome.status, petId };
   } catch (error) {
-    if (error instanceof PetDeleteIncomplete) throw new DeviceActionError('unavailable');
-    throw error;
+    if (error instanceof DeviceActionError) throw error;
+    if (!(error instanceof PetDeleteIncomplete)) console.error('Tablet pet delete failed', error instanceof Error ? error.message : String(error));
+    if (await petDeletePending(adminDb, authority.householdId, petId).catch(() => false)) return { status: 'finishing', petId };
+    throw new DeviceActionError('unavailable');
   }
 }

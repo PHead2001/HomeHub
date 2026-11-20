@@ -14,6 +14,7 @@
 //   the tablet, which is removed together with its Undo.
 
 import { useCallback, useEffect, useRef } from 'react';
+import { resumedUndo } from '@/lib/devices/tablet-toasts';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
@@ -120,6 +121,7 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
 export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDERS[capability]);
 
 const SYNC_EVERY_MS = 30_000;
+const UUID_OP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A sent action with no answer, which can't wait in the queue: the server may hold it. */
 export const UNKNOWN_OUTCOME_COPY = "No answer from HomeHub. It may have been saved; Undo takes it back if it was.";
@@ -143,6 +145,8 @@ export type DeviceActionRuntime = {
     onReverted?: () => void;
     /** The Undo toast's group (a feed: its pet's, `petFeedToastGroup`), kept in the journal for a reload; default: the shared device-action group. */
     toastGroup?: string;
+    /** The form's own opId (one per open form, kept across its retries); default: a new one per press. */
+    opId?: string;
     /**
      * "Feed again?" (PE-23g) or "Already given?" (a dose, PE-24k): asked when the server answers that it needs a confirmation;
      * resolves with the answer to send back with the same opId, or null (Cancel: nothing is written).
@@ -337,7 +341,10 @@ export function useDeviceActions(deps: {
     }
   }, [authorizeUndo, currentEntry, personOf, refuse, send, step, storesOf]);
 
+  // Every Undo toast on screen, by opId, so a return from the background can measure it again (D5).
+  const offered = useRef(new Map<string, { dismiss: () => void; entry: UndoJournalEntry; actor: TabletActor; who: RosterPerson | null; message: string }>());
   const offerUndo = useCallback((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => {
+    offered.current.get(entry.opId)?.dismiss();
     const handle = toast({
       // Per pet for feeds (stored in the journal, so a restored toast keeps it): another pet's
       // feed or a chore never displaces this Undo; same-group actions replace the older one.
@@ -345,12 +352,35 @@ export function useDeviceActions(deps: {
       description: message,
       duration: Math.max(1000, remainingMs),
       action: (
-        <ToastAction altText={`Undo: ${entry.label}`} onClick={() => { handle.dismiss(); void undoOf(entry, actor, who); }} data-testid="tablet-undo">
+        // 48 px on the tablet's coarse pointer (D1).
+        <ToastAction altText={`Undo: ${entry.label}`} className="min-h-12 min-w-12 px-4 text-base" onClick={() => { offered.current.delete(entry.opId); handle.dismiss(); void undoOf(entry, actor, who); }} data-testid="tablet-undo">
           Undo
         </ToastAction>
       ),
     });
+    offered.current.set(entry.opId, { dismiss: handle.dismiss, entry, actor, who, message });
   }, [undoOf]);
+
+  // Back from the background (or a frozen page resumed): the toast's own timer may have slept
+  // past the window, so each offered Undo is measured again from its journal entry (D5).
+  useEffect(() => {
+    const resume = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      for (const [opId, shown] of [...offered.current]) {
+        const current = mirror.current.get(opId.toLowerCase()) ?? shown.entry;
+        const decision = resumedUndo(undoOffer(current, Date.now()).remainingMs);
+        offered.current.delete(opId);
+        shown.dismiss();
+        if (decision.kind === 'reoffer') offerUndoRef.current?.(current, shown.actor, shown.who, shown.message, decision.remainingMs);
+      }
+    };
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('pageshow', resume);
+    return () => {
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('pageshow', resume);
+    };
+  }, []);
   useEffect(() => { offerUndoRef.current = offerUndo; }, [offerUndo]);
 
   // After a reload: Undo toasts come back for the time that is left (the server's window decides).
@@ -373,10 +403,12 @@ export function useDeviceActions(deps: {
   }, [offerUndo, storesOf]);
 
   // --- Actions ------------------------------------------------------------------
-  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup }) => {
+  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup, opId: formOpId }) => {
     // A "Feed again?" answer is added to the intent, and goes with it into the queue if the send then gets no answer.
     let intent = firstIntent;
-    const opId = crypto.randomUUID();
+    // One opId per open form (its retries replay on the server instead of adding a second record);
+    // otherwise one per press.
+    const opId = formOpId && UUID_OP.test(formOpId) ? formOpId.toLowerCase() : crypto.randomUUID();
     reverts.current.register(opId, onReverted);
     const { queue } = storesOf();
     const undoCapability = UNDO_CAPABILITY_OF[capability];

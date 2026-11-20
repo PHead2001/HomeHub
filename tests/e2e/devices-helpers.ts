@@ -102,8 +102,14 @@ export async function pairWithCode(page: Page, code: string): Promise<string> {
   return deviceId!;
 }
 
-/** Taps a person in "Who's here?" and types a PIN on the pad. */
+/** Waits until a tablet prompt takes taps: its tap guard (400 ms after it opened) has passed. */
+export async function promptReady(page: Page, testId: 'who-is-here' | 'pin-pad' | 'tablet-feed-again') {
+  await expect(page.getByTestId(testId)).toHaveAttribute('data-tap-ready', 'true');
+}
+
+/** Types a PIN on the pad (once its tap guard has passed). */
 export async function enterPin(page: Page, pin: string) {
+  await promptReady(page, 'pin-pad');
   for (const digit of pin) await page.getByTestId(`pin-key-${digit}`).click();
   await page.getByTestId('pin-key-ok').click();
 }

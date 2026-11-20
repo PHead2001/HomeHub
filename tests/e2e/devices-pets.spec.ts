@@ -5,6 +5,7 @@ import {
   OWNER_PIN,
   TABLET_VIEWPORTS,
   enterPin,
+  promptReady,
   createDeviceCode,
   householdRef,
   openTabletContext,
@@ -55,12 +56,22 @@ const openPets = async (page: Page) => {
   await expect(page.getByTestId('tablet-view-pets')).toBeVisible();
 };
 
+// Closes every open dialog. An Escape goes to the topmost layer, which is a toast while one
+// is on screen (Radix), so Escape is pressed until no dialog is left.
+const closeDialogs = async (page: Page) => {
+  await expect(async () => {
+    if (await page.getByRole('dialog').count()) await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 750 });
+  }).toPass({ timeout: 15_000 });
+};
+
 const forgetFace = async (page: Page) => {
   await page.getByTestId('tablet-done').click({ timeout: 3_000 }).catch(() => undefined);
 };
 
 const pick = async (page: Page, uid: string) => {
   await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await promptReady(page, 'who-is-here');
   await page.getByTestId(`who-person-${uid}`).click();
 };
 
@@ -112,8 +123,18 @@ test('a face-chosen kid feeds and is credited (by Mia on Pets tablet); Undo remo
   // Measured once the toast's slide-in has settled.
   await expect.poll(async () => (await page.getByTestId('tablet-undo').first().boundingBox())!.y, { timeout: 5_000 })
     .toBeGreaterThanOrEqual(bar!.y + bar!.height);
+  // D1, D2: the Undo is a 48 px target in a toast at the bottom right, clear of the first pet row's buttons.
+  const undoBox = (await page.getByTestId('tablet-undo').first().boundingBox())!;
+  expect(undoBox.height).toBeGreaterThanOrEqual(48);
+  expect(undoBox.width).toBeGreaterThanOrEqual(48);
+  const feedBox = (await page.getByTestId('tablet-pet-feed-tab-maple').boundingBox())!;
+  expect(undoBox.y).toBeGreaterThan(feedBox.y + feedBox.height);
+  // The toast region takes no tap outside its card: Maple's Feed is what a tap there hits.
+  expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="tablet-pet-feed-tab-maple"]') !== null, [feedBox.x + feedBox.width / 2, feedBox.y + feedBox.height / 2])).toBe(true);
   await page.getByTestId('tablet-undo').first().click();
   await expect.poll(async () => (await feedings('tab-maple').get()).size, { timeout: 15_000 }).toBe(0);
+  // The informational "Undone." leaves within 4 s (D2).
+  await expect(page.getByText('Undone.')).toHaveCount(0, { timeout: 6_000 });
   // Done ends the remembered person straight away, even with a toast on screen.
   await page.getByTestId('tablet-done').click({ timeout: 5_000 });
   await expect(page.getByTestId('tablet-acting')).toHaveCount(0);
@@ -132,6 +153,7 @@ test('a feed on another device a minute ago: the tablet asks "Feed again?" and w
   await expect(page.getByTestId('tablet-feed-again')).toBeVisible();
   await expect(page.getByTestId('tablet-feed-again')).toContainText('Owner fed');
   expect((await feedings('tab-rex').get()).size).toBe(1);
+  await promptReady(page, 'tablet-feed-again');
   await page.getByTestId('tablet-feed-again-yes').click();
   await expect.poll(async () => (await feedings('tab-rex').get()).size, { timeout: 15_000 }).toBe(2);
   const confirmed = (await feedings('tab-rex').where('repeat', '==', 'confirmed').get()).docs;
@@ -217,17 +239,21 @@ test('Give dose from the medication chip, credited to the chosen person; Undo re
   expect(log.deviceAttribution?.level).toBe('face');
   await page.getByTestId('tablet-undo').last().click();
   await expect.poll(async () => (await doses('tab-meds').get()).size, { timeout: 15_000 }).toBe(0);
-  await page.keyboard.press('Escape');
+  await closeDialogs(page);
 });
 
 test("a reminder's ?dose= link opens Give dose for that course on the tablet", async ({}, testInfo) => {
   desktopOnly(testInfo);
   const page = tabletPage();
-  await page.goto('/pets/meds?tab=medication&dose=course-e2e');
+  await page.goto('/pets/tab-meds?tab=medication&dose=course-e2e');
   await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('give-dose-dialog')).toBeVisible();
+  // One dialog per Escape: Give dose first, then the sheet (each waits for the one before to leave).
   await page.keyboard.press('Escape');
+  await expect(page.getByTestId('give-dose-dialog')).toHaveCount(0);
   await page.keyboard.press('Escape');
+  await expect(page.getByTestId('tablet-pet-sheet')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/pets$/);
 });
 
 test('a behaviour note and a weighing are face-level with Undo; pinning a note asks the PIN pad', async ({}, testInfo) => {
@@ -251,9 +277,10 @@ test('a behaviour note and a weighing are face-level with Undo; pinning a note a
   await page.getByTestId('tablet-weight-value').fill('12.4');
   await page.getByTestId('tablet-weight-save').click();
   await expect.poll(async () => (await pet('tab-meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
-  await page.getByTestId('tablet-undo').last().click();
+  // The weighing's own Undo (the note's may still be offered beside it).
+  await page.locator('li', { hasText: 'Weight for' }).getByTestId('tablet-undo').click();
   await expect.poll(async () => (await pet('tab-meds').collection('weights').get()).size, { timeout: 15_000 }).toBe(0);
-  await page.keyboard.press('Escape');
+  await closeDialogs(page);
 });
 
 for (const viewport of TABLET_VIEWPORTS) {
@@ -270,6 +297,105 @@ for (const viewport of TABLET_VIEWPORTS) {
       expect(box!.height).toBeGreaterThanOrEqual(48);
     }
     expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
-    await page.keyboard.press('Escape');
+    await closeDialogs(page);
   });
 }
+
+test('D3 and D4: Done with the pet sheet open ends the remembered person; Back closes the topmost dialog and stays on Pets', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await page.setViewportSize(TABLET_VIEWPORTS[0]);
+  await forgetFace(page);
+  await openPets(page);
+  // Someone is remembered (a note as the kid).
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await page.getByTestId('tablet-pet-tab-notes').click();
+  await page.getByTestId('tablet-note-text').fill('Napped in the sun');
+  await page.getByTestId('tablet-note-save').click();
+  await pick(page, KID.uid);
+  await expect(page.getByTestId('tablet-acting')).toBeVisible();
+  await page.getByTestId('tablet-done').click();
+  await expect(page.getByTestId('tablet-acting')).toHaveCount(0);
+  // Back: the Give dose dialog first, then the sheet, never leaving Pets.
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await page.getByTestId('tablet-give-course-e2e').click();
+  await expect(page.getByTestId('give-dose-dialog')).toBeVisible();
+  await page.goBack();
+  await expect(page.getByTestId('give-dose-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible();
+  await page.goBack();
+  await expect(page.getByTestId('tablet-pet-sheet')).toHaveCount(0);
+  await expect(page.getByTestId('tablet-view-pets')).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe('/pets');
+});
+
+test('D6: a PIN-level action for someone with no tablet PIN says so at once (no pad) and offers someone else', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await page.getByTestId('tablet-pet-tab-notes').click();
+  const noteId = (await pet('tab-meds').collection('notes').get()).docs[0].id;
+  await page.getByTestId(`tablet-note-${noteId}`).getByRole('button', { name: /^(Pin|Unpin)$/ }).click();
+  await pick(page, KID.uid);
+  await expect(page.getByText(`${KID.name} has no tablet PIN. An adult can set one in Household > Members.`).first()).toBeVisible();
+  await expect(page.getByTestId('pin-pad')).toHaveCount(0);
+  // Someone else may act: "Who's here?" again.
+  await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await closeDialogs(page);
+});
+
+test('Codex #190: a legacy medication shows on the tablet and its schedule is confirmed (PIN level)', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await pet('tab-meds').collection('medication-logs').doc('legacy-heartgard').set({ date: '2026-11-01', medication: 'Heartgard', dosage: '1 chew', nextDueDate: '2026-12-01', notes: '', loggedByUid: OWNER_UID, loggedByName: 'Owner' });
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-tab-meds').click();
+  await expect(page.getByTestId('tablet-legacy-heartgard')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('tablet-legacy-confirm-heartgard').click();
+  await expect(page.getByTestId('tablet-course-form')).toBeVisible();
+  await page.getByLabel('Every how many days').fill('30');
+  await page.getByTestId('tablet-course-save').click();
+  await pick(page, OWNER_UID);
+  await expect(page.getByTestId('pin-pad')).toBeVisible();
+  await enterPin(page, OWNER_PIN);
+  await expect.poll(async () => (await pet('tab-meds').collection('medication-courses').where('legacyKeys', 'array-contains', 'heartgard').get()).size, { timeout: 15_000 }).toBe(1);
+  await closeDialogs(page);
+});
+
+test('Codex #190: history merges both date shapes; Log weight tapped twice saves one weighing', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  const care = pet('tab-care').collection('care-logs');
+  for (let index = 0; index < 13; index += 1) await care.doc(`old-${index}`).set({ date: `2025-01-${String(index + 1).padStart(2, '0')}`, activity: `Old walk ${index}`, notes: '', loggedByUid: OWNER_UID, loggedByName: 'Owner' });
+  await care.doc('new-stamped').set({ date: Timestamp.now(), activity: 'Brushed today', notes: '', loggedByUid: OWNER_UID, loggedByName: 'Owner' });
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-tab-care').click();
+  await page.getByTestId('tablet-pet-tab-history').click();
+  await expect(page.getByTestId('tablet-log-new-stamped')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('tablet-pet-tab-weight').click();
+  // With nobody remembered, "Who's here?" opens under the finger: the second tap of a double
+  // tap on Log weight lands on nothing (the prompts' tap guard), so nobody is credited.
+  await page.getByTestId('tablet-weight-value').fill('7.5');
+  await page.getByTestId('tablet-weight-save').dblclick();
+  await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('who-is-here')).toBeVisible();
+  expect((await pet('tab-care').collection('weights').get()).size).toBe(0);
+  await expect(page.getByTestId('tablet-acting')).toHaveCount(0);
+  // A deliberate tap once the guard has passed picks the face.
+  await pick(page, KID.uid);
+  await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(1);
+  expect((await pet('tab-care').collection('weights').get()).docs[0].get('loggedByUid')).toBe(KID.uid);
+  await expect(page.getByTestId('tablet-acting')).toBeVisible();
+  // Someone remembered: a double tap goes straight to Save, and its pending guard saves once.
+  await page.getByTestId('tablet-weight-value').fill('7.6');
+  await page.getByTestId('tablet-weight-save').dblclick();
+  await expect.poll(async () => (await pet('tab-care').collection('weights').get()).size, { timeout: 15_000 }).toBe(2);
+  await page.waitForTimeout(1500);
+  expect((await pet('tab-care').collection('weights').get()).size).toBe(2);
+  await closeDialogs(page);
+});

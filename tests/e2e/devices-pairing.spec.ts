@@ -85,3 +85,16 @@ test('a personal session never reaches redemption', async ({ page }, testInfo) =
   await expect(page.getByText('Sign out first to set this browser up as a wall tablet')).toBeVisible();
   await expect(page.getByLabel('Tablet code')).toHaveCount(0);
 });
+
+test('D7: a setup link opened while the setup screen is showing fills the code (fragment-only navigation)', async ({ browser }, testInfo) => {
+  desktopOnly(testInfo);
+  const tablet = await openTabletContext(browser);
+  try {
+    await tablet.page.goto('/setup');
+    await expect(tablet.page.getByLabel('Tablet code')).toHaveValue('');
+    await tablet.page.evaluate(() => { window.location.hash = 'code=LY95-VBBJ-WT'; });
+    await expect(tablet.page.getByLabel('Tablet code')).toHaveValue(/LY95-?VBBJ-?WT/);
+  } finally {
+    await tablet.context.close();
+  }
+});
