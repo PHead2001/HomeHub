@@ -20,7 +20,7 @@ export type BoardStatus = {
   tone: BoardTone;
   /** The band's text label, so colour is never the only signal (PE-9b). */
   label: string;
-  /** The feeding status, the card's most prominent text (PE-9a). */
+  /** The feeding status line, under the pet's name and the band (smaller than the name). */
   line: string;
   /** A smaller second line: today's count or who fed last. */
   detail: string | null;
@@ -108,13 +108,13 @@ export function petsLayoutFor(matches: { board: boolean; rows: boolean }): PetsL
   return matches.board ? 'board' : 'grid';
 }
 
-/** Up to this many pets fit the board without scrolling (D-P14); more scroll inside the board. */
+/** Up to this many pets share the screen (D-P14); more make the board taller than the screen. */
 export const BOARD_FIT = 6;
 
 /**
  * The board's grid for `count` pets: one or two pets share the screen (PE-9d),
  * three in a row, four as two by two, five and six as three by two; past six the
- * board keeps three columns and scrolls inside itself (`scroll`).
+ * board keeps three columns and grows past the screen (`scroll`: the page scrolls).
  */
 export function boardGrid(count: number): { columns: number; rows: number; scroll: boolean } {
   if (count <= 0) return { columns: 1, rows: 1, scroll: false };
@@ -125,50 +125,16 @@ export function boardGrid(count: number): { columns: number; rows: number; scrol
 }
 
 /**
- * The smallest board row that still shows a card's band, its status (two lines
- * of the 24 px line, with a little room for its detail line) and Feed (PE-9e): below it the board keeps this height and
- * scrolls inside itself instead of squeezing the status out of the card.
+ * The board's grid and its minimum height for a measured `height` (the screen
+ * below the board's top). Up to six pets the rows share that height; past six
+ * each row keeps the six-up height, so the board is taller than the screen. The
+ * rows are `minmax(min-content, 1fr)` (`PetsBoard`): a card taller than its
+ * share grows its row and the page scrolls, never the card (owner request).
  */
-export const BOARD_ROW_MIN = 216;
-
-/**
- * The board's rows for a measured height: they share the height while each row
- * is at least `BOARD_ROW_MIN`; past six pets, or when the space above the board
- * (the attention strip, the hold caption) leaves less, rows keep their height
- * (the six-up height, never under the minimum) and the board scrolls inside
- * itself. The page never scrolls (PE-9e, D-P14).
- */
-export function boardRowPlan(count: number, height: number | null, gap = 16): { columns: number; rows: number; scroll: boolean; rowHeight: number | null } {
-  const grid = boardGrid(count);
-  if (height === null) return { ...grid, rowHeight: null };
-  if (grid.scroll) return { ...grid, rowHeight: Math.max(BOARD_ROW_MIN, Math.floor((height - gap) / 2)) };
-  const fit = Math.floor((height - gap * (grid.rows - 1)) / grid.rows);
-  return fit < BOARD_ROW_MIN ? { ...grid, scroll: true, rowHeight: BOARD_ROW_MIN } : { ...grid, rowHeight: null };
-}
-
-/* ------------------------------------------------------------------------- */
-/* Hold caption (PE-12a, D-P17)                                               */
-/* ------------------------------------------------------------------------- */
-
-/** Local storage key: set after the first successful hold or a dismiss (remembered per browser). */
-export const HOLD_CAPTION_KEY = 'homehub.pets.holdCaptionDone';
-
-/** The caption shows on touch screens, to members who may feed, until it is done. */
-export function showHoldCaption(input: { coarse: boolean; canFeed: boolean; done: boolean; hasPets: boolean }): boolean {
-  return input.coarse && input.canFeed && input.hasPets && !input.done;
-}
-
-/* ------------------------------------------------------------------------- */
-/* Reduced-motion hold ring (PE-20a)                                          */
-/* ------------------------------------------------------------------------- */
-
-/**
- * Under reduced motion the ring fills in three discrete steps, never
- * continuously: a third after a third of the hold, two thirds after two
- * thirds, full when it completes.
- */
-export function steppedHoldProgress(progress: number, steps = 3): number {
-  if (!(progress > 0)) return 0;
-  if (progress >= 1) return 1;
-  return Math.floor(progress * steps) / steps;
+export function boardRowPlan(count: number, height: number | null, gap = 16): { columns: number; rows: number; minHeight: number | null } {
+  const { columns, rows, scroll } = boardGrid(count);
+  if (height === null) return { columns, rows, minHeight: null };
+  if (!scroll) return { columns, rows, minHeight: height };
+  const rowHeight = Math.floor((height - gap) / 2);
+  return { columns, rows, minHeight: rows * rowHeight + gap * (rows - 1) };
 }

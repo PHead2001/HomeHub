@@ -64,8 +64,8 @@ export const button = 'inline-flex min-h-12 min-w-12 items-center justify-center
 const primary = 'inline-flex min-h-12 items-center justify-center rounded-lg bg-primary px-4 text-base font-medium text-primary-foreground disabled:opacity-60';
 const field = 'min-h-12 text-base';
 
-/** The pet document itself, live, through the tablet's listener (null: loading). */
-function usePetDocument(householdId: string, petId: string) {
+/** The pet document itself, live, through the tablet's listener (null: loading). Also read by "When did <pet> eat?" on the Pets board. */
+export function usePetDocument(householdId: string, petId: string) {
   const key = `${householdId}/${petId}`;
   const [state, setState] = useState<{ key: string; value: Record<string, unknown> | null; failed: boolean } | null>(null);
   useEffect(() => {

@@ -877,10 +877,12 @@ service cloud.firestore {
     // operation's fields on every new feeding (feedingCreateR2).
     function validFeedingLogFields(data, keys) {
       return keys.hasOnly(['date', 'cups', 'foodType', 'foodAmountType', 'comments', 'ampm', 'loggedByUid', 'loggedByName',
-          'loggedAt', 'repeat', 'clockSource', 'backdated', 'confirmOf', 'slotId',
+          'loggedAt', 'repeat', 'clockSource', 'backdated', 'confirmOf', 'slotId', 'extra',
           'originalDate', 'dateCorrectedAt', 'dateCorrectedByUid', 'dateCorrectedByName']) &&
         (!('date' in keys) || dateValue(data.date)) &&
         (!('slotId' in keys) || mealSlotId(data.slotId)) &&
+        // An earlier feeding whose meal was already fed ("Feed earlier"): an extra, never with a slot.
+        (!('extra' in keys) || (data.extra == true && !('slotId' in data))) &&
         (!('confirmOf' in keys) || data.confirmOf == null || nonEmptyString(data.confirmOf, 200)) &&
         (!('originalDate' in keys) || data.originalDate == null || dateValue(data.originalDate)) &&
         (!('dateCorrectedAt' in keys) || data.dateCorrectedAt is timestamp) &&
@@ -1056,6 +1058,8 @@ service cloud.firestore {
       return data.get('loggedByUid', null) == request.auth.uid &&
         data.get('loggedAt', null) == request.time &&
         feedingSlotKnown(householdId, petId, data) &&
+        // Only a backdated entry may be marked extra (a live feed follows D-P5).
+        (!('extra' in data) || data.get('backdated', false) == true) &&
         !('originalDate' in data) && !('dateCorrectedAt' in data) &&
         !('dateCorrectedByUid' in data) && !('dateCorrectedByName' in data) &&
         (

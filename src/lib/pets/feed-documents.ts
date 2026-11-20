@@ -34,6 +34,8 @@ export type FeedLogPlan = {
   repeat: 'none' | 'confirmed' | 'offline';
   confirmOf?: string | null;
   slotId?: string | null;
+  /** An earlier feeding that counts as an extra of its day (its meal was already fed). */
+  extra?: boolean;
 };
 
 /**
@@ -63,6 +65,7 @@ export function feedLogDocument(
     ...(plan.repeat === 'offline' ? { clockSource: 'device' } : {}),
     ...(input.backdatedAt ? { backdated: true } : {}),
     ...(plan.slotId ? { slotId: plan.slotId } : {}),
+    ...(plan.extra && !plan.slotId ? { extra: true } : {}),
     ...(options.extra ?? {}),
   };
 }

@@ -291,6 +291,17 @@ export function feedReadStart(day: string, now: Date, timeZone?: string | null):
 }
 
 /**
+ * The read start for a feed: `feedReadStart`, or the start of a backdated feed's own
+ * household day when that is earlier (its meal is judged with that day's feedings).
+ */
+export function feedReadStartFor(day: string, now: Date, timeZone: string | null | undefined, backdatedAt?: Date | null): Date {
+  const start = feedReadStart(day, now, timeZone);
+  if (!backdatedAt) return start;
+  const own = householdDayStart(householdDay(backdatedAt, timeZone), timeZone);
+  return own.getTime() < start.getTime() ? own : start;
+}
+
+/**
  * Feedings on one household day, counted from the logs themselves (the online
  * operation reads them in its transaction). This is the count the state stores:
  * a feeding queued offline that has synced is in it, and one deleted offline or
