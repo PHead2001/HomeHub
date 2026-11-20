@@ -1181,3 +1181,17 @@ describe('P5 final on the tablet: the pinned-note cap and the shared pet-delete 
     assert.equal((await house(H).collection('pet-deletions').doc('resume-pet').get()).exists, false);
   });
 });
+
+describe('final review N4: a dose under a course that exists but cannot be read', () => {
+  test('its Undo and its PIN-level delete refuse instead of removing it without the course write', async () => {
+    await seedDosePet('bad-course');
+    const op = opId();
+    await give(tablets.extra, member.uid, op, 'bad-course');
+    // The course document is malformed (no schedule, no name): readCourse cannot read it.
+    await course('bad-course').set({ garbage: true });
+    await refused(undoDose(tablets.extra, member.uid, op), 'changed_since');
+    const ownerPin = await pinOf(tablets.extra, owner);
+    assert.deepEqual(await deleteLogFromTablet({ ...pinBase(tablets.extra, owner.uid, ownerPin), petId: 'bad-course', kind: 'medication-logs', logId: op }), { status: 'refused', reason: 'changed' });
+    assert.equal((await doses('bad-course').doc(op).get()).exists, true);
+  });
+});

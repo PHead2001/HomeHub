@@ -38,6 +38,7 @@ import { householdToday } from '@/lib/household-zone';
 import { PORTION_UNITS } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { useTablet } from './tablet-context';
+import { publicDisplayName } from '@/lib/member-directory';
 import { useBackCloses } from '@/hooks/use-back-closes';
 
 type Tab = 'medication' | 'notes' | 'weight' | 'history' | 'profile';
@@ -86,6 +87,12 @@ function usePetLive<T>(householdId: string, path: string[], build: 'collection' 
   }, [householdId, key]);
   return state && state.key === key ? state : null;
 }
+
+/** "by Mia": the author's public name only, as the server's answers show it (never an email on a shared screen; final review N3). */
+export const byLine = (name: unknown): string | null => {
+  const shown = publicDisplayName(typeof name === 'string' ? name : null, '');
+  return shown ? `by ${shown}` : null;
+};
 
 const docsOf = (snapshot: QuerySnapshot | DocumentSnapshot) => ('docs' in snapshot ? snapshot.docs.map((entry) => ({ id: entry.id, data: entry.data({ serverTimestamps: 'estimate' }) as Record<string, unknown> })) : []);
 const toDate = (value: unknown): Date | null => {
@@ -307,7 +314,7 @@ function NotesPanel({ petId, petName, timeZone }: { petId: string; petName: stri
       ) : (
         <>
           <p className="text-base">{note.text}</p>
-          <p className="text-sm text-muted-foreground">{[note.tag ? NOTE_TAG_LABELS[note.tag] : null, note.date ? householdDateLabel(note.date, timeZone) : null, note.loggedByName ? `by ${note.loggedByName}` : null].filter(Boolean).join(' · ')}</p>
+          <p className="text-sm text-muted-foreground">{[note.tag ? NOTE_TAG_LABELS[note.tag] : null, note.date ? householdDateLabel(note.date, timeZone) : null, byLine(note.loggedByName)].filter(Boolean).join(' · ')}</p>
           <span className="flex flex-wrap gap-2">
             <button type="button" className={button} onClick={() => void pin(note)}>{note.pinned ? 'Unpin' : 'Pin'}</button>
             <button type="button" className={button} onClick={() => setEditing({ note, text: note.text })}>Edit</button>
@@ -368,7 +375,7 @@ function WeightPanel({ petId, petName, timeZone }: { petId: string; petName: str
         <ul className="space-y-2">
           {entries.map((entry) => (
             <li key={entry.id} className="flex items-center justify-between gap-2 rounded-xl border border-border p-3">
-              <span className="text-base">{formatWeight(entry.value, entry.unit)} <span className="text-sm text-muted-foreground">· {entry.date ? householdDateLabel(entry.date, timeZone) : 'Unknown date'}{entry.loggedByName ? ` · by ${entry.loggedByName}` : ''}</span></span>
+              <span className="text-base">{formatWeight(entry.value, entry.unit)} <span className="text-sm text-muted-foreground">· {entry.date ? householdDateLabel(entry.date, timeZone) : 'Unknown date'}{byLine(entry.loggedByName) ? ` · ${byLine(entry.loggedByName)}` : ''}</span></span>
               <button type="button" className={button} onClick={() => void runAction({ capability: 'pets.log.delete', label: 'Weighing removed', intent: { petId, kind: 'weights', logId: entry.id } })}>Delete</button>
             </li>
           ))}
@@ -415,7 +422,7 @@ function HistoryPanel({ petId, petName, timeZone }: { petId: string; petName: st
                   <li key={entry.id} className="space-y-2 rounded-xl border border-border p-3" data-testid={`tablet-log-${entry.id}`}>
                     <p className="text-base">
                       {kind === 'care-logs' ? String(entry.data.activity ?? 'Care') : kind === 'medication-logs' ? String(entry.data.medication ?? 'Dose') : 'Fed'}
-                      <span className="text-sm text-muted-foreground"> · {when(entry.data.date, timeZone)}{typeof entry.data.loggedByName === 'string' ? ` · by ${entry.data.loggedByName}` : ''}</span>
+                      <span className="text-sm text-muted-foreground"> · {when(entry.data.date, timeZone)}{byLine(entry.data.loggedByName) ? ` · ${byLine(entry.data.loggedByName)}` : ''}</span>
                     </p>
                     {fixing?.logId === entry.id ? (
                       <form className="flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void fix(); }}>

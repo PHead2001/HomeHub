@@ -172,3 +172,20 @@ describe('D8: a re-pair code for a tablet still signed in', () => {
     assert.match(read('src/components/household/devices-tab.tsx'), /stillPaired: device\.status === 'active'/);
   });
 });
+
+describe('final review notes', () => {
+  it('N1: the PIN status has its own pre-auth buckets, never a PIN entry\'s', () => {
+    assert.match(read('src/lib/server/device-gate.ts'), /pinStatus: \{ perAddress: 60, perInstance: 1200 \}/);
+    const pins = read('src/lib/server/pins.ts');
+    const status = pins.slice(pins.indexOf('export const devicePinStatus'));
+    assert.match(status, /preAuthAddressLimit\('pinStatus'/);
+    assert.match(status, /preAuthInstanceLimit\('pinStatus'/);
+    assert.doesNotMatch(status, /preAuthAddressLimit\('pin',/);
+  });
+  it('N3: the sheet shows authors through publicDisplayName (no emails on the wall)', () => {
+    const sheet = read('src/components/devices/tablet-pet-sheet.tsx');
+    assert.match(sheet, /const shown = publicDisplayName\(typeof name === 'string' \? name : null, ''\);/);
+    assert.doesNotMatch(sheet, /by \$\{(note|entry)\.(data\.)?loggedByName\}/);
+    assert.equal((sheet.match(/byLine\(/g) ?? []).length >= 4, true);
+  });
+});

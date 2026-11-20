@@ -836,9 +836,10 @@ export const devicePinStatus = async (
     throw new DeviceActionError('actor_required');
   }
   const actorUid = input.actorUid;
-  preAuthAddressLimit('pin', options.clientAddress, now.getTime());
+  // Its own pre-auth buckets (final review N1): asking never spends a PIN entry's slots.
+  preAuthAddressLimit('pinStatus', options.clientAddress, now.getTime());
   const claims = await verifyDeviceToken(input.idToken, input.householdId, {
-    onSignatureVerified: () => preAuthInstanceLimit('pin', now.getTime()),
+    onSignatureVerified: () => preAuthInstanceLimit('pinStatus', now.getTime()),
   });
   takeDeviceBudget('pin-status', claims, 30, now.getTime());
   const householdRef = householdRefOf(claims.hh_household);

@@ -185,6 +185,16 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     assert.equal(code.revokedAt, undefined, 'not cancelled');
     assert.equal(code.targetGeneration, stored.generation, 'moved to the new generation');
     assert.equal(code.carriedFromGeneration, before.generation);
+    // Owners see that a code still works (final review N2): codeKept in Activity, never the code.
+    const exited = (await audits('device.exited')).find(e => e.deviceId === tablet.deviceId)!;
+    assert.equal(exited.details.codeKept, true);
+    assert.equal(JSON.stringify(exited).includes(repair.code), false);
+    const notices = await house(H).collection('notifications').where('sourceId', '==', tablet.deviceId).where('sourceType', '==', 'device-removed').get();
+    assert.ok(notices.size > 0);
+    for (const notice of notices.docs) {
+      assert.match(notice.get('message'), /The re-pair code made for it still works until .+\. Cancel it in Devices if you didn't expect this\./);
+      assert.equal(String(notice.get('message')).includes(repair.code), false);
+    }
     // The old credential is refused at once; the same code then re-pairs the same record.
     await assert.rejects(recordDeviceHeartbeat({ idToken: tablet.idToken, householdId: H, appVersion: 'x' }, new Date()));
     const again = await redeemDeviceCode({ code: repair.code, nonce: nonce() });
@@ -204,6 +214,8 @@ describe('the protected exits (WT-16a-c, WT-16f, D-T5)', () => {
     const session = (await verifyDevicePin({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pin: PIN.owner }, { now: at })).pinSessionId;
     await exitTablet({ idToken: tablet.idToken, householdId: H, actorUid: owner.uid, pinSessionId: session, exit: 'new-code' }, { clock: () => at });
     assert.equal((await adminDb.collection('deviceCodes').doc(stale.code).get()).get('revokedReason'), 'superseded');
+    const staleExit = (await audits('device.exited')).find(e => e.deviceId === tablet.deviceId)!;
+    assert.equal(staleExit.details.codeKept, undefined, 'nothing kept, nothing claimed');
     const removed = await pairTablet(H, owner, created, 'Removed');
     const kept = await createDeviceRepairCode(owner, { householdId: H, deviceId: removed.deviceId });
     const at2 = new Date();

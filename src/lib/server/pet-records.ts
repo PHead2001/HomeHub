@@ -531,6 +531,9 @@ async function undoCreatedRecord(db: Firestore, householdId: string, input: { pe
       const courseRef = pet.collection('medication-courses').doc(courseId);
       const courseSnap = await tx.get(courseRef);
       const course = courseSnap.exists ? readCourse(courseId, courseSnap.data() ?? {}) : null;
+      // A course that exists but can't be read: never remove its dose without the course write
+      // the rules require (final review N4).
+      if (courseSnap.exists && !course) throw new DeviceActionError('changed_since');
       if (course) {
         const doses = await courseDoses(tx, pet.collection('medication-logs'), courseId, record.id);
         const next = pointerAfter(course, doses.records);
@@ -716,6 +719,8 @@ export function deleteLogAs(db: Firestore, householdId: string, input: { petId: 
         const courseRef = pet.collection('medication-courses').doc(courseId);
         const courseSnap = await tx.get(courseRef);
         const course = courseSnap.exists ? readCourse(courseId, courseSnap.data() ?? {}) : null;
+        // A course that exists but can't be read: refused, never deleted without the course write (final review N4).
+        if (courseSnap.exists && !course) return refused('changed');
         if (course) {
           const doses = await courseDoses(tx, pet.collection('medication-logs'), courseId, logId);
           const next = pointerAfter(course, doses.records);
