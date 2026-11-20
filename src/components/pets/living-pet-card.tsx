@@ -4,13 +4,14 @@ import * as React from 'react';
 import { flushSync } from 'react-dom';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AlertTriangle, Check, ChevronRight, Clock, Edit, HelpCircle, Minus, MoreVertical, Trash2 } from 'lucide-react';
+import { AlertTriangle, Check, ChevronRight, Clock, Edit, HelpCircle, History, Minus, MoreVertical, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { PeekCard } from '@/components/dashboard/peek-card';
@@ -137,6 +138,11 @@ function usePetCardModel({ pet, householdId, onAttention }: Pick<LivingPetCardPr
 }
 
 type CardModel = ReturnType<typeof usePetCardModel>['model'];
+
+/** The menu's "Log an earlier feeding…", for members who may log once the history has loaded. */
+const feedEarlierOf = (model: CardModel) => (model.feed.allowed && model.feed.earlier
+  ? () => model.feed.earlier?.setOpen(true)
+  : undefined);
 type PhotoRef = React.RefObject<HTMLDivElement>;
 
 /**
@@ -190,7 +196,20 @@ function HoldPhoto({ pet, model, photoRef, className, sizes, priority, index, ro
   );
 }
 
-function ActionsMenu({ pet, onEdit, onDelete, className }: { pet: PetProfile; onEdit: (pet: PetProfile) => void; onDelete: (pet: PetProfile) => void; className?: string }) {
+/**
+ * The pet's actions: **Log an earlier feeding…** for members who may log (the menu way to
+ * "When did <pet> eat?", besides holding Feed, its clock button, right-click and Shift+Enter),
+ * then Edit and Delete for members who may edit pets.
+ */
+function ActionsMenu({ pet, canEdit, onEdit, onDelete, onFeedEarlier, className }: {
+  pet: PetProfile;
+  canEdit: boolean;
+  onEdit: (pet: PetProfile) => void;
+  onDelete: (pet: PetProfile) => void;
+  onFeedEarlier?: () => void;
+  className?: string;
+}) {
+  if (!canEdit && !onFeedEarlier) return null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -205,14 +224,25 @@ function ActionsMenu({ pet, onEdit, onDelete, className }: { pet: PetProfile; on
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => onEdit(pet)}>
-          <Edit className="mr-2 h-4 w-4" />
-          <span>Edit</span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onDelete(pet)} className="text-destructive focus:bg-destructive/10 focus:text-destructive">
-          <Trash2 className="mr-2 h-4 w-4" />
-          <span>Delete</span>
-        </DropdownMenuItem>
+        {onFeedEarlier && (
+          <DropdownMenuItem onSelect={onFeedEarlier} data-testid={`pet-feed-earlier-menu-${pet.id}`}>
+            <History className="mr-2 h-4 w-4" />
+            <span>Log an earlier feeding…</span>
+          </DropdownMenuItem>
+        )}
+        {onFeedEarlier && canEdit && <DropdownMenuSeparator />}
+        {canEdit && (
+          <>
+            <DropdownMenuItem onSelect={() => onEdit(pet)}>
+              <Edit className="mr-2 h-4 w-4" />
+              <span>Edit</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onDelete(pet)} className="text-destructive focus:bg-destructive/10 focus:text-destructive">
+              <Trash2 className="mr-2 h-4 w-4" />
+              <span>Delete</span>
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -303,6 +333,8 @@ function FeedArea({ pet, model, statusId, hintId, canEdit, onEdit, className, co
         status={status}
         food={care.food}
         known={care.known}
+        pet={pet}
+        logs={care.feedings.loading || care.feedings.error ? null : care.feedings.logs}
         controller={feed}
         describedBy={care.feedings.loading ? (model.holdEnabled ? hintId : undefined) : [statusId, model.holdEnabled ? hintId : null].filter(Boolean).join(' ')}
         variant={meal?.kind === 'slots' ? (meal.complete || meal.offDay ? 'secondary' : 'default') : status?.complete ? 'secondary' : 'default'}
@@ -377,7 +409,7 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
       data-layout="board"
     >
       <StatusBand status={board}>
-        {canEdit && <ActionsMenu pet={pet} onEdit={onEdit} onDelete={onDelete} className="h-8 w-8 bg-background/90 text-foreground" />}
+        <ActionsMenu pet={pet} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} onFeedEarlier={feedEarlierOf(model)} className="h-8 w-8 bg-background/90 text-foreground" />
       </StatusBand>
       <div className="flex min-h-0 flex-1 gap-4 overflow-y-auto overscroll-contain p-4" data-testid="pet-card-body">
         <HoldPhoto
@@ -421,6 +453,8 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
  * first Feed is above the fold.
  */
 function RowCard({ pet, model, photoRef, priority, index = 0, canEdit, onEdit, onDelete }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
+  // With a mouse the row's Feed is a split button (Feed and its clock); on touch Feed alone (hold it).
+  const fine = usePointerFine();
   const statusId = `pet-status-${pet.id}`;
   const hintId = `feed-hint-${pet.id}`;
   const { board, attention, care } = model;
@@ -450,9 +484,9 @@ function RowCard({ pet, model, photoRef, priority, index = 0, canEdit, onEdit, o
         </div>
       </div>
       {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}
-      {/* The actions menu (the grid's and the board's: Edit, Delete) sits above Feed, so the text column keeps its width at 390 px. */}
-      <div className="relative z-10 flex w-24 shrink-0 flex-col items-end gap-1">
-        {canEdit && <ActionsMenu pet={pet} onEdit={onEdit} onDelete={onDelete} className="bg-transparent shadow-none" />}
+      {/* The actions menu (Log an earlier feeding…, Edit, Delete) sits above Feed, so the text column keeps its width at 390 px. */}
+      <div className={cn('relative z-10 flex shrink-0 flex-col items-end gap-1', fine ? 'w-36' : 'w-24')}>
+        <ActionsMenu pet={pet} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} onFeedEarlier={feedEarlierOf(model)} className="bg-transparent shadow-none" />
         <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={false} onEdit={() => undefined} compact className="w-full" />
       </div>
     </Card>
@@ -502,9 +536,9 @@ export function LivingPetCard(props: LivingPetCardProps) {
         </span>
       )}
 
-      {canEdit && (
+      {(canEdit || feed.allowed) && (
         <div className="absolute right-2 top-2 z-20">
-          <ActionsMenu pet={pet} onEdit={onEdit} onDelete={onDelete} />
+          <ActionsMenu pet={pet} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} onFeedEarlier={feedEarlierOf(model)} />
         </div>
       )}
 

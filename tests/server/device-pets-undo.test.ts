@@ -343,6 +343,67 @@ describe('"Feed again?" across devices, meal slots, levels and answers', () => {
     assert.deepEqual((await state('slots').get()).get('slotsFed'), {});
   });
 
+  test('Feed earlier: a tablet backdated feed records the meal whose window holds its time (or an extra), as the personal operation does', async (t) => {
+    const minutes = localMinutes(new Date(), TZ);
+    if (minutes < 130) {
+      t.skip('needs two hours of today behind the current Chicago time');
+      return;
+    }
+    const hhmm = (value: number) => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
+    // A meal 20 minutes ago (its window opened two hours before) and one six hours away (or long before).
+    const laterAt = minutes + 6 * 60 < 24 * 60 ? minutes + 6 * 60 : minutes - 9 * 60;
+    const mealPlan = {
+      slots: [{ id: 'slot-meal', name: 'Supper', time: hhmm(minutes - 20), amount: 0.5, unit: 'Cans' }, { id: 'slot-later', name: 'Snack', time: hhmm(laterAt), amount: 1, unit: 'Cups' }],
+      effectiveFrom: householdDay(new Date(), TZ), confirmedAt: Timestamp.now(), confirmedByUid: owner.uid, confirmedByName: 'Olive',
+    };
+    for (const id of ['earlier-tablet', 'earlier-personal']) await seedPet(id, { mealPlan });
+    const thirty = later(-30 * 60_000).toISOString();
+    // What the board would send while the pet's plan is still loading: today's target, not the chosen meal's (Codex P2).
+    const boardTarget = { amount: 3, unit: 'Scoops' as const };
+    const ten = later(-10 * 60_000).toISOString();
+
+    // The tablet: 30 minutes ago is the unfed meal, recorded with its portion; 10 minutes ago that meal is fed: an extra.
+    const first = opId();
+    const one = await feed(tablets.extra, member.uid, first, 'earlier-tablet', { backdatedAt: thirty, portionFromSlot: true, portion: boardTarget });
+    assert.equal(one.result.status, 'saved');
+    if (one.result.status === 'saved') assert.deepEqual(one.result.slot, { id: 'slot-meal', name: 'Supper' });
+    const second = opId();
+    const two = await feed(tablets.extra, member.uid, second, 'earlier-tablet', { backdatedAt: ten, portionFromSlot: true, portion: boardTarget });
+    assert.equal(two.result.status, 'saved');
+    if (two.result.status === 'saved') assert.equal(two.result.slot, null);
+    const tabletOne = (await logs('earlier-tablet').doc(first).get()).data()!;
+    const tabletTwo = (await logs('earlier-tablet').doc(second).get()).data()!;
+    assert.equal(tabletOne.slotId, 'slot-meal');
+    assert.equal(tabletOne.cups, 0.5);
+    assert.equal(tabletOne.extra, undefined);
+    assert.equal(tabletOne.backdated, true);
+    assert.equal(tabletOne.foodAmountType, 'Cans');
+    assert.equal(tabletTwo.extra, true);
+    assert.equal(tabletTwo.slotId, undefined);
+    // The extra repeats the meal whose window holds its time: that meal's portion, never the board's target.
+    assert.equal(tabletTwo.cups, 0.5);
+    assert.equal(tabletTwo.foodAmountType, 'Cans');
+    assert.deepEqual((await state('earlier-tablet').get()).get('slotsFed'), { 'slot-meal': first });
+
+    // The personal operation with the same times writes the same.
+    const personal = (backdatedAt: string) => runFeed(memberDb, {
+      householdId: H, petId: 'earlier-personal', opId: opId(), portion: boardTarget, portionFromSlot: true, food: 'Dry', timeZone: TZ,
+      user: { uid: member.uid, name: 'Max' }, backdatedAt: new Date(backdatedAt),
+    });
+    const p1 = await personal(thirty);
+    const p2 = await personal(ten);
+    assert.equal(p1.status, 'saved');
+    assert.equal(p2.status, 'saved');
+    const personalOne = (await logs('earlier-personal').doc((p1 as { logId: string }).logId).get()).data()!;
+    const personalTwo = (await logs('earlier-personal').doc((p2 as { logId: string }).logId).get()).data()!;
+    assert.equal(personalOne.slotId, tabletOne.slotId);
+    assert.equal(personalOne.cups, tabletOne.cups);
+    assert.equal(personalTwo.extra, true);
+    assert.equal(personalTwo.slotId, undefined);
+    assert.equal(personalTwo.cups, tabletTwo.cups);
+    assert.equal(personalTwo.foodAmountType, tabletTwo.foodAmountType);
+  });
+
   test('JC-27: a feed backdated more than 12 hours needs a PIN (and is recorded at PIN level with an activity entry)', async () => {
     await seedPet('old');
     const old = { backdatedAt: later(-13 * 60 * 60_000).toISOString() };

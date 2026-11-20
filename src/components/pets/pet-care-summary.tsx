@@ -206,6 +206,8 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           status={status}
           food={food}
           known={known}
+          pet={pet}
+          logs={feedings.loading || feedings.error ? null : feedings.logs}
           controller={feed}
           describedBy={feedings.loading ? feedHintId : [statusId, feedHintId].filter(Boolean).join(' ')}
           variant={meal?.kind === 'slots' ? (meal.complete || meal.offDay ? 'secondary' : 'default') : status?.complete ? 'secondary' : 'default'}
