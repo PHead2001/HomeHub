@@ -119,6 +119,28 @@ export type WeightTrend = {
 const shortDate = (date: Date, timeZone?: string | null) =>
   date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(timeZone ? { timeZone } : {}) });
 
+/** The trend compares against the earliest weighing this many days before the latest. */
+export const WEIGHT_TREND_WINDOW_DAYS = 90;
+/** The sparkline's weighings (newest, oldest first on screen). */
+export const WEIGHT_TREND_POINTS = 12;
+
+/**
+ * Start of the trend's comparison window: `windowDays` before the latest
+ * weighing. The trend reads its own two bounded queries (the newest
+ * `WEIGHT_TREND_POINTS` weighings, and the earliest weighing from this
+ * instant on), never the paged history, so "Load more" can't change it.
+ */
+export function trendWindowStart(latest: Date, windowDays = WEIGHT_TREND_WINDOW_DAYS): Date {
+  return new Date(latest.getTime() - windowDays * 86_400_000);
+}
+
+/** The trend's inputs: the newest weighings and the window's earliest one, each entry once. */
+export function trendEntries(recent: readonly WeightEntry[], baseline: readonly WeightEntry[]): WeightEntry[] {
+  const byId = new Map<string, WeightEntry>();
+  for (const entry of [...recent, ...baseline]) byId.set(entry.id, entry);
+  return [...byId.values()];
+}
+
 /**
  * The trend in the pet's unit: the latest weighing against the earliest one in
  * the last `windowDays` (90) before it, or the weighing just before it when
@@ -127,13 +149,13 @@ const shortDate = (date: Date, timeZone?: string | null) =>
 export function weightTrend(entries: readonly WeightEntry[], unit: WeightUnit, options: { windowDays?: number; points?: number; timeZone?: string | null } = {}): WeightTrend | null {
   const history = weightHistory(entries);
   if (history.length === 0) return null;
-  const windowMs = (options.windowDays ?? 90) * 86_400_000;
+  const windowMs = (options.windowDays ?? WEIGHT_TREND_WINDOW_DAYS) * 86_400_000;
   const latestEntry = history[0];
   const latest = { value: weightIn(latestEntry, unit), date: latestEntry.date! };
   const older = history.slice(1);
   const inWindow = older.filter((entry) => latest.date.getTime() - entry.date!.getTime() <= windowMs);
   const base = inWindow.length > 0 ? inWindow[inWindow.length - 1] : older[0];
-  const series = history.slice(0, options.points ?? 12).reverse().map((entry) => ({ value: weightIn(entry, unit), date: entry.date! }));
+  const series = history.slice(0, options.points ?? WEIGHT_TREND_POINTS).reverse().map((entry) => ({ value: weightIn(entry, unit), date: entry.date! }));
   if (!base) return { latest, previous: null, change: null, direction: null, summary: 'First weighing', series };
   const previous = { value: weightIn(base, unit), date: base.date! };
   const change = roundWeight(latest.value - previous.value);

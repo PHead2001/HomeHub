@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { collection, limit as limitTo, onSnapshot, orderBy, query, type Query, type QuerySnapshot } from 'firebase/firestore';
+import { collection, limit as limitTo, onSnapshot, orderBy, query, where, type Query, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useSettledPetAccess } from './pet-access';
 import { petListenerKey, petSnapshotListener, type LiveFailure } from '@/lib/pets/live-listener';
 import { behaviourEntries, headlineNote, pinnedNotes, PINNED_NOTES_MAX, readNote, type PetNote } from '@/lib/pets/notes';
-import { readWeight, type WeightEntry } from '@/lib/pets/weights';
+import { readWeight, trendEntries, trendWindowStart, weightHistory, weightTrend, WEIGHT_TREND_POINTS, type WeightEntry, type WeightTrend, type WeightUnit } from '@/lib/pets/weights';
 import {
   runCreateNote,
   runCreateWeight,
@@ -143,4 +143,39 @@ export function useBehaviourEntries(householdId: string | null | undefined, petI
 export function usePetWeights(householdId: string | null | undefined, petId: string, max: number): LiveList<WeightEntry> {
   const base = householdId ? `${householdId}/${petId}/weights` : null;
   return useLiveDocs(base, max, householdId ? () => query(weightsRef(householdId, petId), orderBy('date', 'desc'), limitTo(max)) : null, readWeight);
+}
+
+export type LiveTrend = { trend: WeightTrend | null; loading: boolean; error: unknown; failure?: LiveFailure };
+
+/**
+ * A pet's weight trend, live (PE-28c), independent of the paged history: the
+ * newest `WEIGHT_TREND_POINTS` weighings (the latest, the one before it and the
+ * sparkline) and the earliest weighing in the 90 days before the latest
+ * (`trendWindowStart`, one document), so the baseline and direction never change
+ * when "Load more" grows the history. Both queries are bounded and on `date`
+ * alone (single-field index). While a query reloads (a new latest weighing
+ * moves the window) the last settled trend for this pet and unit stays shown,
+ * so the card never flickers to a skeleton.
+ */
+export function useWeightTrend(householdId: string | null | undefined, petId: string, unit: WeightUnit, timeZone: string | null): LiveTrend {
+  const recent = useLiveDocs(householdId ? `${householdId}/${petId}/weight-trend` : null, WEIGHT_TREND_POINTS, householdId ? () => query(weightsRef(householdId, petId), orderBy('date', 'desc'), limitTo(WEIGHT_TREND_POINTS)) : null, readWeight);
+  const newest = recent.loading || recent.error ? null : (weightHistory(recent.items)[0]?.date ?? null);
+  const since = newest ? trendWindowStart(newest).getTime() : null;
+  const baseline = useLiveDocs(
+    householdId && since !== null ? `${householdId}/${petId}/weight-trend-since-${since}` : null,
+    1,
+    householdId && since !== null ? () => query(weightsRef(householdId, petId), where('date', '>=', new Date(since)), orderBy('date', 'asc'), limitTo(1)) : null,
+    readWeight,
+  );
+  const error = recent.error || baseline.error;
+  const loading = !error && (recent.loading || (since !== null && baseline.loading));
+  const trend = loading || error ? null : weightTrend(trendEntries(recent.items, baseline.items), unit, { timeZone });
+
+  const signature = `${householdId}|${petId}|${unit}`;
+  const [kept, setKept] = useState<{ signature: string; trend: WeightTrend | null; text: string } | null>(null);
+  const text = loading || error ? null : JSON.stringify(trend);
+  if (text !== null && (kept?.signature !== signature || kept.text !== text)) setKept({ signature, trend, text });
+  if (error) return { trend: null, loading: false, error, failure: recent.failure || baseline.failure || 'retrying' };
+  if (loading && kept?.signature === signature) return { trend: kept.trend, loading: false, error: null };
+  return { trend, loading, error: null };
 }

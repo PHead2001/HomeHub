@@ -37,6 +37,9 @@ import {
   validateWeightDraft,
   weightHistory,
   weightTrend,
+  trendEntries,
+  trendWindowStart,
+  WEIGHT_TREND_POINTS,
   type WeightEntry,
 } from '../../src/lib/pets/weights';
 import {
@@ -445,5 +448,59 @@ describe('Notes and weight icon buttons meet the touch target rule (D-2)', () =>
     // on touch each grows to 48 and the 4 px gap stays.
     assert.equal((tab.match(/flex flex-wrap items-start justify-between gap-x-3 gap-y-1/g) ?? []).length, 2, 'pinned and behaviour rows wrap');
     assert.equal((tab.match(/min-w-0 flex-1 basis-48/g) ?? []).length, 2, 'the text keeps at least 12rem before the actions wrap (no sideways scroll at 390 px)');
+  });
+});
+
+describe('the weight trend reads its own window, never the paged history (Codex P2 on #186)', () => {
+  const weigh = (id: string, value: number, iso: string): WeightEntry =>
+    readWeight(id, { value, unit: 'kg', date: new Date(iso), loggedAt: new Date(iso), loggedByUid: 'sam' });
+  // What the two bounded queries return: the newest WEIGHT_TREND_POINTS, and the earliest from the window start on.
+  const trendQueries = (all: WeightEntry[]) => {
+    const newestFirst = weightHistory(all);
+    const recent = newestFirst.slice(0, WEIGHT_TREND_POINTS);
+    const since = trendWindowStart(recent[0].date!).getTime();
+    const baseline = newestFirst.filter((entry) => entry.date!.getTime() >= since).slice(-1);
+    return trendEntries(recent, baseline);
+  };
+
+  it('Codex repro: 12 daily weighings give one trend, whatever page of history is loaded', () => {
+    // Nov 8 .. Nov 19: 4 kg, then up to 7 kg by Nov 10, then down to 6 kg.
+    const values = [4, 5, 7, 7, 7, 7, 7, 7, 7, 6.5, 6.2, 6];
+    const all = values.map((value, index) => weigh(`w${index}`, value, `2026-11-${String(8 + index).padStart(2, '0')}T12:00:00Z`));
+    const firstPage = weightHistory(all).slice(0, 10);
+    // The old bug: the paged first page has no Nov 8 baseline.
+    assert.equal(weightTrend(firstPage, 'kg', { timeZone: TZ })!.summary, 'Down 1 kg since Nov 10');
+    const trend = weightTrend(trendQueries(all), 'kg', { timeZone: TZ })!;
+    assert.equal(trend.summary, 'Up 2 kg since Nov 8');
+    assert.equal(trend.summary, weightTrend(all, 'kg', { timeZone: TZ })!.summary, 'the same as with every entry loaded');
+  });
+
+  it('a baseline beyond the newest points is still found, bounded to 13 documents, in either unit', () => {
+    // 40 weighings, every 3 days over 120 days: the 90-day baseline is far past the newest 12.
+    const start = Date.UTC(2026, 6, 22, 12);
+    const all = Array.from({ length: 40 }, (_, index) => weigh(`w${index}`, 10 + index * 0.1, new Date(start + index * 3 * 86_400_000).toISOString()));
+    const inputs = trendQueries(all);
+    assert.ok(inputs.length <= WEIGHT_TREND_POINTS + 1);
+    for (const unit of ['kg', 'lb'] as const) {
+      const full = weightTrend(all, unit, { timeZone: TZ })!;
+      const windowed = weightTrend(inputs, unit, { timeZone: TZ })!;
+      assert.equal(windowed.summary, full.summary, unit);
+      assert.deepEqual(windowed.series, full.series, `${unit}: the sparkline too`);
+    }
+    assert.equal(trendWindowStart(new Date('2026-11-19T12:00:00Z')).toISOString(), '2026-08-21T12:00:00.000Z');
+    // Fewer weighings than the window holds, or one: unchanged.
+    assert.equal(weightTrend(trendQueries(all.slice(0, 1)), 'kg')!.summary, 'First weighing');
+    assert.deepEqual(trendEntries([all[0]], [all[0]]).map((entry) => entry.id), ['w0'], 'each entry once');
+  });
+
+  it('the card takes the trend from useWeightTrend (two bounded queries), not from the paged list', () => {
+    const card = read('src/components/pets/weight-card.tsx');
+    assert.doesNotMatch(card, /weightTrend\(/, 'no trend from weights.items');
+    assert.match(card, /useWeightTrend\(householdId, pet\.id, unit, timeZone\)/);
+    const api = read('src/components/pets/records-api.ts');
+    const hook = api.slice(api.indexOf('export function useWeightTrend'));
+    assert.match(hook, /orderBy\('date', 'desc'\), limitTo\(WEIGHT_TREND_POINTS\)/);
+    assert.match(hook, /where\('date', '>=', new Date\(since\)\), orderBy\('date', 'asc'\), limitTo\(1\)/);
+    assert.match(hook, /loading && kept\?\.signature === signature/, 'the last settled trend stays while a window reloads');
   });
 });
