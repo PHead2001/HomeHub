@@ -165,6 +165,7 @@ export type DeviceDoseRequest = DevicePetsRequest & {
   confirm?: unknown;
   medication?: unknown;
   dosage?: unknown;
+  occurrenceAt?: unknown;
 };
 
 /**
@@ -185,7 +186,7 @@ export async function giveDoseFromTablet(input: DeviceDoseRequest, options: Devi
   const authority = await authorize(capability, input, options, DOSE_CAPABILITIES);
   const result = await giveDoseAs(adminDb, authority.householdId, {
     petId: input.petId, courseId: input.courseId, occurrenceKey: input.occurrenceKey, givenAt: input.givenAt, notes: input.notes, confirm: input.confirm,
-    medication: input.medication, dosage: input.dosage,
+    medication: input.medication, dosage: input.dosage, occurrenceAt: input.occurrenceAt,
   }, deviceOperationContext(authority), { queuedAt: queuedAtOf(authority.queuedCreatedAt) }).catch(asDeviceError);
   return { result: withoutEmails(result), level: authority.level === 'pin' ? 'pin' : 'face', capability: authority.capability };
 }

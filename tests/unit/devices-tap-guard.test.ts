@@ -97,10 +97,12 @@ describe('Codex #190: the tablet\'s History reads feeding times', () => {
 
 describe('Codex #190: a queued dose keeps what Give dose showed', () => {
   it('the tablet intent carries the shown medication and dosage; the server records them for a queued dose', () => {
-    assert.match(read('src/components/pets/give-dose-dialog.tsx'), /notes: notes\.trim\(\), medication: course\.name, dosage: course\.dosage \}/);
+    assert.match(read('src/components/pets/give-dose-dialog.tsx'), /occurrenceKey: occurrenceId\(selected\), occurrenceAt: selected\.at, givenAt: [^\n]*notes: notes\.trim\(\), medication: course\.name, dosage: course\.dosage \}/);
     const server = read('src/lib/server/pet-records.ts');
     assert.match(server, /medication: shownMedication \?\? course\.name,\s*dosage: shownDosage \?\? course\.dosage,/);
     assert.match(server, /value\.length > 200/);
-    assert.match(read('src/lib/server/device-pets.ts'), /medication: input\.medication, dosage: input\.dosage,/);
+    assert.match(read('src/lib/server/device-pets.ts'), /medication: input\.medication, dosage: input\.dosage, occurrenceAt: input\.occurrenceAt,/);
+    // The occurrence as shown first, the schedule's only when the intent has none.
+    assert.match(server, /const occurrence = shown \?\? \(course\.schedule \? occurrenceByKey\(/);
   });
 });

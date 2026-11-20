@@ -12,7 +12,7 @@ import {
   type Transaction,
 } from 'firebase-admin/firestore';
 import { isDocId } from '@functions/shared/push-media';
-import { localMinutes } from '@functions/shared/calendar';
+import { localMinutes, safeTimeZone } from '@functions/shared/calendar';
 import { publicDisplayName } from '@/lib/member-directory';
 import {
   coveredUntilAfterSave,
@@ -207,6 +207,13 @@ export type DoseAsInput = {
    */
   medication?: unknown;
   dosage?: unknown;
+  /**
+   * The instant (ms) of the occurrence Give dose showed, carried in the tablet's queued intent
+   * with its identity (`occurrenceKey`): a queued dose records that occurrence even when the
+   * schedule was edited (or the course finished) before the tablet reconnected, as the
+   * personal offline path builds its log from the cached schedule. Absent: looked up.
+   */
+  occurrenceAt?: unknown;
 };
 
 type PlainOccurrence = { key: string; day: string; time: string | null; at: number };
@@ -250,6 +257,25 @@ const shownOf = (value: unknown, required: boolean): string | undefined => {
   if (typeof value !== 'string' || value.length > 200 || (required && !value.trim())) throw new PetFeedingError('invalid');
   return value;
 };
+
+const DAY_MS = 86_400_000;
+
+/**
+ * A queued dose's shown occurrence: a whole-ms instant before the rules' bound (92 days
+ * ahead) whose household wall time is its key's (the day for an all-day key); null when absent.
+ */
+export function shownOccurrence(value: unknown, occurrenceKey: string, timeZone: string, now: number): Occurrence | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value >= now + 92 * DAY_MS) throw new PetFeedingError('invalid');
+  const fold = occurrenceKey.endsWith('~1');
+  const key = fold ? occurrenceKey.slice(0, -2) : occurrenceKey;
+  const zone = safeTimeZone(timeZone);
+  const at = new Date(value);
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+  const time = key.length > 10 ? new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at) : null;
+  if ((time ? `${day}T${time}` : day) !== key) throw new PetFeedingError('invalid');
+  return { key, ...(fold ? { fold: 1 as const } : {}), day, time, at: value };
+}
 
 const notesOf = (value: unknown, max = 2000): string => {
   if (value === undefined || value === null) return '';
@@ -313,9 +339,11 @@ export async function giveDoseAs(db: Firestore, householdId: string, input: Dose
         return finalize({ status: 'saved', petId, courseId, logId, occurrence: null, nextAfter: null, offline: true, replayed: true });
       }
       if (!course) return { status: 'refused', reason: 'missing' };
-      if (!course.schedule) return { status: 'refused', reason: 'finished' };
-      const occurrence = occurrenceByKey({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, occurrenceKey, timeZone);
-      if (!occurrence) return { status: 'refused', reason: 'occurrence' };
+      // The occurrence Give dose showed, as shown: a schedule edited (or a course finished)
+      // while the tablet was offline never drops a dose that was given (Codex review of PR 190).
+      const shown = shownOccurrence(input.occurrenceAt, occurrenceKey, timeZone, now.getTime());
+      const occurrence = shown ?? (course.schedule ? occurrenceByKey({ schedule: course.schedule, startDay: course.startDay, endDay: course.endDay }, occurrenceKey, timeZone) : null);
+      if (!occurrence) return { status: 'refused', reason: course.schedule ? 'occurrence' : 'finished' };
       const at = givenAt ?? options.queuedAt;
       if (at.getTime() < now.getTime() - DOSE_BACKDATE_MAX_MS) return { status: 'refused', reason: 'too-old' };
       // An offline dose: the log alone (readers combine it with the course), as the personal offline path.

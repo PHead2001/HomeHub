@@ -56,7 +56,7 @@ const member: Person = { uid: 'dr-member', email: 'dr.member@example.test', disp
 const child: Person = { uid: 'dr-child', email: 'dr.child@example.test', displayName: 'Cleo', role: 'child' };
 const KID = 'kid_DevPetsRecKid0000000';
 const created = new Set<string>();
-const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin', 'shown'] as const;
+const NAMES = ['dose', 'backdated', 'note', 'weight', 'again', 'other', 'parity', 'pin', 'pin2', 'pin3', 'pin4', 'pin5', 'pin6', 'pin7', 'extra', 'line', 'review', 'mFace', 'mPin', 'cFace', 'cPin', 'shown', 'moved'] as const;
 const tablets = {} as Record<(typeof NAMES)[number], Tablet>;
 let ownerDb: ClientFirestore;
 let memberDb: ClientFirestore;
@@ -100,6 +100,13 @@ const seedDosePet = async (id: string) => {
 const prefill = async (petId: string, courseId = 'course-a') => {
   const view = readCourse(courseId, (await course(petId, courseId).get()).data() ?? {})!;
   return occurrenceId(doseChoices(view, new Date(), TZ).prefill!);
+};
+
+/** The occurrence Give dose shows now, as the tablet queues it: its identity and its instant. */
+const shownNow = async (petId: string, courseId = 'course-a') => {
+  const view = readCourse(courseId, (await course(petId, courseId).get()).data() ?? {})!;
+  const prefill = doseChoices(view, new Date(), TZ).prefill!;
+  return { occurrenceKey: occurrenceId(prefill), occurrenceAt: prefill.at, key: prefill.key };
 };
 
 type Variant = 'live' | 'backdated';
@@ -358,6 +365,31 @@ describe('pets.dose.give: generation, the queued path, "Already given?", levels 
     // Strings within the rules' bounds only; a name is never empty.
     for (const bad of [{ dosage: 'x'.repeat(201) }, { medication: '' }, { medication: 'y'.repeat(201) }, { dosage: 3 }] as Partial<DeviceDoseRequest>[]) {
       await refused(giveDoseFromTablet({ ...doseRequest(tablets.shown, member.uid, opId(), 'dose-shown', key, { medication: 'Apoquel', dosage: '1 tablet', ...bad }), ...queued(tablets.shown, 20_000) }), 'invalid_input');
+    }
+  });
+
+  test('Codex #190: a queued dose keeps the occurrence Give dose showed after a schedule edit (recorded once, never dropped)', async () => {
+    await seedDosePet('dose-moved');
+    const shown = await shownNow('dose-moved');
+    // The schedule moves an hour (08:00 becomes 09:00) before the tablet reconnects: the shown key no longer exists.
+    await course('dose-moved').update({ 'schedule.firstTime': '01:00' });
+    const legacy = await giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, opId(), 'dose-moved', shown.occurrenceKey), ...queued(tablets.moved, 60_000) });
+    assert.deepEqual(legacy.result, { status: 'refused', reason: 'occurrence' }, 'without the instant (an older queued entry) it cannot be placed');
+    const op = opId();
+    const request = { ...doseRequest(tablets.moved, member.uid, op, 'dose-moved', shown.occurrenceKey, { occurrenceAt: shown.occurrenceAt }), ...queued(tablets.moved, 60_000) };
+    assert.equal((await giveDoseFromTablet(request)).result.status, 'saved');
+    assert.equal((await giveDoseFromTablet(request)).result.status, 'saved', 'a retry');
+    const logs = (await doses('dose-moved').get()).docs;
+    assert.equal(logs.length, 1, 'recorded once');
+    assert.equal(logs[0].get('occurrence'), shown.key, 'the plain key (the rules\' shape)');
+    assert.equal((logs[0].get('occurrenceAt') as Timestamp).toMillis(), shown.occurrenceAt);
+    // A finished course keeps a dose given while the tablet was offline as history.
+    await course('dose-moved').update({ status: 'finished', schedule: null });
+    const late = opId();
+    assert.equal((await giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, late, 'dose-moved', shown.occurrenceKey, { occurrenceAt: shown.occurrenceAt }), ...queued(tablets.moved, 30_000) })).result.status, 'saved');
+    // The instant must be the key's household wall time, a whole number of ms, before the rules' 92-day bound.
+    for (const occurrenceAt of [shown.occurrenceAt + 60_000, shown.occurrenceAt + 0.5, Date.now() + 93 * 86_400_000, '1700000000000', -1]) {
+      await refused(giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, opId(), 'dose-moved', shown.occurrenceKey, { occurrenceAt }), ...queued(tablets.moved, 20_000) }), 'invalid_input');
     }
   });
 
@@ -773,6 +805,19 @@ describe('the server writes exactly what the rules accept from the person (repla
     await doseParity('parity-dose', async () => {
       const op = opId();
       await giveDoseFromTablet({ ...doseRequest(tablets.parity, member.uid, op, 'parity-dose', await prefill('parity-dose')), ...queued(tablets.parity, 60_000) });
+      return op;
+    });
+    // A queued dose whose shown occurrence the schedule no longer has (Codex #190): the rules accept it from the member.
+    await doseParity('parity-dose', async () => {
+      const op = opId();
+      const shown = await shownNow('parity-dose');
+      await course('parity-dose').update({ 'schedule.firstTime': '01:00' });
+      try {
+        await giveDoseFromTablet({ ...doseRequest(tablets.moved, member.uid, op, 'parity-dose', shown.occurrenceKey, { occurrenceAt: shown.occurrenceAt }), ...queued(tablets.moved, 60_000) });
+      } finally {
+        await course('parity-dose').update({ 'schedule.firstTime': '00:00' });
+      }
+      assert.equal((await doses('parity-dose').doc(op).get()).get('occurrence'), shown.key);
       return op;
     });
     // A queued dose with the medication and dosage Give dose showed (Codex #190): the rules accept it from the member.
