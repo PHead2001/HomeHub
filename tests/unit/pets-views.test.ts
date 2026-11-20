@@ -41,11 +41,11 @@ const legacyPet: Pet = { foodSchedule: '1 cup twice daily', feedingsPerDay: 2 };
 const fed = (id: string, date: Date, extra: Record<string, unknown> = {}) => ({ id, date, loggedByName: 'Sam', loggedByUid: 'sam', ...extra });
 const overdue: MedicationDue = { medication: 'Heartworm', dosage: '1 chew', due: new Date('2026-11-12T12:00:00Z'), dueDay: '2026-11-12', days: -2, state: 'overdue', label: 'Overdue by 2 days' };
 
-const band = (pet: Pet, logs: ReturnType<typeof fed>[], now: Date, dues: MedicationDue[] = []) => {
+const band = (pet: Pet, logs: ReturnType<typeof fed>[], now: Date, dues: MedicationDue[] = [], medicationFailed = false) => {
   const meal = mealStatus(pet, logs, now, CHI);
   // The card's ring view of a slot status (pet-care-summary's `ringView`).
   const status = meal.kind === 'legacy' ? meal.status : { fedToday: meal.day.fedCount, perDay: meal.day.planned || null, progress: 0, complete: meal.complete, last: meal.last };
-  return boardStatus({ meal, status, dues, feedingsLoading: false, feedingsFailed: false, medicationFailed: false, now, timeZone: CHI });
+  return boardStatus({ meal, status, dues, feedingsLoading: false, feedingsFailed: false, medicationFailed, now, timeZone: CHI });
 };
 
 describe('the board status band (PE-9a/b)', () => {
@@ -80,6 +80,29 @@ describe('the board status band (PE-9a/b)', () => {
     assert.deepEqual([one.tone, one.label, one.detail], ['neutral', 'Fed today', '1 of 2 today']);
     const both = band(legacyPet, [fed('a', nov(14, '08:00')), fed('b', nov(14, '18:00'))], nov(14, '20:00'));
     assert.deepEqual([both.tone, both.label, both.line], ['fed', 'Fed', 'All fed today']);
+  });
+
+  it('says the medication read failed and never shows an all-clear green band then (Codex P2 on #187)', () => {
+    const logs = [fed('a', nov(14, '07:10'), { slotId: 'breakfast' }), fed('b', nov(14, '18:05'), { slotId: 'dinner' })];
+    // Fed, and the medication listener failed (its dues were cleared): not green, and flagged for the card's notice.
+    const failed = band(slotPet, logs, nov(14, '19:00'), [], true);
+    assert.deepEqual([failed.tone, failed.label, failed.line, failed.medicationUnavailable], ['unknown', 'Fed · medication unknown', 'All 2 meals done today', true]);
+    const legacyFailed = band(legacyPet, [fed('a', nov(14, '08:00')), fed('b', nov(14, '18:00'))], nov(14, '20:00'), [], true);
+    assert.deepEqual([legacyFailed.tone, legacyFailed.medicationUnavailable], ['unknown', true]);
+    // A due meal is still due (amber), with the notice flag.
+    const due = band(slotPet, [fed('a', nov(14, '07:10'), { slotId: 'breakfast' })], nov(14, '18:20'), [], true);
+    assert.deepEqual([due.tone, due.medicationUnavailable], ['due', true]);
+    // While feedings load or failed too.
+    const base = { meal: null, status: null, dues: [], feedingsLoading: true, feedingsFailed: false, medicationFailed: true, now: nov(14, '12:00') };
+    assert.equal(boardStatus(base).medicationUnavailable, true);
+    assert.equal(boardStatus({ ...base, feedingsLoading: false, feedingsFailed: true }).medicationUnavailable, true);
+    // A healthy read: green Fed, no flag.
+    const ok = band(slotPet, logs, nov(14, '19:00'));
+    assert.deepEqual([ok.tone, ok.medicationUnavailable], ['fed', false]);
+    // The board card and the phone row print the notice from the flag.
+    const card = read('src/components/pets/living-pet-card.tsx');
+    assert.equal(card.match(/\{board\.medicationUnavailable && <MedicationUnavailable care=\{care\}/g)?.length, 2);
+    assert.match(card, /unavailableText\('The next medication dose', care\.medications\.failure \?\? 'retrying'\)/);
   });
 
   it('claims nothing while loading or failed (an overdue dose still shows)', () => {

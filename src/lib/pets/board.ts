@@ -26,6 +26,11 @@ export type BoardStatus = {
   detail: string | null;
   /** The overdue medication, when the band is red for it. */
   medication: string | null;
+  /**
+   * The medication read failed: the card says so, and a "Fed" band is not green
+   * (it would imply no dose is due when that is unknown).
+   */
+  medicationUnavailable: boolean;
 };
 
 export type BoardInput = {
@@ -42,11 +47,12 @@ export type BoardInput = {
 /** The band and lines of one pet on the board, from the shared slot status (P2) and medication attention (P3). */
 export function boardStatus(input: BoardInput): BoardStatus {
   const medication = input.medicationFailed ? null : medicationAttention(input.dues);
+  const medicationUnavailable = input.medicationFailed;
   if (input.feedingsLoading) {
-    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Checking', line: 'Checking feedings…', detail: null, medication };
+    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Checking', line: 'Checking feedings…', detail: null, medication, medicationUnavailable };
   }
   if (input.feedingsFailed || !input.meal || !input.status) {
-    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Unavailable', line: 'Feeding status unavailable', detail: null, medication };
+    return { tone: medication ? 'overdue' : 'unknown', label: medication ? 'Medication overdue' : 'Unavailable', line: 'Feeding status unavailable', detail: null, medication, medicationUnavailable };
   }
   const { meal, status } = input;
   let tone: BoardTone;
@@ -77,8 +83,10 @@ export function boardStatus(input: BoardInput): BoardStatus {
     tone = done ? 'fed' : 'neutral';
     label = done ? 'Fed' : status.fedToday > 0 ? 'Fed today' : status.nonDaily ? 'No daily plan' : 'Not fed today';
   }
-  if (medication) return { tone: 'overdue', label: 'Medication overdue', line, detail, medication };
-  return { tone, label, line, detail, medication: null };
+  if (medication) return { tone: 'overdue', label: 'Medication overdue', line, detail, medication, medicationUnavailable };
+  // An unknown medication state never shows as an all-clear green band.
+  if (medicationUnavailable && tone === 'fed') return { tone: 'unknown', label: 'Fed · medication unknown', line, detail, medication: null, medicationUnavailable };
+  return { tone, label, line, detail, medication: null, medicationUnavailable };
 }
 
 /* ------------------------------------------------------------------------- */

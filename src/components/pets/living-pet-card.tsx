@@ -19,6 +19,7 @@ import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { feedingHeadline, formatPortion, petHref, petPhotoMorphName, SPECIES_ART_LABEL, speciesArt } from '@/lib/pets/care';
 import { boardStatus, type BoardStatus, type BoardTone, type PetsLayout } from '@/lib/pets/board';
 import { morphStyle } from '@/lib/motion';
+import { unavailableText } from '@/lib/pets/live-listener';
 import { cn } from '@/lib/utils';
 import type { PetProfile } from '@/lib/pets/types';
 import { PinnedNoteLine } from './pinned-note-line';
@@ -338,6 +339,15 @@ function CardChips({ pet, care, max = 2 }: { pet: PetProfile; care: PetCare; max
   );
 }
 
+/** The medication read failed (PE-21): said on the card, so it is never mistaken for nothing being due. */
+function MedicationUnavailable({ care, className }: { care: PetCare; className?: string }) {
+  return (
+    <p className={cn('text-muted-foreground', className)} data-testid="medication-unavailable">
+      {unavailableText('The next medication dose', care.medications.failure ?? 'retrying')}
+    </p>
+  );
+}
+
 /** The slot status of a pet with confirmed meal times, once its feedings have loaded (never claimed while loading or failed). */
 function loadedSlots(care: PetCare) {
   return care.meal?.kind === 'slots' && !care.feedings.loading && !care.feedings.error ? care.meal : null;
@@ -387,6 +397,7 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
             {/* PE-10b (D-P18): a neutral hint from the parsed schedule, never a "due" claim. */}
             {care.meal?.kind === 'legacy' && care.meal.nextMealHint && <p className="text-sm text-muted-foreground" data-testid="next-meal-hint">{care.meal.nextMealHint}</p>}
             {board.medication && <p className="mt-0.5 text-sm font-medium text-destructive">{board.medication}</p>}
+            {board.medicationUnavailable && <MedicationUnavailable care={care} className="mt-0.5 text-sm" />}
             {slots && <MealSlotList status={slots} timeZone={care.timeZone} className="mt-1 text-sm" />}
           </div>
           <div className="flex min-w-0 items-start gap-1">
@@ -428,11 +439,13 @@ function RowCard({ pet, model, photoRef, priority, index = 0, canEdit, onEdit, o
           <DetailsLink pet={pet} model={model} />
         </div>
         <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
-          <p className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>
-            <span className={cn('inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs', BAND_CLASSES[board.tone])} data-band={board.tone}>{board.label}</span>
-            <span className="min-w-0 truncate">{board.line}</span>
+          {/* The pill on its own line and the feeding headline under it (up to two lines), so a long pill never hides when the pet was fed. */}
+          <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm font-semibold text-foreground" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>
+            <span className={cn('inline-block max-w-full truncate rounded-full px-2 py-0.5 text-xs', BAND_CLASSES[board.tone])} data-band={board.tone}>{board.label}</span>
+            <span className="line-clamp-2 min-w-0 basis-full break-words [overflow-wrap:anywhere]" data-testid="pet-status-headline">{board.line}</span>
           </p>
           {board.medication && <p className="truncate text-xs font-medium text-destructive">{board.medication}</p>}
+          {board.medicationUnavailable && <MedicationUnavailable care={care} className="truncate text-xs" />}
           {slots && <MealSlotList status={slots} timeZone={care.timeZone} inline className="mt-0.5" />}
         </div>
       </div>

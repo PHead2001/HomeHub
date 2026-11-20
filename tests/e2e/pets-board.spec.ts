@@ -228,6 +228,42 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
     }
   });
 
+  for (const width of [390, 360]) {
+    test(`phone (${width} x 844): the feeding headline has its own line under a "Medication overdue" pill (Codex P2 on #187)`, async ({ browser }, testInfo) => {
+      desktopOnly(testInfo);
+      await seedMedication('maple', 'Heartworm', -2);
+      const { context, page } = await touchContext(browser, { width, height: 844 });
+      try {
+        await openPets(page);
+        const row = page.getByTestId('pets-rows').getByTestId('pet-card-maple');
+        const pill = row.locator('[data-band]');
+        await expect(pill).toHaveText('Medication overdue');
+        const headline = row.getByTestId('pet-status-headline');
+        await expect(headline).toBeVisible();
+        await expect(headline).not.toHaveText('');
+        const shown = await headline.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const pillBox = element.parentElement!.querySelector('[data-band]')!.getBoundingClientRect();
+          return {
+            width: box.width,
+            // Up to two lines, none cut: the whole headline is shown.
+            fits: element.scrollHeight <= element.clientHeight + 1 && element.scrollWidth <= element.clientWidth + 1,
+            below: box.top >= pillBox.bottom - 0.5,
+          };
+        });
+        expect(shown.width).toBeGreaterThan(80);
+        expect(shown.fits).toBe(true);
+        expect(shown.below).toBe(true);
+        // The pill itself stays inside the row.
+        const [rowBox, pillBox] = [(await row.boundingBox())!, (await pill.boundingBox())!];
+        expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width);
+        expect((await noPageScroll(page)).sideways).toBeLessThanOrEqual(0);
+      } finally {
+        await context.close();
+      }
+    });
+  }
+
   test('touch: one hold logs exactly one feeding, a scroll that starts on the photo logs none, and the caption goes after the first hold (PE-12a/c, PE-11a)', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);
     const { context, page } = await touchContext(browser, { width: 1263, height: 818 });
