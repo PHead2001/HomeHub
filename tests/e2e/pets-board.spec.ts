@@ -197,6 +197,27 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
       const feed = (await rows.first().getByRole('button', { name: /^Feed / }).boundingBox())!;
       expect(feed.y + feed.height).toBeLessThanOrEqual(844);
       expect(feed.height).toBeGreaterThanOrEqual(48);
+      // Each row keeps the actions menu (Edit, Delete) as a 48 px button that overlaps nothing in the row.
+      for (const row of await rows.all()) {
+        const menu = row.getByRole('button', { name: /^Open actions for / });
+        await expect(menu).toBeVisible();
+        const boxes = [
+          (await menu.boundingBox())!,
+          (await row.getByRole('button', { name: /^Feed / }).boundingBox())!,
+          (await row.locator('[data-testid^="pet-details-"]').boundingBox())!,
+          (await row.locator('[data-testid^="pet-name-"]').boundingBox())!,
+        ];
+        expect(boxes[0].width).toBeGreaterThanOrEqual(48);
+        expect(boxes[0].height).toBeGreaterThanOrEqual(48);
+        for (const other of boxes.slice(1)) {
+          const [a, b] = [boxes[0], other];
+          expect(a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5).toBe(false);
+        }
+      }
+      await page.getByRole('button', { name: 'Open actions for Maple' }).click();
+      await expect(page.getByRole('menuitem', { name: 'Edit' })).toBeVisible();
+      await expect(page.getByRole('menuitem', { name: 'Delete' })).toBeVisible();
+      await page.keyboard.press('Escape');
       const title = (await page.getByRole('heading', { name: 'Your Pets', exact: true }).boundingBox())!;
       const add = (await page.getByRole('button', { name: 'Add Pet' }).boundingBox())!;
       expect(add.y).toBeLessThan(title.y + title.height);
@@ -206,6 +227,42 @@ test.describe('pets: board, rows, touch and targets (P4)', () => {
       await context.close();
     }
   });
+
+  for (const width of [390, 360]) {
+    test(`phone (${width} x 844): the feeding headline has its own line under a "Medication overdue" pill (Codex P2 on #187)`, async ({ browser }, testInfo) => {
+      desktopOnly(testInfo);
+      await seedMedication('maple', 'Heartworm', -2);
+      const { context, page } = await touchContext(browser, { width, height: 844 });
+      try {
+        await openPets(page);
+        const row = page.getByTestId('pets-rows').getByTestId('pet-card-maple');
+        const pill = row.locator('[data-band]');
+        await expect(pill).toHaveText('Medication overdue');
+        const headline = row.getByTestId('pet-status-headline');
+        await expect(headline).toBeVisible();
+        await expect(headline).not.toHaveText('');
+        const shown = await headline.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const pillBox = element.parentElement!.querySelector('[data-band]')!.getBoundingClientRect();
+          return {
+            width: box.width,
+            // Up to two lines, none cut: the whole headline is shown.
+            fits: element.scrollHeight <= element.clientHeight + 1 && element.scrollWidth <= element.clientWidth + 1,
+            below: box.top >= pillBox.bottom - 0.5,
+          };
+        });
+        expect(shown.width).toBeGreaterThan(80);
+        expect(shown.fits).toBe(true);
+        expect(shown.below).toBe(true);
+        // The pill itself stays inside the row.
+        const [rowBox, pillBox] = [(await row.boundingBox())!, (await pill.boundingBox())!];
+        expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width);
+        expect((await noPageScroll(page)).sideways).toBeLessThanOrEqual(0);
+      } finally {
+        await context.close();
+      }
+    });
+  }
 
   test('touch: one hold logs exactly one feeding, a scroll that starts on the photo logs none, and the caption goes after the first hold (PE-12a/c, PE-11a)', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);

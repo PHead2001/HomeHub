@@ -19,6 +19,7 @@ import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { feedingHeadline, formatPortion, petHref, petPhotoMorphName, SPECIES_ART_LABEL, speciesArt } from '@/lib/pets/care';
 import { boardStatus, type BoardStatus, type BoardTone, type PetsLayout } from '@/lib/pets/board';
 import { morphStyle } from '@/lib/motion';
+import { unavailableText } from '@/lib/pets/live-listener';
 import { cn } from '@/lib/utils';
 import type { PetProfile } from '@/lib/pets/types';
 import { PinnedNoteLine } from './pinned-note-line';
@@ -338,6 +339,15 @@ function CardChips({ pet, care, max = 2 }: { pet: PetProfile; care: PetCare; max
   );
 }
 
+/** The medication read failed (PE-21): said on the card, so it is never mistaken for nothing being due. */
+function MedicationUnavailable({ care, className }: { care: PetCare; className?: string }) {
+  return (
+    <p className={cn('text-muted-foreground', className)} data-testid="medication-unavailable">
+      {unavailableText('The next medication dose', care.medications.failure ?? 'retrying')}
+    </p>
+  );
+}
+
 /** The slot status of a pet with confirmed meal times, once its feedings have loaded (never claimed while loading or failed). */
 function loadedSlots(care: PetCare) {
   return care.meal?.kind === 'slots' && !care.feedings.loading && !care.feedings.error ? care.meal : null;
@@ -387,6 +397,7 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
             {/* PE-10b (D-P18): a neutral hint from the parsed schedule, never a "due" claim. */}
             {care.meal?.kind === 'legacy' && care.meal.nextMealHint && <p className="text-sm text-muted-foreground" data-testid="next-meal-hint">{care.meal.nextMealHint}</p>}
             {board.medication && <p className="mt-0.5 text-sm font-medium text-destructive">{board.medication}</p>}
+            {board.medicationUnavailable && <MedicationUnavailable care={care} className="mt-0.5 text-sm" />}
             {slots && <MealSlotList status={slots} timeZone={care.timeZone} className="mt-1 text-sm" />}
           </div>
           <div className="flex min-w-0 items-start gap-1">
@@ -405,10 +416,11 @@ function BoardCard({ pet, householdId, canEdit, onEdit, onDelete, priority, inde
 
 /**
  * Phone row card (PE-13a): a 64 px round avatar (hold to feed), the name with a
- * details chevron, the status as a short label and line, and Feed, so several
- * pets fit one screen and the first Feed is above the fold.
+ * details chevron, the status as a short label and line, and Feed with the
+ * actions menu above it (for editors), so several pets fit one screen and the
+ * first Feed is above the fold.
  */
-function RowCard({ pet, model, photoRef, priority, index = 0 }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
+function RowCard({ pet, model, photoRef, priority, index = 0, canEdit, onEdit, onDelete }: LivingPetCardProps & { model: CardModel; photoRef: PhotoRef }) {
   const statusId = `pet-status-${pet.id}`;
   const hintId = `feed-hint-${pet.id}`;
   const { board, attention, care } = model;
@@ -427,17 +439,21 @@ function RowCard({ pet, model, photoRef, priority, index = 0 }: LivingPetCardPro
           <DetailsLink pet={pet} model={model} />
         </div>
         <div id={statusId} className="min-w-0" data-testid={slots ? 'meal-slots-status' : undefined}>
-          <p className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>
-            <span className={cn('inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs', BAND_CLASSES[board.tone])} data-band={board.tone}>{board.label}</span>
-            <span className="min-w-0 truncate">{board.line}</span>
+          {/* The pill on its own line and the feeding headline under it (up to two lines), so a long pill never hides when the pet was fed. */}
+          <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm font-semibold text-foreground" data-testid="pet-status-line" data-meal-state={slots ? mealStateOf(slots) : undefined}>
+            <span className={cn('inline-block max-w-full truncate rounded-full px-2 py-0.5 text-xs', BAND_CLASSES[board.tone])} data-band={board.tone}>{board.label}</span>
+            <span className="line-clamp-2 min-w-0 basis-full break-words [overflow-wrap:anywhere]" data-testid="pet-status-headline">{board.line}</span>
           </p>
           {board.medication && <p className="truncate text-xs font-medium text-destructive">{board.medication}</p>}
+          {board.medicationUnavailable && <MedicationUnavailable care={care} className="truncate text-xs" />}
           {slots && <MealSlotList status={slots} timeZone={care.timeZone} inline className="mt-0.5" />}
         </div>
       </div>
       {model.holdEnabled && <span id={hintId} className="sr-only">Or press and hold the photo of {pet.name} to log {model.feed.portion}.</span>}
-      <div className="relative z-10 w-24 shrink-0">
-        <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={false} onEdit={() => undefined} compact />
+      {/* The actions menu (the grid's and the board's: Edit, Delete) sits above Feed, so the text column keeps its width at 390 px. */}
+      <div className="relative z-10 flex w-24 shrink-0 flex-col items-end gap-1">
+        {canEdit && <ActionsMenu pet={pet} onEdit={onEdit} onDelete={onDelete} className="bg-transparent shadow-none" />}
+        <FeedArea pet={pet} model={model} statusId={statusId} hintId={hintId} canEdit={false} onEdit={() => undefined} compact className="w-full" />
       </div>
     </Card>
   );
