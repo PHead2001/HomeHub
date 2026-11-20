@@ -81,7 +81,8 @@ export type EarlierFeedController = {
   feedAt: (choice: FeedEarlierChoice, opId?: string | null) => Promise<FeedPetResult | null>;
 };
 
-export type FeedSource = 'tap' | 'hold';
+/** Where a feeding was started (the paw burst plays from that control): the Feed button. */
+export type FeedSource = 'tap';
 
 /** Focuses the pet's Feed button (`data-feed-button`), when it is on the page. */
 function focusFeedButton(petId: string) {
@@ -118,7 +119,7 @@ export type QuickFeedController = {
 };
 
 /**
- * The quick feeding behind one-tap feeding, hold to feed and the `?feed=1`
+ * The quick feeding behind one-tap feeding and the `?feed=1`
  * confirm (H09): logs the planned portion with the latest food type through the
  * shared feed operation (`feedPet`, via `useFeedAction`), which first checks
  * whether someone fed the pet in the last 90 minutes or today is complete and
@@ -290,9 +291,9 @@ export function FeedConfirmPanel({
 }
 
 export type QuickFeedButtonProps = QuickFeedOptions & {
-  /** A controller shared with hold to feed; without one the button owns its own. */
+  /** A controller shared with the card (its actions menu opens Feed earlier); without one the button owns its own. */
   controller?: QuickFeedController;
-  /** Id of hint text (e.g. "or press and hold the photo") for `aria-describedby`. */
+  /** Id of the text describing the button (the pet's fed status) for `aria-describedby`. */
   describedBy?: string;
   className?: string;
   size?: ButtonProps['size'];
@@ -302,12 +303,11 @@ export type QuickFeedButtonProps = QuickFeedOptions & {
 };
 
 /**
- * One-tap feeding at the planned portion (section 3 Pets, H09) and the accessible
- * alternative to hold to feed (owner decision): the tap logs at once and the
- * toast confirms what was logged, with Undo for 10 s for everyone who can log.
- * A single reversible tap is the alternative to holding; the tap asks first only
- * when the shared operation's last-fed check says so ("Sam fed Rex 12 min ago.
- * Feed again?", in `FeedAgainDialog`, which also serves hold to feed), and the
+ * One-tap feeding at the planned portion (section 3 Pets, H09): the tap logs at
+ * once and the toast confirms what was logged, with Undo for 10 s for everyone
+ * who can log; pressing and holding it (touch, pen) opens Feed earlier. The tap
+ * asks first only when the shared operation's last-fed check says so ("Sam fed
+ * Rex 12 min ago. Feed again?", in `FeedAgainDialog`), and the
  * "Log feeding" home-screen shortcut always asks (`FeedPickerDialog`), because
  * nothing on a pet was tapped there. The full form stays on the pet page behind
  * "Log with details".

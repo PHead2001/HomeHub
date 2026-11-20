@@ -22,8 +22,8 @@ const CONTEXTMENU_AFTER_HOLD_MS = 1500;
 /**
  * Press and hold Feed (touch and pen) to choose an earlier time, plus the
  * desktop and keyboard ways in: right-click (contextmenu) and Shift+Enter on
- * the button. The state machine is `src/lib/pets/feed-press.ts`; the hold
- * mechanics are those of hold to feed on the photo (`useHoldToFeed`): a move
+ * the button. The state machine is `src/lib/pets/feed-press.ts` (on the
+ * press-and-hold machine in `src/lib/pets/hold.ts`): a move
  * (more than 10 px), a scroll (pointer cancel) or Escape cancels, `onHold` runs
  * once per press, a quick tap never shows progress and its click goes through
  * (feeds now), and the click after a hold attempt is swallowed (a released hold

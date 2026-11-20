@@ -10,7 +10,7 @@
 // household data, so they show only what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
 import { tabletListener } from '@/lib/devices/tablet-listener';
 import type { QuerySnapshot } from 'firebase/firestore';
@@ -19,8 +19,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useFeedAction } from '@/components/pets/use-feed-action';
-import { HoldToFeedOverlay, useHoldToFeed } from '@/components/pets/hold-to-feed';
-import type { QuickFeedController } from '@/components/pets/quick-feed-button';
 import { FeedEarlierDialog } from '@/components/pets/feed-earlier-dialog';
 import { FeedPressFill, useFeedPress } from '@/components/pets/feed-press';
 import type { FeedAction } from '@/components/pets/use-feed-action';
@@ -144,8 +142,8 @@ function ChoresView({ roomId }: { roomId?: string }) {
 }
 
 /**
- * One pet on the tablet: its feeding status, **Feed** (or hold the picture for 800 ms), and
- * **Care**. Both are device actions for the person chosen in "Who's here?" (PE-17a/b): the
+ * One pet on the tablet: its feeding status, **Feed** (tap: feed now; press and hold: Feed
+ * earlier), and **Care**. The pet's picture is only a picture (no gesture). Both are device actions for the person chosen in "Who's here?" (PE-17a/b): the
  * feed goes through the shared feed hook, which on a tablet sends `pets.feed` (the server
  * picks the meal slot and its portion, and asks "Feed again?" when the shared check does);
  * care sends `pets.care.add`. Each offers Undo for 10 s.
@@ -157,25 +155,16 @@ function TabletPetRow({ pet, onCare, onOpen }: { pet: PetState; onCare: (pet: Pe
   const run = useCallback(async () => (feed
     ? runFeed({ portion: { amount: feed.amount, unit: feed.unit }, portionFromSlot: feed.portionFromSlot, food: feed.foodType, known: feed.known })
     : null), [runFeed, feed]);
-  const avatar = useRef<HTMLSpanElement>(null);
   const portion = feed ? formatPortion(feed.amount, feed.unit) : '';
-  // The hold gesture's controller: the same feed as the button.
-  const controller: QuickFeedController = {
-    allowed: action.allowed && Boolean(feed), saving: action.saving, portion, label: portion, slotName: null,
-    foodType: feed?.foodType ?? 'Dry', ready: Boolean(feed), foodFallback: false, burst: null, action,
-    returnFocus: () => undefined, feed: () => run(),
-  };
-  const { hold, handlers } = useHoldToFeed(controller, avatar);
   // "When did <pet> eat?": press and hold Feed (500 ms), its clock button, right-click or Shift+Enter.
   const [earlier, setEarlier] = useState(false);
   const { press, handlers: pressHandlers } = useFeedPress({ enabled: action.allowed && Boolean(feed) && !action.saving, onHold: () => setEarlier(true) });
   const button = 'inline-flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-lg border border-border px-4 text-base font-medium disabled:opacity-60';
   return (
     <li className="flex min-h-14 items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3" data-testid={`tablet-pet-${pet.id}`}>
-      <span className="flex min-w-0 items-center gap-3" {...handlers}>
-        <span ref={avatar} className="relative flex h-14 w-14 shrink-0 touch-none items-center justify-center rounded-full bg-primary/10" data-testid={`tablet-pet-hold-${pet.id}`}>
+      <span className="flex min-w-0 items-center gap-3">
+        <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-primary/10" data-testid={`tablet-pet-avatar-${pet.id}`}>
           <PawPrint aria-hidden className="h-7 w-7 text-primary" />
-          <HoldToFeedOverlay hold={hold} feed={controller} />
         </span>
         <span className="min-w-0">
           <span className="block text-lg font-medium">{pet.name}</span>
@@ -201,7 +190,6 @@ function TabletPetRow({ pet, onCare, onOpen }: { pet: PetState; onCare: (pet: Pe
               onClick={() => void run()}
               aria-label={feed ? `Feed ${pet.name} ${portion}` : `Feed ${pet.name} (feeding status unavailable)`}
               aria-describedby={`tablet-feed-hint-${pet.id}`}
-              title={`Or press and hold the picture of ${pet.name} to feed.`}
               data-testid={`tablet-pet-feed-${pet.id}`}
               data-press-phase={press.phase}
               {...pressHandlers}

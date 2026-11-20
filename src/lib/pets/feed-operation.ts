@@ -3,7 +3,7 @@
 /**
  * The one feed operation (audit PE-23, canonical for PE-1; PE-5; PE-2), bound
  * to the app's Firestore. Every feeding entry point goes through it: the Feed
- * button and hold to feed (`useQuickFeed`), the `?feed=1` picker, the command
+ * button (`useQuickFeed`), the `?feed=1` picker, the command
  * palette's quick add (`logFeeding`), the palette's Feeding mode, the dashboard's
  * one-tap Fed and the feeding-log form (including backdated entries).
  *

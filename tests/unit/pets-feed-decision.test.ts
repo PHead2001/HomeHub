@@ -247,7 +247,6 @@ describe('feed operation: every entry point uses it', () => {
     assert.match(read('src/components/command/quick-add-actions.ts'), /feedPet\(/);
     assert.match(read('src/components/command/command-palette.tsx'), /undoFeed\(/);
     assert.match(read('src/components/pets/feed-picker-dialog.tsx'), /useQuickFeed/);
-    assert.match(read('src/components/pets/hold-to-feed.tsx'), /feed\('hold'\)/);
   });
 
   it('online feeds, undos and time corrections count the day from the logs read in the transaction', () => {
