@@ -31,11 +31,14 @@ const tabletPage = () => tablet!.page;
 const chore = (id: string) => householdRef.collection('chores').doc(id);
 const seeded: string[] = [];
 
+/** Noon of today's household day (America/Chicago) as an ISO instant: the same day whether read by its date part or in the household zone, at any hour the suite runs. */
+const householdNoonIso = () => `${new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(new Date())}T18:00:00.000Z`;
+
 /** An open chore due today (the server judges eligibility by the household day). */
 const seedChore = async (id: string, fields: Record<string, unknown> = {}) => {
   seeded.push(id);
   await chore(id).set({
-    task: `Tablet chore ${id}`, dueDate: new Date().toISOString(), isCompleted: false, subTasks: [], completedSubTasks: [], roomIds: [],
+    task: `Tablet chore ${id}`, dueDate: householdNoonIso(), isCompleted: false, subTasks: [], completedSubTasks: [], roomIds: [],
     assignedToUid: '', assignedToDisplayName: 'Unassigned', ...fields,
   });
 };
