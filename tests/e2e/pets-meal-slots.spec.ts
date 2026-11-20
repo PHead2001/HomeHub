@@ -337,32 +337,13 @@ test.describe('pets: meal slots (P2)', () => {
       await openPets(page, chicago('18:20'));
       await expect(card(page, SLOT_PET)).toContainText('Dinner due 6:00 pm');
       await expect(page.getByTestId('pets-attention')).toBeVisible();
-      const scroll = await page.evaluate(async () => {
-        const limit = document.documentElement.clientHeight;
-        // What reaches past the bottom, for the failure message.
-        const bottomOf = (element: Element) => element.getBoundingClientRect().bottom + window.scrollY;
-        // The chain from body to what sets the page height: at each level the child that reaches lowest.
-        const below: string[] = [];
-        let node: Element | null = document.body;
-        for (let depth = 0; node && depth < 14; depth += 1) {
-          const children: Element[] = [...node.children].filter((child) => getComputedStyle(child).position !== 'fixed');
-          const lowest: Element | undefined = children.sort((a, b) => bottomOf(b) - bottomOf(a))[0];
-          if (!lowest || bottomOf(lowest) <= limit + 1) break;
-          const style = getComputedStyle(lowest);
-          below.push(`${lowest.tagName.toLowerCase()}.${String(lowest.getAttribute('class') ?? '').slice(0, 40)}[${lowest.getAttribute('data-testid') ?? ''}] ${style.position} ${Math.round(lowest.getBoundingClientRect().top + window.scrollY)}-${Math.round(bottomOf(lowest))} ov ${style.overflowY}`);
-          node = lowest;
-        }
-        const board = document.querySelector<HTMLElement>('[data-testid="pets-board"]');
-        const strip = document.querySelector('[data-testid="pets-attention"]');
-        if (board) { const cs = getComputedStyle(board); below.push(`board top ${Math.round(board.getBoundingClientRect().top)} h ${board.style.height || 'auto'} offset ${board.offsetHeight} computed ${cs.height}/${cs.minHeight}/${cs.display}/${cs.gridTemplateRows} anims ${document.getAnimations().map((a) => `${(a as CSSAnimation).animationName ?? a.constructor.name}:${a.playState}:${(a.effect as KeyframeEffect | null)?.target?.getAttribute?.('class')?.slice(0, 30) ?? ''}`).slice(0, 6).join(',')} later ${await new Promise<number>((done) => setTimeout(() => done(document.documentElement.scrollHeight - document.documentElement.clientHeight), 1500))} attr ${board.getAttribute('style')} scroll ${board.dataset.boardScroll}; strip ${strip ? Math.round(strip.getBoundingClientRect().height) : 'none'}; inner ${window.innerHeight}`); }
-        return {
-          sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-          down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
-          below,
-        };
-      });
-      expect(scroll.sideways).toBeLessThanOrEqual(0);
-      expect(scroll.down, `the pets page scrolls at 1263 x 818: ${scroll.below.join(' | ')}`).toBeLessThanOrEqual(0);
+      // Settled layout: the needs-attention strip arrives after the cards report, and the board re-measures under it.
+      const scroll = () => page.evaluate(() => ({
+        sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+      }));
+      await expect.poll(async () => (await scroll()).down, { message: 'the pets page scrolls at 1263 x 818' }).toBeLessThanOrEqual(0);
+      expect((await scroll()).sideways).toBeLessThanOrEqual(0);
       // Every pet's Feed button is on screen.
       for (const petId of ['maple', 'pixel', SLOT_PET]) {
         const feed = card(page, petId).getByRole('button', { name: /^Feed / });
