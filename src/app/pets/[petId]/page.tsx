@@ -228,6 +228,12 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
         </p>
       )}
 
+      {/* Phones (PE-13c): the name first, then the tabs, then the photo and Info cards below them. */}
+      <div className="mb-4 md:hidden" data-testid="pet-phone-header">
+        <h1 tabIndex={-1} data-pets-heading className="break-words font-headline text-2xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none">{pet.name}</h1>
+        <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
+      </div>
+
       <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
         <div className="space-y-6 md:col-span-1">
           <Card className="overflow-hidden">
@@ -267,8 +273,8 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
             </CardHeader>
             <CardContent className="space-y-4 p-4">
               <div>
-                <h1 tabIndex={-1} data-pets-heading className="break-words font-headline text-3xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none">{pet.name}</h1>
-                <p className="text-sm text-muted-foreground">{petTypeLabel(pet)}</p>
+                <h1 tabIndex={-1} data-pets-heading className="hidden break-words font-headline text-3xl font-bold tracking-tight [overflow-wrap:anywhere] focus:outline-none md:block">{pet.name}</h1>
+                <p className="hidden text-sm text-muted-foreground md:block">{petTypeLabel(pet)}</p>
                 <PinnedNoteLine householdId={householdId} petId={pet.id} className="mt-2" />
               </div>
               <div className="flex flex-col gap-3">
@@ -325,7 +331,7 @@ export default function PetDetailPage({ params }: { params: Promise<{ petId: str
           <WeightCard pet={pet} />
         </div>
 
-        <div className="scroll-mt-20 md:col-span-2" ref={tabsRef}>
+        <div className="order-first scroll-mt-20 md:order-none md:col-span-2" ref={tabsRef} data-testid="pet-tabs-column">
           <Tabs value={tab} onValueChange={(value) => { if ((PET_TABS as readonly string[]).includes(value)) chooseTab(value as PetTab); }}>
             <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 md:grid-cols-2 lg:grid-cols-4">
               <TabsTrigger value="feeding"><Utensils className="mr-2" /> Feeding</TabsTrigger>

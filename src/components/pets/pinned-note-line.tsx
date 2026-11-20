@@ -2,7 +2,7 @@
 
 import { Pin } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { usePinnedNotes } from './records-api';
+import { useSharedPetCare } from './care-store';
 
 /**
  * The pet's most important pinned note as one small line (PE-29c): the first
@@ -12,7 +12,8 @@ import { usePinnedNotes } from './records-api';
  * never claims anything it has not read.
  */
 export function PinnedNoteLine({ householdId, petId, className }: { householdId: string | null | undefined; petId: string; className?: string }) {
-  const { headline, loading, error } = usePinnedNotes(householdId, petId);
+  // From the household's care store (PE-21a): the card, the board and the pet page share one subscription.
+  const { headline, loading, error } = useSharedPetCare(householdId, petId).pinned;
   if (loading || error || !headline) return null;
   return (
     <p className={cn('flex min-w-0 items-start gap-1.5 text-sm text-muted-foreground', className)} data-testid={`pinned-note-${petId}`}>

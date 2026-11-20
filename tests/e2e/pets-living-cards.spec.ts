@@ -241,7 +241,8 @@ test.describe('pets: living cards (H09, D17, section 3)', () => {
   test('a pet card opens the pet page (shared-element morph) and peeks on hover', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openPets(page);
-    const link = page.getByTestId('pet-card-maple').getByRole('link', { name: 'Maple' });
+    // The name is the explicit details link (PE-11b); the chevron and the photo are other links to the same page.
+    const link = page.getByTestId('pet-card-maple').getByRole('link', { name: 'Maple', exact: true });
     await link.hover();
     await expect(page.getByTestId('pet-peek-maple')).toBeVisible();
     await expect(page.getByTestId('pet-peek-maple')).toContainText("Open Maple's page");

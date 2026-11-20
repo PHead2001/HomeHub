@@ -37,6 +37,7 @@ import { LoggedBy } from './logged-by';
 import { LoadMoreHistory } from './load-more';
 import { useHistoryWindow } from './pet-log-api';
 import { createNote, deleteNote, editNote, PINNED_PAGE, setNotePinned, useBehaviourEntries, usePinnedNotes } from './records-api';
+import { useSharedPetCare } from './care-store';
 import { useNow } from './use-now';
 
 const NO_TAG = 'none';
@@ -76,8 +77,14 @@ export function NotesTab({ petId, petName }: { petId: string; petName: string })
   const actor = { uid: currentUser?.uid, permissions };
   const canAdd = mayPet('pets.note.add', permissions);
   // Every pinned note, newest pin first, paged (none is ever dropped from both lists).
+  // The first page is the care store's (PE-21a), the same query the headline line
+  // reads, so the pet is subscribed once; only after "Load more" does the tab open
+  // its own longer listener, and it keeps showing the first page until that loads.
   const [pinnedMax, setPinnedMax] = useState(PINNED_PAGE);
-  const pinned = usePinnedNotes(householdId, petId, pinnedMax);
+  const firstPage = useSharedPetCare(householdId, petId).pinned;
+  const paging = pinnedMax > PINNED_PAGE;
+  const paged = usePinnedNotes(paging ? householdId : null, petId, pinnedMax);
+  const pinned = !paging ? firstPage : paged.loading ? { ...firstPage, loadingMore: true } : paged;
   const history = useHistoryWindow(petId);
   const entries = useBehaviourEntries(householdId, petId, history.max);
 

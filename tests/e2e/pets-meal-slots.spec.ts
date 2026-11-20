@@ -226,12 +226,13 @@ test.describe('pets: meal slots (P2)', () => {
     await openPets(page, new Date());
     const biscuit = card(page, SLOT_PET);
     await expect(biscuit).toContainText(`Supper due ${clock12(due.time)}`);
-    // The ring counts today's meals fed.
-    await expect(biscuit).toContainText('0/2');
+    // Today's meals fed, counted per slot (the grid's ring reads "0/2"; the board lists each meal with its phase).
+    await expect(biscuit.locator('[data-slot-phase]')).toHaveCount(2);
+    await expect(biscuit.locator('[data-slot-phase="fed"]')).toHaveCount(0);
 
     await biscuit.getByRole('button', { name: 'Feed Biscuit, supper, 0.5 cans' }).click();
     await expect(toastText(page, 'Supper: 0.5 cans logged.')).toBeVisible();
-    await expect(biscuit).toContainText('1/2');
+    await expect(biscuit.locator('[data-slot-phase="fed"]')).toHaveCount(1);
     await expect(biscuit).toContainText(/Supper ✓ \d{1,2}:\d{2} (am|pm) · Alex/);
     await expect.poll(async () => (await slotPetLogs()).map(({ slotId, cups, foodAmountType, repeat }) => ({ slotId, cups, foodAmountType, repeat })))
       .toEqual([{ slotId: 'supper', cups: 0.5, foodAmountType: 'Cans', repeat: 'none' }]);
@@ -288,8 +289,11 @@ test.describe('pets: meal slots (P2)', () => {
       }).toBeLessThanOrEqual(1);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
 
-      // The editor on a legacy pet: the suggestion, then the rows with their weekday toggles.
-      await card(page, 'pixel').getByRole('button', { name: 'Set meal times for Pixel' }).click();
+      // The editor on a legacy pet: the suggestion, then the rows with their weekday toggles. The phone
+      // rows are compact (PE-13a: Edit lives on the pet page), so Set meal times is opened there.
+      await expect(card(page, 'pixel').getByRole('button', { name: 'Set meal times for Pixel' })).toHaveCount(0);
+      await page.goto('/pets/pixel');
+      await page.getByRole('button', { name: 'Set meal times for Pixel' }).first().click();
       const dialog = page.getByRole('dialog', { name: 'Edit Pixel' });
       // Measured before it is pressed: once the rows are filled it may leave the dialog.
       // The dialog opens with a 95% zoom; measure only after its animations finish.
@@ -333,12 +337,13 @@ test.describe('pets: meal slots (P2)', () => {
       await openPets(page, chicago('18:20'));
       await expect(card(page, SLOT_PET)).toContainText('Dinner due 6:00 pm');
       await expect(page.getByTestId('pets-attention')).toBeVisible();
-      const scroll = await page.evaluate(() => ({
+      // Settled layout: the needs-attention strip arrives after the cards report, and the board re-measures under it.
+      const scroll = () => page.evaluate(() => ({
         sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         down: document.documentElement.scrollHeight - document.documentElement.clientHeight,
       }));
-      expect(scroll.sideways).toBeLessThanOrEqual(0);
-      expect(scroll.down, 'the pets page scrolls at 1263 x 818').toBeLessThanOrEqual(0);
+      await expect.poll(async () => (await scroll()).down, { message: 'the pets page scrolls at 1263 x 818' }).toBeLessThanOrEqual(0);
+      expect((await scroll()).sideways).toBeLessThanOrEqual(0);
       // Every pet's Feed button is on screen.
       for (const petId of ['maple', 'pixel', SLOT_PET]) {
         const feed = card(page, petId).getByRole('button', { name: /^Feed / });
