@@ -32,6 +32,11 @@ export function createBackStack(env: BackEnvironment) {
   // leaves, so a dialog that opens meanwhile waits for it (`waiting`) and is pushed after.
   let ignore = 0;
   const waiting: Entry[] = [];
+  // Set once the page has started a full (cross-document) navigation. A history traversal
+  // after that cancels it (the tablet's exit measured on Android, 2026-11-23: dialogs closing
+  // as the shell unmounted ran history.go(-1) 18 ms after location.replace('/setup'), and the
+  // tablet stayed on '/'), so nothing is taken back any more.
+  let pageLeaving = false;
   const pushNow = (entry: Entry) => {
     entry.pushed = true;
     env.push(entry.depth);
@@ -68,7 +73,7 @@ export function createBackStack(env: BackEnvironment) {
           }
           // Only entries already in the history are taken back.
           const pushed = leaving.filter((gone) => gone.pushed);
-          if (pushed.length > 0 && env.currentDepth() === pushed[pushed.length - 1].depth) {
+          if (!pageLeaving && pushed.length > 0 && env.currentDepth() === pushed[pushed.length - 1].depth) {
             ignore += 1;
             env.go(-pushed.length);
           }
@@ -89,6 +94,10 @@ export function createBackStack(env: BackEnvironment) {
         open.push(top);
         pushNow(top);
       }
+    },
+    /** The page is leaving (a full navigation has started): never traverse history again. */
+    leave(): void {
+      pageLeaving = true;
     },
     /** For tests: how many dialogs hold an entry. */
     size: () => open.length,
@@ -111,6 +120,12 @@ export function browserBackStack(): ReturnType<typeof createBackStack> | null {
     });
     const stack = browserStack;
     window.addEventListener('popstate', () => stack.pop());
+    // Any full navigation (where the Navigation API exists, as in Chrome): stop taking entries back.
+    const navigation = (window as Window & { navigation?: EventTarget }).navigation;
+    navigation?.addEventListener('navigate', (event) => {
+      const destination = (event as Event & { destination?: { sameDocument?: boolean } }).destination;
+      if (destination && destination.sameDocument === false) stack.leave();
+    });
   }
   return browserStack;
 }

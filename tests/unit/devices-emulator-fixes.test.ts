@@ -78,6 +78,19 @@ describe('D4: Back closes the topmost dialog', () => {
     return { stack, history, calls, back, flush, navigate };
   };
 
+  it('once the page is leaving (a full navigation started), closing dialogs never traverses history (tablet exit, Android 2026-11-23)', () => {
+    const { stack, calls } = env();
+    const settings = stack.open(() => undefined);
+    const who = stack.open(() => undefined);
+    const pad = stack.open(() => undefined);
+    stack.leave();
+    pad.release();
+    who.release();
+    settings.release();
+    assert.equal(calls.filter((call) => call.startsWith('go')).length, 0, 'a traversal would cancel location.replace');
+    assert.equal(stack.size(), 0);
+  });
+
   it('Back closes only the topmost of nested dialogs; nothing navigates', () => {
     const { stack, back, history } = env();
     const closed: string[] = [];
