@@ -55,7 +55,9 @@ export const writeDeviceAudit = (
   now: Date,
 ) => {
   const details = Object.fromEntries(
-    Object.entries(entry.details ?? {}).filter(([key]) => !FORBIDDEN_DETAIL_KEYS.test(key)),
+    Object.entries(entry.details ?? {}).filter(([key, value]) =>
+      // `codeKept` is only ever a boolean (a re-pair code survived an exit, D8): never a code.
+      (key === 'codeKept' && typeof value === 'boolean') || !FORBIDDEN_DETAIL_KEYS.test(key)),
   );
   transaction.set(householdRef.collection('auditLogs').doc(), {
     actorUid: entry.actorUid,

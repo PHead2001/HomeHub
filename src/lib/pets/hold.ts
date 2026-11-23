@@ -1,24 +1,21 @@
 /**
- * Hold to feed (H09): the press-and-hold state machine behind the pet photo.
- * Pure (time is passed in), so it is unit tested.
+ * The press-and-hold state machine behind holding the Feed button (Feed
+ * earlier, `src/lib/pets/feed-press.ts`, with its own duration). It was first
+ * written for hold to feed on the pet photo (H09), which is gone (Android
+ * Chrome answers a long press on an image with its copy menu). Pure (time is
+ * passed in), so it is unit tested.
  *
  *   idle --press--> holding --tick (elapsed >= HOLD_MS)--> complete
- *                     |  release / cancel (pointer cancel, leaving the photo, Escape)
+ *                     |  release / cancel (pointer cancel, moving, Escape)
  *                     v
- *                   idle   (nothing is logged)
+ *                   idle
  *
  * `complete` is reached exactly once per press; only a new press (after the
- * pointer comes up) can start another hold, so one hold logs one feeding.
+ * pointer comes up) can start another hold, so one hold acts once.
  */
 
-/** How long the photo must be held (ms). */
+/** The default hold duration (ms); Feed earlier passes its own (`FEED_PRESS_MS`). */
 export const HOLD_MS = 800;
-/**
- * A press released sooner than this is a tap (it opens the pet as before); a
- * longer press that is released or cancelled was a hold attempt, so its click is
- * swallowed. The ring appears only after this, so a tap never flashes it.
- */
-export const HOLD_TAP_MS = 150;
 
 export type HoldState =
   | { phase: 'idle' }
@@ -57,14 +54,7 @@ export function holdReducer(state: HoldState, event: HoldEvent, duration = HOLD_
   }
 }
 
-/** True when `next` is the transition that should log the feeding (fires once). */
+/** True when `next` is the transition that completes the hold (fires once). */
 export function holdJustCompleted(previous: HoldState, next: HoldState): boolean {
   return previous.phase === 'holding' && next.phase === 'complete';
-}
-
-
-/** True once a hold has lasted past a tap: show the ring, and swallow the click on release. */
-export function holdIsDeliberate(state: HoldState, duration = HOLD_MS): boolean {
-  if (state.phase === 'complete') return true;
-  return state.phase === 'holding' && state.progress * duration >= HOLD_TAP_MS;
 }

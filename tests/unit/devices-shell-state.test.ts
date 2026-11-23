@@ -87,6 +87,13 @@ describe('shell state machine (14.2, 14.3)', () => {
     assert.equal(currentActor(state), null);
   });
 
+  it('Done while an action is on its way: its finish never brings the person back', () => {
+    let { state } = run([{ type: 'pick', memberUid: 'mia', now: T0 }, { type: 'done' }, { type: 'credit', memberUid: 'mia', now: T0 + 2_000 }]);
+    assert.equal(currentActor(state), null);
+    ({ state } = run([{ type: 'pick', memberUid: 'sam', now: T0 + 3_000 }, { type: 'credit', memberUid: 'mia', now: T0 + 4_000 }], state));
+    assert.equal(currentActor(state)?.memberUid, 'sam', 'a late credit never replaces the person now chosen');
+  });
+
   it('face expiry waits while busy and fires on the next idle tick', () => {
     let { state } = run([{ type: 'pick', memberUid: 'mia', now: T0 }, { type: 'input', now: T0 + 60_000 }]);
     ({ state } = run([{ type: 'tick', now: T0 + FACE_MEMORY_MS + 5_000, busy: true }], state));

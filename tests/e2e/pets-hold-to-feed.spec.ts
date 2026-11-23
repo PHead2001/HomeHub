@@ -1,14 +1,18 @@
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import { fixedNow } from './test-helpers';
 
-// H09 hold to feed: pressing and holding a pet's photo logs one feeding at the
-// planned portion through the same writer as the Feed button; releasing early,
-// leaving the photo and Escape cancel without writing or navigating.
+// Hold to feed moved from the photo to the Feed button (owner request). On
+// Android Chrome a long press on the pet photo opened the browser's image
+// copy/save menu, so the photo hold never worked on the wall tablet. The photo
+// is now a plain picture: holding it does nothing (no feeding, no ring, no
+// navigation, no browser menu), and with a mouse it is not a link either.
+// Pressing and holding Feed (500 ms) opens "When did <pet> eat?" (Feed
+// earlier, covered in depth by pets-feed-earlier.spec.ts); a tap on Feed still
+// feeds now.
 const projectId = 'demo-homehub-e2e';
 const householdId = 'the-foxy-residence-e2e';
-const ownerUid = 'e2e-owner-uid';
+const baseURL = 'http://127.0.0.1:9002';
 const adminApp = getApps().find((app) => app.name === 'pets-hold-to-feed')
   || initializeApp({ projectId }, 'pets-hold-to-feed');
 const household = getFirestore(adminApp).collection('households').doc(householdId);
@@ -19,7 +23,6 @@ const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 
 async function clearPixelFeedings() {
   const logs = await pixelLogs.get();
   await Promise.all(logs.docs.map((entry) => entry.ref.delete()));
-  // The shared feed operation's state, so the next hold is not a "Feed again?".
   await household.collection('pets').doc('pixel').collection('feeding-state').doc('current').delete();
 }
 
@@ -33,122 +36,98 @@ async function openPets(page: Page) {
   return card;
 }
 
-async function pressPhoto(page: Page) {
-  const box = await page.getByTestId('pet-photo-pixel').boundingBox();
-  expect(box).toBeTruthy();
-  const centre = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
-  await page.mouse.move(centre.x, centre.y);
-  await page.mouse.down();
-  return { centre, box: box! };
+async function touchContext(browser: Browser, viewport: { width: number; height: number }) {
+  const context = await browser.newContext({ baseURL, viewport, hasTouch: true, isMobile: viewport.width < 768, storageState: 'playwright/.auth/e2e-owner.json' });
+  return { context, page: await context.newPage() };
 }
 
-test.describe('pets: hold to feed (H09)', () => {
+/** A real touch press (CDP, pointerType "touch") on a box's centre, held for `hold` ms. */
+async function touchHold(page: Page, box: { x: number; y: number; width: number; height: number }, hold: number) {
+  const client = await page.context().newCDPSession(page);
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  await page.waitForTimeout(hold);
+  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await client.detach();
+}
+
+/** The photo's long-press guards: no link, the image takes no pointer events, a contextmenu is cancelled. */
+async function photoGuards(page: Page) {
+  return page.getByTestId('pet-photo-pixel').evaluate((photo) => {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    photo.dispatchEvent(event);
+    const image = photo.querySelector('img');
+    return {
+      link: photo.closest('a') !== null || photo.querySelector('a') !== null,
+      menuCancelled: event.defaultPrevented,
+      imagePointer: image ? getComputedStyle(image).pointerEvents : 'none',
+      callout: getComputedStyle(photo).getPropertyValue('-webkit-touch-callout') || 'none',
+      userSelect: getComputedStyle(photo).userSelect,
+    };
+  });
+}
+
+test.describe('pets: the photo is a plain picture, hold Feed for Feed earlier', () => {
   test.beforeEach(async ({}, testInfo) => { if (testInfo.project.name === 'desktop-chromium') await clearPixelFeedings(); });
   test.afterEach(async ({}, testInfo) => { if (testInfo.project.name === 'desktop-chromium') await clearPixelFeedings(); });
 
-  test('holding the photo logs exactly one feeding and stays on the page', async ({ page }, testInfo) => {
+  test('mouse: holding or clicking the photo does nothing; Feed is not described by a photo hold', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const card = await openPets(page);
-    // The Feed button stays as the accessible alternative and describes the gesture.
     const feedButton = card.getByRole('button', { name: 'Feed Pixel, 1 can' });
-    await expect(feedButton).toHaveAccessibleDescription('No feedings logged yet 0 of 2 today Next meal: morning Or press and hold the photo of Pixel to log 1 can.') // PE-20b: the status is part of the description;
+    await expect(feedButton).toHaveAccessibleDescription('No feedings logged yet 0 of 2 today Next meal: morning To log an earlier feeding, use the clock button, right-click Feed, or press Shift+Enter.');
 
-    await pressPhoto(page);
-    await expect(page.getByTestId('hold-to-feed-ring')).toBeVisible();
-    await expect(page.getByTestId('pet-photo-pixel')).toHaveAttribute('data-hold-phase', 'complete', { timeout: 3000 });
-    // Keep holding past the end: still one feeding.
-    await page.waitForTimeout(400);
+    const guards = await photoGuards(page);
+    expect(guards.link, 'the photo is not a link').toBe(false);
+    expect(guards.menuCancelled, 'a long press never opens the browser menu').toBe(true);
+    expect(guards.imagePointer).toBe('none');
+    expect(guards.userSelect).toBe('none');
+
+    const box = (await page.getByTestId('pet-photo-pixel').boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(1200);
     await page.mouse.up();
-
-    await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
-    await expect(card).toContainText('Fed just now by Alex');
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForTimeout(600);
     await expect(page).toHaveURL(/\/pets$/);
-    await expect.poll(async () => {
-      const logs = await pixelLogs.get();
-      return logs.docs.map((entry) => entry.data()).map(({ cups, foodAmountType, loggedByUid }) => ({ cups, foodAmountType, loggedByUid }));
-    }).toEqual([{ cups: 1, foodAmountType: 'Cans', loggedByUid: ownerUid }]);
-    // Nothing else arrives later.
-    await page.waitForTimeout(500);
-    expect((await pixelLogs.get()).size).toBe(1);
-  });
-
-  test('releasing early, leaving the photo or Escape writes nothing', async ({ page }, testInfo) => {
-    desktopOnly(testInfo);
-    await openPets(page);
-
-    // Release early.
-    await pressPhoto(page);
-    await expect(page.getByTestId('hold-to-feed-ring')).toBeVisible();
-    await page.waitForTimeout(300);
-    await page.mouse.up();
-    await expect(page.getByTestId('pet-photo-pixel')).toHaveAttribute('data-hold-phase', 'idle');
-    await expect(page).toHaveURL(/\/pets$/);
-
-    // Leave the photo while holding.
-    const { box } = await pressPhoto(page);
-    await page.waitForTimeout(200);
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height + 60);
-    await expect(page.getByTestId('pet-photo-pixel')).toHaveAttribute('data-hold-phase', 'idle');
-    await page.waitForTimeout(900);
-    await page.mouse.up();
-
-    // Escape mid-press.
-    await pressPhoto(page);
-    await page.waitForTimeout(250);
-    await page.keyboard.press('Escape');
-    await expect(page.getByTestId('pet-photo-pixel')).toHaveAttribute('data-hold-phase', 'idle');
-    await page.waitForTimeout(900);
-    await page.mouse.up();
-
-    await expect(page).toHaveURL(/\/pets$/);
+    await expect(page.getByTestId('hold-to-feed-ring')).toHaveCount(0);
     await expect(page.getByText('Pixel fed', { exact: true })).toHaveCount(0);
     expect((await pixelLogs.get()).size).toBe(0);
   });
 
-  test('a quick tap on the photo still opens the pet', async ({ page }, testInfo) => {
+  test('touch at 1263 x 818: a long press on the photo feeds nothing; holding Feed opens Feed earlier; a tap on Feed feeds', async ({ browser }, testInfo) => {
     desktopOnly(testInfo);
-    await openPets(page);
-    // The photo sits under the card's stretched name link, so click by position.
-    const box = await page.getByTestId('pet-photo-pixel').boundingBox();
-    await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
-    await expect(page).toHaveURL(/\/pets\/pixel$/);
-    expect((await pixelLogs.get()).size).toBe(0);
-  });
-
-  test('hold to feed works under reduced motion, without the paw burst', async ({ browser }, testInfo) => {
-    desktopOnly(testInfo);
-    const context = await browser.newContext({
-      baseURL: 'http://127.0.0.1:9002', colorScheme: 'dark', reducedMotion: 'reduce', storageState: 'playwright/.auth/e2e-owner.json',
-    });
-    const page = await context.newPage();
+    const { context, page } = await touchContext(browser, { width: 1263, height: 818 });
     try {
-      await openPets(page);
-      await pressPhoto(page);
-      await expect(page.getByTestId('pet-photo-pixel')).toHaveAttribute('data-hold-phase', 'complete', { timeout: 3000 });
-      await page.mouse.up();
-      await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
-      await expect(page.getByTestId('paw-burst')).toHaveCount(0);
-      await expect.poll(async () => (await pixelLogs.get()).size).toBe(1);
-    } finally {
-      await context.close();
-    }
-  });
+      const card = await openPets(page);
+      // No one-time "Hold the photo to feed" caption any more.
+      await expect(page.getByTestId('hold-caption')).toHaveCount(0);
+      await expect(page.getByText('Hold the photo to feed')).toHaveCount(0);
+      expect((await photoGuards(page)).link).toBe(false);
 
-  test('members without pets.addLogs get no hold', async ({ browser }, testInfo) => {
-    desktopOnly(testInfo);
-    const context = await browser.newContext({ baseURL: 'http://127.0.0.1:9002', colorScheme: 'dark' });
-    const page = await context.newPage();
-    try {
-      await page.clock.setFixedTime(fixedNow);
-      await page.goto('/e2e-login?uid=e2e-limited-uid');
-      await expect(page).toHaveURL('/');
-      await page.goto('/pets');
-      await expect(page.getByTestId('pet-card-pixel')).toBeVisible();
-      await pressPhoto(page);
-      await page.waitForTimeout(1100);
+      await touchHold(page, (await page.getByTestId('pet-photo-pixel').boundingBox())!, 1200);
+      await page.waitForTimeout(500);
+      await expect(page).toHaveURL(/\/pets$/);
       await expect(page.getByTestId('hold-to-feed-ring')).toHaveCount(0);
-      await page.mouse.up();
       expect((await pixelLogs.get()).size).toBe(0);
+
+      const feed = card.getByRole('button', { name: 'Feed Pixel, 1 can' });
+      await expect(feed).toHaveAccessibleDescription(/Press and hold Feed to log an earlier feeding\./);
+      await expect(feed).not.toHaveAccessibleDescription(/photo/);
+      const dialog = page.getByTestId('feed-earlier-dialog');
+      await touchHold(page, (await feed.boundingBox())!, 900);
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toContainText('When did Pixel eat?');
+      await page.waitForTimeout(400);
+      expect((await pixelLogs.get()).size).toBe(0);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+
+      await touchHold(page, (await feed.boundingBox())!, 60);
+      await expect(page.getByText('Pixel fed', { exact: true })).toBeVisible();
+      await expect.poll(async () => (await pixelLogs.get()).size).toBe(1);
     } finally {
       await context.close();
     }

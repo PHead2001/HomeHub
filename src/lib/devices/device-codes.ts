@@ -74,3 +74,17 @@ export const REDEEM_REFUSAL_COPY: Record<RedeemRefusal, string> = {
 
 /** Member-invite redemption's message for a device code typed in Join a household. */
 export const DEVICE_CODE_AS_INVITE_MESSAGE = "That's a wall-tablet code. Use Set up a wall tablet.";
+
+/**
+ * What the code dialog tells the owner (emulator evidence D8). A re-pair code for a tablet
+ * that is still signed in is used through the tablet's protected exit "Use a different
+ * code", which keeps that code (it moves to the record's new generation) instead of
+ * cancelling it.
+ */
+export function deviceCodeInstructions(kind: 'pair' | 'repair', stillPaired: boolean, ttlMinutes: number): string {
+  const tail = `Scan this QR code or type the code. It works once and lasts ${ttlMinutes} minutes.`;
+  if (kind === 'repair' && stillPaired) {
+    return `This tablet is still signed in. On it, open Tablet settings, choose Use a different code and confirm with an owner or admin PIN. The setup screen then opens: ${tail.charAt(0).toLowerCase()}${tail.slice(1)} This code stays valid through that step.`;
+  }
+  return `On the tablet, open HomeHub and choose Set up a wall tablet. ${tail}`;
+}

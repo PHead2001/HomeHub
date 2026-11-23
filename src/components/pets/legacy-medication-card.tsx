@@ -23,6 +23,7 @@ import { mayMedication } from '@/lib/pets/medication-permissions';
 import { finishLegacy, mergeLegacy } from '@/lib/pets/medication-operation';
 import { medicationRefusal } from './give-dose-dialog';
 import { useNow } from './use-now';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 /**
  * The D-P8 confirmation card for one legacy (name-keyed) medication that still
@@ -73,6 +74,9 @@ export function LegacyMedicationCard({
 
   const householdId = currentUser?.householdId ?? null;
   const user = currentUser ? { uid: currentUser.uid, name: loggerName(currentUser) } : null;
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(confirmFinish, () => setConfirmFinish(false));
 
   return (
     <div className="space-y-3 rounded-lg border border-warning/50 bg-warning/5 p-4 text-sm" data-testid="legacy-medication-card" data-legacy-key={group.key}>

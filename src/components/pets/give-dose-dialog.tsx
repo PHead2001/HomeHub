@@ -44,6 +44,9 @@ import {
 import { mayMedication } from '@/lib/pets/medication-permissions';
 import { finishCourse, giveDose, MedicationActionError, resumeCourse, undoDose } from '@/lib/pets/medication-operation';
 import { useNow } from './use-now';
+import { TabletContext } from '@/components/devices/tablet-context';
+import { backdatedCapability } from '@/lib/devices/action-policy';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 const INPUT_FORMAT = "yyyy-MM-dd'T'HH:mm";
 
@@ -73,7 +76,15 @@ export function medicationRefusal(error: unknown): string | null {
 export function useFinishCourse(petId: string) {
   const { currentUser } = useAuth();
   const { toast, toastError } = useToast();
+  // On a registered wall tablet Finish is a PIN-level device action (JC-14): the shell asks
+  // "Who's here?" and the PIN; its resume is the course list's Resume (also PIN-level).
+  const tablet = React.useContext(TabletContext);
   return React.useCallback(async (course: Pick<CourseView, 'id' | 'name'>): Promise<boolean> => {
+    if (tablet) {
+      const outcome = await tablet.runAction({ capability: 'pets.course.finish', label: `Finished ${course.name}`, intent: { petId, courseId: course.id } });
+      const status = (outcome.data as { status?: string } | undefined)?.status;
+      return outcome.ok && (status === 'saved' || status === 'already');
+    }
     const householdId = currentUser?.householdId;
     if (!householdId || !currentUser) return false;
     try {
@@ -107,7 +118,7 @@ export function useFinishCourse(petId: string) {
       else toastError(error, "Couldn't finish the course");
       return false;
     }
-  }, [currentUser, petId, toast, toastError]);
+  }, [currentUser, petId, tablet, toast, toastError]);
 }
 
 /**
@@ -138,10 +149,14 @@ export function GiveDoseDialog({
   const { currentUser, permissions, household } = useAuth();
   const { toast, toastError } = useToast();
   const now = useNow();
-  const timeZone = household?.timeZone ?? null;
+  // On a registered wall tablet Give dose is a device action for the person chosen in "Who's
+  // here?" (F4b-2): the shell sends it through the gate, asks "Already given?" with the dose
+  // the server named and offers its Undo; the server decides who may.
+  const tablet = React.useContext(TabletContext);
+  const timeZone = (tablet ? tablet.household?.timeZone : household?.timeZone) ?? null;
   const finish = useFinishCourse(petId);
-  const canGive = mayMedication('pets.dose.give', permissions);
-  const canFinish = mayMedication('pets.course.finish', permissions);
+  const canGive = tablet ? tablet.settings.sections.pets : mayMedication('pets.dose.give', permissions);
+  const canFinish = tablet ? tablet.settings.sections.pets : mayMedication('pets.course.finish', permissions);
 
   const choices = React.useMemo(() => (course ? doseChoices(course, now, timeZone) : { prefill: null, choices: [] }), [course, now, timeZone]);
   const [shownFor, setShownFor] = React.useState<string | null>(null);
@@ -190,7 +205,8 @@ export function GiveDoseDialog({
 
   const record = async (confirm: DoseConfirm | null) => {
     const householdId = currentUser?.householdId;
-    if (!course || !householdId || !currentUser || !selected || savingRef.current) return;
+    if (!course || !selected || savingRef.current) return;
+    if (!tablet && (!householdId || !currentUser)) return;
     let chosen: Date | null = null;
     if (when === 'earlier') {
       chosen = givenAt ? new Date(givenAt) : null;
@@ -198,6 +214,42 @@ export function GiveDoseDialog({
       if (chosen.getTime() > Date.now() + 60_000) { setError(REFUSALS.future); return; }
       if (chosen.getTime() < Date.now() - DOSE_BACKDATE_MAX_MS) { setError(REFUSALS['too-old']); return; }
     }
+    if (tablet) {
+      savingRef.current = true;
+      setSaving(true);
+      setError(null);
+      try {
+        // The server picks a dose given more than 12 hours ago as the PIN-level .old capability (JC-27).
+        const outcome = await tablet.runAction({
+          // This opening's opId (one press): a retry after a lost answer replays on the server.
+          opId,
+          capability: chosen ? backdatedCapability('dose', chosen, new Date()) : 'pets.dose.give',
+          label: `${course.name} for ${petName}`,
+          subject: petName,
+          // Each course keeps its own Undo toast (as the personal dialog's group).
+          toastGroup: petDoseToastGroup(petId, course.id),
+          // The occurrence (identity and instant), medication and dosage shown here travel with the
+          // intent: a dose queued offline is recorded as given, even if the course's schedule or
+          // dosage is edited before the tablet reconnects (Codex review of PR 190).
+          intent: { petId, courseId: course.id, occurrenceKey: occurrenceId(selected), occurrenceAt: selected.at, givenAt: chosen ? chosen.toISOString() : null, notes: notes.trim(), medication: course.name, dosage: course.dosage },
+        });
+        const result = (outcome.data as { result?: { status?: string; reason?: string } } | undefined)?.result;
+        // A refusal is shown whatever the runtime made of it (it reports a domain refusal as not ok, Codex 2).
+        if (result?.status === 'refused') {
+          setError(REFUSALS[result.reason as MedicationActionError['reason']] ?? "Couldn't record the dose. Try again.");
+          return;
+        }
+        if (outcome.ok && (outcome.queued || result?.status === 'saved')) {
+          playFeedback('complete');
+          onOpenChange(false);
+        }
+      } finally {
+        savingRef.current = false;
+        setSaving(false);
+      }
+      return;
+    }
+    if (!householdId || !currentUser) return;
     savingRef.current = true;
     setSaving(true);
     setError(null);
@@ -252,6 +304,9 @@ export function GiveDoseDialog({
     event.preventDefault();
     void record(null);
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(course !== null, () => { if (saving) return false; onOpenChange(false); return true; });
 
   return (
     <Dialog open={course !== null} onOpenChange={(open) => { if (!saving) onOpenChange(open); }}>

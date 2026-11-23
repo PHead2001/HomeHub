@@ -29,7 +29,8 @@ import { Checkbox } from './ui/checkbox';
 import { Input } from './ui/input';
 import { PetLogDeleteAlert } from './pet-log-delete-alert';
 import { LoggedBy } from './pets/logged-by';
-import { usePetLogs } from './pets/pet-log-api';
+import { useHistoryWindow, usePetLogs } from './pets/pet-log-api';
+import { LoadMoreHistory } from './pets/load-more';
 import { FeedAgainDialog, useFeedAction } from './pets/use-feed-action';
 import { useNow } from './pets/use-now';
 import { unavailableText } from '@/lib/pets/live-listener';
@@ -91,7 +92,10 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
   const canAdd = Boolean(permissions['pets.addLogs']);
   const canDelete = Boolean(permissions['pets.deleteLogs']);
   const householdId = currentUser?.householdId ?? null;
-  const { logs, loading, error, failure } = usePetLogs<PetFeedingLog>(householdId, petId, 'feeding-logs', 100);
+  // A paginated window (PE-21h): today's feedings are always in the first page, so the meal status and the
+  // last-fed check never depend on how much history is shown.
+  const history = useHistoryWindow(petId);
+  const { logs, loading, error, failure, hasMore, loadingMore } = usePetLogs<PetFeedingLog>(householdId, petId, 'feeding-logs', history.max);
   const [useCurrentTime, setUseCurrentTime] = useState(true);
   const [logToDelete, setLogToDelete] = useState<string | null>(null);
   const [logToCorrect, setLogToCorrect] = useState<CorrectableFeeding | null>(null);
@@ -201,7 +205,7 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 rounded-lg border p-4" aria-label="Log a feeding with details">
               <div className="flex items-center space-x-2">
                 <Checkbox id="useCurrentTime" checked={useCurrentTime} onCheckedChange={(checked) => setUseCurrentTime(!!checked)} />
-                <label htmlFor="useCurrentTime" className="text-sm font-medium leading-none">Use current time</label>
+                <label htmlFor="useCurrentTime" className="flex min-h-[var(--target-min)] cursor-pointer items-center text-sm font-medium leading-none">Use current time</label>
               </div>
 
               {!useCurrentTime && (
@@ -235,8 +239,9 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
                       </FormItem>
                     )}
                   />
-                  <div className="grid grid-cols-3 items-end gap-2">
-                    <div className="col-span-2">
+                  {/* The time and AM/PM share a row only when both fit: on a phone the bordered 48 px options wrap to their own row (PE-14e). */}
+                  <div className="flex flex-wrap items-end gap-2" data-testid="feeding-time-row">
+                    <div className="min-w-[8rem] flex-1">
                       <FormField
                         control={form.control}
                         name="time"
@@ -255,16 +260,17 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
                       control={form.control}
                       name="ampm"
                       render={({ field }) => (
-                        <FormItem>
+                        <FormItem className="shrink-0">
                           <FormControl>
-                            <RadioGroup onValueChange={field.onChange} value={field.value} className="flex items-center space-x-2" aria-label="AM or PM">
-                              <FormItem className="flex items-center space-x-1 space-y-0">
-                                <FormControl><RadioGroupItem value="AM" /></FormControl>
-                                <FormLabel className="text-xs font-normal">AM</FormLabel>
+                            <RadioGroup onValueChange={field.onChange} value={field.value} className="flex items-center gap-2" aria-label="AM or PM">
+                              {/* PE-14e: each option's label is its 48 px (44 px) target; the radio adds no overlapping slop. */}
+                              <FormItem className="flex items-center space-y-0 rounded-md border border-input pl-3">
+                                <FormControl><RadioGroupItem value="AM" className="hit-slop-off" /></FormControl>
+                                <FormLabel className="flex min-h-[var(--target-min)] cursor-pointer items-center px-3 text-sm font-normal">AM</FormLabel>
                               </FormItem>
-                              <FormItem className="flex items-center space-x-1 space-y-0">
-                                <FormControl><RadioGroupItem value="PM" /></FormControl>
-                                <FormLabel className="text-xs font-normal">PM</FormLabel>
+                              <FormItem className="flex items-center space-y-0 rounded-md border border-input pl-3">
+                                <FormControl><RadioGroupItem value="PM" className="hit-slop-off" /></FormControl>
+                                <FormLabel className="flex min-h-[var(--target-min)] cursor-pointer items-center px-3 text-sm font-normal">PM</FormLabel>
                               </FormItem>
                             </RadioGroup>
                           </FormControl>
@@ -318,11 +324,11 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
                   <FormItem className="space-y-3">
                     <FormLabel>Food Type</FormLabel>
                     <FormControl>
-                      <RadioGroup onValueChange={field.onChange} value={field.value} className="flex items-center space-x-4">
+                      <RadioGroup onValueChange={field.onChange} value={field.value} className="flex flex-wrap items-center gap-2">
                         {FOOD_TYPES.map((type) => (
-                          <FormItem key={type} className="flex items-center space-x-2 space-y-0">
-                            <FormControl><RadioGroupItem value={type} /></FormControl>
-                            <FormLabel className="font-normal">{type}</FormLabel>
+                          <FormItem key={type} className="flex items-center space-y-0 rounded-md border border-input pl-3">
+                            <FormControl><RadioGroupItem value={type} className="hit-slop-off" /></FormControl>
+                            <FormLabel className="flex min-h-[var(--target-min)] cursor-pointer items-center px-3 font-normal">{type}</FormLabel>
                           </FormItem>
                         ))}
                       </RadioGroup>
@@ -378,7 +384,8 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
             const recorded = times.recorded ? format(times.recorded, recordedSameDay ? 'p' : 'PPP p') : null;
             const canCorrect = mayCorrectFeedTime(log, currentUser?.uid, canDelete, now);
             // The meal this feeding recorded, named by the plan of its own day (PE-22g).
-            const mealName = pet ? slotNameOf(pet, log, now, household?.timeZone) : null;
+            // An earlier feeding whose meal was already fed is an extra of its day, never a meal.
+            const mealName = log.extra ? 'Extra feeding' : pet ? slotNameOf(pet, log, now, household?.timeZone) : null;
             return (
               <div key={log.id} className="flex items-start justify-between gap-3 rounded-md bg-secondary/50 p-3 text-sm">
                 <div className="min-w-0 space-y-0.5">
@@ -430,6 +437,7 @@ export function FeedingLogClient({ petId, petName = 'This pet', plan: legacyPlan
               </div>
             );
           })}
+          {!loading && !error && <LoadMoreHistory hasMore={hasMore} loadingMore={loadingMore} onLoadMore={history.loadMore} what="feedings" />}
         </section>
       </CardContent>
     </Card>

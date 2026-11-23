@@ -21,9 +21,8 @@ import { FeedingRing } from './feeding-ring';
 import { MedicationChips } from './medication-chip';
 import { FeedingWeekStrip, MealSlotsStatus, SetMealTimesButton } from './meal-status';
 import { GiveDoseDialog } from './give-dose-dialog';
-import { useMedicationState } from './medication-api';
 import { medicationAttention } from '@/lib/pets/medication-course';
-import { usePetLogs } from './pet-log-api';
+import { CARE_FEEDING_WINDOW, useSharedPetCare } from './care-store';
 import { QuickFeedButton, type QuickFeedController } from './quick-feed-button';
 import { useNow } from './use-now';
 import { unavailableText } from '@/lib/pets/live-listener';
@@ -34,7 +33,7 @@ import { unavailableText } from '@/lib/pets/live-listener';
  * than this means the history is complete; at the limit, older days the strip
  * cannot see read "not loaded", never "missed".
  */
-export const PET_FEEDING_WINDOW = 30;
+export const PET_FEEDING_WINDOW = CARE_FEEDING_WINDOW;
 
 /**
  * A pet's live care data: feedings, the plan and today's status, and every
@@ -42,15 +41,18 @@ export const PET_FEEDING_WINDOW = 30;
  * household's day (`household.timeZone`, PE-7a/b), and `now` comes from the one
  * shared minute clock (PE-21c), so every card rolls over at household midnight.
  * `meal` is the one shared feeding status (PE-22h): meal slots when the pet has
- * a confirmed plan, else the legacy daily target.
+ * a confirmed plan, else the legacy daily target. The live data comes from the
+ * household's care store (PE-21a, `useSharedPetCare`): every reader of a pet
+ * shares one set of subscriptions.
  */
 export function usePetCare(pet: PetProfile, householdId: string) {
   const now = useNow();
   const { household } = useAuth();
   const timeZone = household?.timeZone ?? null;
-  const feedings = usePetLogs<PetFeedingLog>(householdId, pet.id, 'feeding-logs', PET_FEEDING_WINDOW);
+  const shared = useSharedPetCare(householdId, pet.id);
+  const feedings = shared.feedings as typeof shared.feedings & { logs: PetFeedingLog[] };
   // Courses (their next scheduled dose) and legacy countdowns (D-P8), most urgent first (P3).
-  const medications = useMedicationState(householdId, pet.id, now, timeZone);
+  const medications = shared.medications;
   const unknown = feedings.loading || Boolean(feedings.error);
   const meal: MealStatus | null = unknown ? null : mealStatus(pet, feedings.logs, now, timeZone);
   // The legacy plan (no confirmed slots), for the detailed form's defaults and older readers.
@@ -63,7 +65,7 @@ export function usePetCare(pet: PetProfile, householdId: string) {
   // The feed operation's fallback for a pet without a feeding-state document (household day).
   const known = unknown ? null : knownFromLogs(feedings.logs, now, timeZone);
   const historyComplete = feedings.logs.length < PET_FEEDING_WINDOW;
-  return { now, timeZone, feedings, medications, plan, meal, status, dues, food, known, historyComplete };
+  return { now, timeZone, feedings, medications, plan, meal, status, dues, food, known, historyComplete, pinned: shared.pinned };
 }
 
 export type PetCare = ReturnType<typeof usePetCare>;
@@ -103,8 +105,8 @@ function FeedingCount({ status }: { status: FeedingStatus }) {
  * medication and feeding, shared by the pet card and the pet detail page. A
  * failed load is shown as "unavailable", never as an empty history (which
  * would read as "not fed"). The pet card passes its own `care` and `feed`
- * controller, which hold to feed shares, so both use one data subscription and
- * one writer.
+ * controller (shared with its actions menu), so both use one data subscription
+ * and one writer.
  */
 type SummaryProps = {
   pet: PetProfile;
@@ -112,7 +114,6 @@ type SummaryProps = {
   feedClassName?: string;
   care?: PetCare;
   feed?: QuickFeedController;
-  feedHintId?: string;
   /** Medication chips shown before "+N" (the card is compact; the detail page shows more). */
   maxMedicationChips?: number;
   /** The seven-day strip (PE-25). */
@@ -130,9 +131,9 @@ function OwnCareSummary(props: SummaryProps) {
   return <CareSummaryView {...props} care={care} />;
 }
 
-function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedicationChips = 2, showWeek, onSetMealTimes }: SummaryProps & { care: PetCare }) {
+function CareSummaryView({ pet, feedClassName, care, feed, maxMedicationChips = 2, showWeek, onSetMealTimes }: SummaryProps & { care: PetCare }) {
   const { now, timeZone, feedings, medications, plan, meal, status, dues, food, known } = care;
-  // The Feed button is described by the fed status it acts on (PE-20b), then the hold hint.
+  // The Feed button is described by the fed status it acts on (PE-20b).
   const statusId = useId();
   const router = useRouter();
   // A course chip opens Give dose here (PE-24b); a legacy chip opens the Medication tab, where it is confirmed.
@@ -204,8 +205,10 @@ function CareSummaryView({ pet, feedClassName, care, feed, feedHintId, maxMedica
           status={status}
           food={food}
           known={known}
+          pet={pet}
+          logs={feedings.loading || feedings.error ? null : feedings.logs}
           controller={feed}
-          describedBy={feedings.loading ? feedHintId : [statusId, feedHintId].filter(Boolean).join(' ')}
+          describedBy={feedings.loading ? undefined : statusId}
           variant={meal?.kind === 'slots' ? (meal.complete || meal.offDay ? 'secondary' : 'default') : status?.complete ? 'secondary' : 'default'}
           className="w-full"
         />

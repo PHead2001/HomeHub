@@ -9,6 +9,7 @@ import { feedTarget, mealCountLabel, mealHeadline } from '@/lib/pets/meal-plan';
 import type { PetProfile } from '@/lib/pets/types';
 import { usePetCare, type PetCare } from './pet-care-summary';
 import { FeedConfirmPanel, useQuickFeed } from './quick-feed-button';
+import { useBackCloses } from '@/hooks/use-back-closes';
 
 /**
  * "Fed 12 min ago by Sam · 1 of 2 today", with meal slots the card's slot status
@@ -80,6 +81,9 @@ export function FeedPickerDialog({
     onOpenChange(false);
     setChosenId(null);
   };
+
+  // Android Back closes this dialog first (emulator evidence D4).
+  useBackCloses(open, close);
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : close())}>

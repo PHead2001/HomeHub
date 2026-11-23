@@ -14,10 +14,11 @@
 //   the tablet, which is removed together with its Undo.
 
 import { useCallback, useEffect, useRef } from 'react';
+import { resumedUndo } from '@/lib/devices/tablet-toasts';
 import { ToastAction } from '@/components/ui/toast';
 import { toast } from '@/hooks/use-toast';
 import type { DeviceCapability, DeviceRefusal, PointsPinPolicy } from '@/lib/devices/action-policy';
-import { choreAnswerMeaning, feedAgainCheck, queuedSendResult, UNDO_CAPABILITY_OF, type FeedAgainCheck } from '@/lib/devices/device-action-answers';
+import { choreAnswerMeaning, confirmCheckOf, intentFields, queuedSendResult, UNDO_CAPABILITY_OF, type ConfirmCheck } from '@/lib/devices/device-action-answers';
 import { createRevertRegistry, performAction, QUEUE_REFUSAL_COPY, queueRefusal, runUndo, undoReoffer } from '@/lib/devices/undo-flow';
 import { deviceStore } from '@/lib/devices/device-store';
 import {
@@ -51,9 +52,26 @@ import {
 } from '@/app/chores/device-actions';
 import {
   addCareFromTabletAction,
+  addNoteFromTabletAction,
+  addWeightFromTabletAction,
+  correctFeedTimeFromTabletAction,
+  deleteLogFromTabletAction,
+  deleteNoteFromTabletAction,
+  deletePetFromTabletAction,
+  editNoteFromTabletAction,
+  editPetProfileFromTabletAction,
   feedPetFromTabletAction,
+  giveDoseFromTabletAction,
+  saveCourseFromTabletAction,
+  saveMealPlanFromTabletAction,
+  setCourseFinishedFromTabletAction,
+  setNotePinnedFromTabletAction,
   undoCareFromTabletAction,
+  undoDoseFromTabletAction,
   undoFeedFromTabletAction,
+  undoNoteFromTabletAction,
+  undoWeightFromTabletAction,
+  type DoseIntent,
   type FeedIntent,
 } from '@/app/pets/device-actions';
 import type { TabletActor } from './tablet-context';
@@ -69,17 +87,41 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
   'chores.take.undo': (base) => undoTakeChoreFromTabletAction(base),
   // Pets (F4b-1): every feeding entry point on a tablet (Feed, hold, quick add, dashboard Fed,
   // the detailed form) and care entries; the server picks a backdated feed's capability.
-  'pets.feed': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
-  'pets.feed.backdated': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
-  'pets.feed.backdated.old': (base, intent) => feedPetFromTabletAction({ ...base, ...(intent as unknown as FeedIntent) }),
+  'pets.feed': (base, intent) => feedPetFromTabletAction({ ...(intentFields(intent) as unknown as FeedIntent), ...base }),
+  'pets.feed.backdated': (base, intent) => feedPetFromTabletAction({ ...(intentFields(intent) as unknown as FeedIntent), ...base }),
+  'pets.feed.backdated.old': (base, intent) => feedPetFromTabletAction({ ...(intentFields(intent) as unknown as FeedIntent), ...base }),
   'pets.feed.undo': (base) => undoFeedFromTabletAction(base),
   'pets.care.add': (base, intent) => addCareFromTabletAction({ ...base, petId: String(intent.petId ?? ''), activity: String(intent.activity ?? ''), notes: typeof intent.notes === 'string' ? intent.notes : '' }),
   'pets.care.undo': (base) => undoCareFromTabletAction(base),
+  // Pets (F4b-2): Give dose (the server picks a dose given more than 12 hours ago as .old),
+  // behaviour notes and weights with their Undo, and the PIN-level actions. The intent is
+  // passed as the tablet made it; the server validates every field.
+  'pets.dose.give': (base, intent) => giveDoseFromTabletAction({ ...(intentFields(intent) as unknown as DoseIntent), ...base }),
+  'pets.dose.give.old': (base, intent) => giveDoseFromTabletAction({ ...(intentFields(intent) as unknown as DoseIntent), ...base }),
+  'pets.dose.undo': (base) => undoDoseFromTabletAction(base),
+  'pets.note.add': (base, intent) => addNoteFromTabletAction({ ...(intentFields(intent) as unknown as { petId: string; text: string; tag?: string; day?: string }), ...base }),
+  'pets.note.undo': (base) => undoNoteFromTabletAction(base),
+  'pets.weight.add': (base, intent) => addWeightFromTabletAction({ ...(intentFields(intent) as unknown as { petId: string; value: number; unit: string; day?: string }), ...base }),
+  'pets.weight.undo': (base) => undoWeightFromTabletAction(base),
+  'pets.note.pin': (base, intent) => setNotePinnedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), noteId: String(intent.noteId ?? ''), pinned: true }),
+  'pets.note.unpin': (base, intent) => setNotePinnedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), noteId: String(intent.noteId ?? ''), pinned: false }),
+  'pets.note.editPinned': (base, intent) => editNoteFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof editNoteFromTabletAction>[0]), ...base }),
+  'pets.note.delete': (base, intent) => deleteNoteFromTabletAction({ ...base, petId: String(intent.petId ?? ''), noteId: String(intent.noteId ?? '') }),
+  'pets.log.delete': (base, intent) => deleteLogFromTabletAction({ ...base, petId: String(intent.petId ?? ''), kind: String(intent.kind ?? ''), logId: String(intent.logId ?? '') }),
+  'pets.log.correctTime': (base, intent) => correctFeedTimeFromTabletAction({ ...base, petId: String(intent.petId ?? ''), logId: String(intent.logId ?? ''), date: String(intent.date ?? '') }),
+  'pets.course.finish': (base, intent) => setCourseFinishedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), courseId: String(intent.courseId ?? ''), finished: true }),
+  'pets.course.resume': (base, intent) => setCourseFinishedFromTabletAction({ ...base, petId: String(intent.petId ?? ''), courseId: String(intent.courseId ?? ''), finished: false }),
+  'pets.course.edit': (base, intent) => saveCourseFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof saveCourseFromTabletAction>[0]), ...base, legacyKey: null }),
+  'pets.medication.confirmLegacy': (base, intent) => saveCourseFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof saveCourseFromTabletAction>[0]), ...base }),
+  'pets.slots.edit': (base, intent) => saveMealPlanFromTabletAction({ ...base, petId: String(intent.petId ?? ''), rows: Array.isArray(intent.rows) ? intent.rows : [] }),
+  'pets.profile.edit': (base, intent) => editPetProfileFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof editPetProfileFromTabletAction>[0]), ...base }),
+  'pets.pet.delete': (base, intent) => deletePetFromTabletAction({ ...base, petId: String(intent.petId ?? '') }),
 };
 
 export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDERS[capability]);
 
 const SYNC_EVERY_MS = 30_000;
+const UUID_OP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A sent action with no answer, which can't wait in the queue: the server may hold it. */
 export const UNKNOWN_OUTCOME_COPY = "No answer from HomeHub. It may have been saved; Undo takes it back if it was.";
@@ -103,11 +145,13 @@ export type DeviceActionRuntime = {
     onReverted?: () => void;
     /** The Undo toast's group (a feed: its pet's, `petFeedToastGroup`), kept in the journal for a reload; default: the shared device-action group. */
     toastGroup?: string;
+    /** The form's own opId (one per open form, kept across its retries); default: a new one per press. */
+    opId?: string;
     /**
-     * "Feed again?" (PE-23g): asked when the server answers that it needs a confirmation;
+     * "Feed again?" (PE-23g) or "Already given?" (a dose, PE-24k): asked when the server answers that it needs a confirmation;
      * resolves with the answer to send back with the same opId, or null (Cancel: nothing is written).
      */
-    confirm?: (check: FeedAgainCheck) => Promise<Record<string, unknown> | null>;
+    confirm?: (check: ConfirmCheck) => Promise<Record<string, unknown> | null>;
   }) => Promise<{ ok: boolean; queued?: boolean; uncertain?: boolean; data?: unknown }>;
 };
 
@@ -297,7 +341,10 @@ export function useDeviceActions(deps: {
     }
   }, [authorizeUndo, currentEntry, personOf, refuse, send, step, storesOf]);
 
+  // Every Undo toast on screen, by opId, so a return from the background can measure it again (D5).
+  const offered = useRef(new Map<string, { dismiss: () => void; entry: UndoJournalEntry; actor: TabletActor; who: RosterPerson | null; message: string }>());
   const offerUndo = useCallback((entry: UndoJournalEntry, actor: TabletActor, who: RosterPerson | null, message: string, remainingMs: number) => {
+    offered.current.get(entry.opId)?.dismiss();
     const handle = toast({
       // Per pet for feeds (stored in the journal, so a restored toast keeps it): another pet's
       // feed or a chore never displaces this Undo; same-group actions replace the older one.
@@ -305,12 +352,35 @@ export function useDeviceActions(deps: {
       description: message,
       duration: Math.max(1000, remainingMs),
       action: (
-        <ToastAction altText={`Undo: ${entry.label}`} onClick={() => { handle.dismiss(); void undoOf(entry, actor, who); }} data-testid="tablet-undo">
+        // 48 px on the tablet's coarse pointer (D1).
+        <ToastAction altText={`Undo: ${entry.label}`} className="min-h-12 min-w-12 px-4 text-base" onClick={() => { offered.current.delete(entry.opId); handle.dismiss(); void undoOf(entry, actor, who); }} data-testid="tablet-undo">
           Undo
         </ToastAction>
       ),
     });
+    offered.current.set(entry.opId, { dismiss: handle.dismiss, entry, actor, who, message });
   }, [undoOf]);
+
+  // Back from the background (or a frozen page resumed): the toast's own timer may have slept
+  // past the window, so each offered Undo is measured again from its journal entry (D5).
+  useEffect(() => {
+    const resume = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      for (const [opId, shown] of [...offered.current]) {
+        const current = mirror.current.get(opId.toLowerCase()) ?? shown.entry;
+        const decision = resumedUndo(undoOffer(current, Date.now()).remainingMs);
+        offered.current.delete(opId);
+        shown.dismiss();
+        if (decision.kind === 'reoffer') offerUndoRef.current?.(current, shown.actor, shown.who, shown.message, decision.remainingMs);
+      }
+    };
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('pageshow', resume);
+    return () => {
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('pageshow', resume);
+    };
+  }, []);
   useEffect(() => { offerUndoRef.current = offerUndo; }, [offerUndo]);
 
   // After a reload: Undo toasts come back for the time that is left (the server's window decides).
@@ -333,10 +403,12 @@ export function useDeviceActions(deps: {
   }, [offerUndo, storesOf]);
 
   // --- Actions ------------------------------------------------------------------
-  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup }) => {
+  const perform = useCallback<DeviceActionRuntime['perform']>(async ({ capability, label, intent: firstIntent, actor, who, onReverted, confirm, toastGroup, opId: formOpId }) => {
     // A "Feed again?" answer is added to the intent, and goes with it into the queue if the send then gets no answer.
     let intent = firstIntent;
-    const opId = crypto.randomUUID();
+    // One opId per open form (its retries replay on the server instead of adding a second record);
+    // otherwise one per press.
+    const opId = formOpId && UUID_OP.test(formOpId) ? formOpId.toLowerCase() : crypto.randomUUID();
     reverts.current.register(opId, onReverted);
     const { queue } = storesOf();
     const undoCapability = UNDO_CAPABILITY_OF[capability];
@@ -359,7 +431,7 @@ export function useDeviceActions(deps: {
         const base = { actorUid: actor.actorUid, opId, ...(actor.pinSessionId ? { pinSessionId: actor.pinSessionId } : {}) };
         let answer = await send(capability, base, intent);
         // "Feed again?": the same opId again, with the answer bound to the state it was shown for.
-        for (let check = answer.ok ? feedAgainCheck(capability, answer.data) : null; check; check = answer.ok ? feedAgainCheck(capability, answer.data) : null) {
+        for (let check = answer.ok ? confirmCheckOf(capability, answer.data) : null; check; check = answer.ok ? confirmCheckOf(capability, answer.data) : null) {
           const answered = confirm ? await confirm(check) : null;
           if (!answered) return { ok: true as const, data: { cancelled: true } };
           intent = { ...intent, ...answered };

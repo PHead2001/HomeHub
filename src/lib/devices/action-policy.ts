@@ -6,6 +6,8 @@
 
 import type { HouseholdPermission, HouseholdRole } from '@/lib/types';
 import { PET_PERMISSIONS } from '@/lib/permissions';
+import { PET_ACTION_PERMISSIONS } from '@/lib/pets/pet-actions';
+import { MEDICATION_ACTION_PERMISSIONS } from '@/lib/pets/medication-permissions';
 
 export type DeviceSection = 'home' | 'chores' | 'shopping' | 'pets' | 'calendar' | 'maintenance' | 'automation';
 
@@ -62,6 +64,13 @@ export type DeviceCapabilityPolicy = {
 const ADD = [PET_PERMISSIONS.addLogs] as const satisfies readonly HouseholdPermission[];
 const ADD_OR_DELETE = [PET_PERMISSIONS.addLogs, PET_PERMISSIONS.deleteLogs] as const satisfies readonly HouseholdPermission[];
 const EDIT_PROFILES = [PET_PERMISSIONS.editProfiles] as const satisfies readonly HouseholdPermission[];
+// The Pets module's own action tables (P3, P5), so a tablet is never looser, nor stricter, than a phone.
+const MED = MEDICATION_ACTION_PERMISSIONS;
+const PET = PET_ACTION_PERMISSIONS;
+/** Editing, pinning or unpinning a note: its author (pets.addLogs) or pets.editProfiles (D-P11); the operation applies the author rule. */
+const NOTE_EDIT = [...PET['pets.note.add'], ...PET['pets.note.edit']] as const satisfies readonly HouseholdPermission[];
+/** Deleting a note: pets.deleteLogs, a pinned one also pets.editProfiles, its author within 10 minutes (`mayDeleteNote`, in the operation). */
+const NOTE_DELETE = [...PET['pets.note.add'], ...PET['pets.note.delete'], ...PET['pets.note.edit']] as const satisfies readonly HouseholdPermission[];
 
 /** Face-level once proven (`face*`); queueable. */
 const faceStar = (section: DeviceSection, permissions: readonly HouseholdPermission[], extra: Partial<DeviceCapabilityPolicy> = {}): DeviceCapabilityPolicy => ({
@@ -86,32 +95,37 @@ export const DEVICE_ACTION_POLICY = {
   'pets.feed.backdated': faceStar('pets', ADD),
   'pets.feed.backdated.old': pin('pets', ADD),
   'pets.feed.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
-  'pets.dose.give': faceStar('pets', ADD),
-  'pets.dose.give.old': pin('pets', ADD),
-  'pets.dose.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
+  'pets.dose.give': faceStar('pets', MED['pets.dose.give']),
+  'pets.dose.give.old': pin('pets', MED['pets.dose.give']),
+  'pets.dose.undo': faceStar('pets', MED['pets.dose.undo'], { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.care.add': faceStar('pets', ADD),
   'pets.care.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
-  'pets.note.add': faceStar('pets', ADD),
+  'pets.note.add': faceStar('pets', PET['pets.note.add']),
   'pets.note.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
-  'pets.weight.add': faceStar('pets', ADD),
+  'pets.weight.add': faceStar('pets', PET['pets.weight.add']),
   'pets.weight.undo': faceStar('pets', ADD_OR_DELETE, { actorRule: 'original-actor-or-delete-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
-  'pets.note.pin': pin('pets', ['pets.addLogs', 'pets.editProfiles'], { actorRule: 'author-or-permission', actorRulePermission: 'pets.editProfiles' }),
-  'pets.note.unpin': pin('pets', ['pets.addLogs', 'pets.editProfiles'], { actorRule: 'author-or-permission', actorRulePermission: 'pets.editProfiles' }),
-  'pets.note.editPinned': pin('pets', ['pets.addLogs', 'pets.editProfiles'], { actorRule: 'author-or-permission', actorRulePermission: 'pets.editProfiles' }),
-  'pets.note.delete': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
+  'pets.note.pin': pin('pets', NOTE_EDIT, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.editProfiles }),
+  'pets.note.unpin': pin('pets', NOTE_EDIT, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.editProfiles }),
+  /** Editing a note's text or tag (a pinned fact or a behaviour entry). */
+  'pets.note.editPinned': pin('pets', NOTE_EDIT, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.editProfiles }),
+  'pets.note.delete': pin('pets', NOTE_DELETE, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.log.delete': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
   'pets.log.correctTime': pin('pets', ADD_OR_DELETE, { actorRule: 'author-or-permission', actorRulePermission: PET_PERMISSIONS.deleteLogs }),
-  'pets.medication.confirmLegacy': pin('pets', EDIT_PROFILES),
-  'pets.course.edit': pin('pets', EDIT_PROFILES),
-  'pets.course.finish': pin('pets', ADD),
-  'pets.slots.confirm': pin('pets', EDIT_PROFILES),
-  'pets.slots.edit': pin('pets', EDIT_PROFILES),
-  'pets.profile.edit': pin('pets', EDIT_PROFILES),
+  'pets.medication.confirmLegacy': pin('pets', MED['pets.medication.confirmLegacy']),
+  'pets.course.edit': pin('pets', MED['pets.course.edit']),
+  'pets.course.finish': pin('pets', MED['pets.course.finish']),
+  /** Making a finished course active again (the personal Finish toast's Undo; on a tablet a PIN action of its own). */
+  'pets.course.resume': pin('pets', MED['pets.course.finish']),
+  'pets.slots.confirm': pin('pets', PET['pets.profile.edit']),
+  'pets.slots.edit': pin('pets', PET['pets.profile.edit']),
+  'pets.profile.edit': pin('pets', PET['pets.profile.edit']),
   'pets.pet.create': pin('pets', EDIT_PROFILES),
-  'pets.pet.delete': pin('pets', EDIT_PROFILES),
+  'pets.pet.delete': pin('pets', PET['pets.profile.delete']),
   'pets.photo.upload': notOnTablets('pets'),
 
   // --- Chores and household notices -----------------------------------------
+  // Household-notice dismissal (and its Undo) is not on tablets (lead decision, WT-10d): the
+  // tablet's notices view is read-only; members dismiss notices in the personal app.
   'chores.complete': faceStar('chores', ['chores.complete'], { points: true }),
   'chores.complete.undo': faceStar('chores', ['chores.complete'], { points: true, actorRule: 'original-actor' }),
   'chores.take': faceStar('chores', ['chores.assign'], { points: true }),
@@ -126,8 +140,8 @@ export const DEVICE_ACTION_POLICY = {
   'chores.leaderboard.hide': notOnTablets('chores'),
   'chores.delete': notOnTablets('chores'),
   'chores.upkeep': notOnTablets('chores'),
-  'notifications.dismiss': { section: 'home', levelClass: 'face', permissions: ['notifications.dismiss'], faceNeedsUndoProof: true },
-  'notifications.dismiss.undo': { section: 'home', levelClass: 'face', permissions: ['notifications.dismiss'], faceNeedsUndoProof: true, actorRule: 'original-actor' },
+  'notifications.dismiss': notOnTablets('home'),
+  'notifications.dismiss.undo': notOnTablets('home'),
 
   // --- Shopping and maintenance: read-only sections in this goal (D-T8, JC-24) ---
   'shopping.add': notOnTablets('shopping'),
@@ -194,6 +208,15 @@ export const UNDO_PROVEN: ReadonlySet<DeviceCapability> = new Set<DeviceCapabili
   'pets.feed.undo',
   'pets.care.add',
   'pets.care.undo',
+  // Doses, behaviour notes and weights (F4b-2): tests/server/device-pets-records.test.ts, the
+  // seven cases of 10.4 for pets.dose.give (live and backdated within 12 hours),
+  // pets.note.add and pets.weight.add. Doses older than 12 hours stay PIN-level (JC-27).
+  'pets.dose.give',
+  'pets.dose.undo',
+  'pets.note.add',
+  'pets.note.undo',
+  'pets.weight.add',
+  'pets.weight.undo',
 ]);
 
 export const isDeviceCapability = (value: unknown): value is DeviceCapability =>
@@ -266,6 +289,23 @@ export const feedCapability = (
 
 /** One feed press under any of its capabilities (a replay of an applied opId keeps the recorded one). */
 export const FEED_CAPABILITIES: readonly DeviceCapability[] = UNDO_OF['pets.feed.undo'];
+
+/**
+ * The capability of one tablet Give dose press, as `feedCapability` (F4b-2 review S1): the
+ * dose's effective time decides, the chosen given-at time, else a queued replay's queue time
+ * (bounded by the caller to the gate's 24 hours and the server clock); more than 12 hours
+ * before the server clock is `pets.dose.give.old` (PIN, not queueable).
+ */
+export const doseCapability = (
+  input: { givenAt: Date | null; queuedAt: Date | null },
+  now: Date,
+): 'pets.dose.give' | 'pets.dose.give.old' => {
+  const at = input.givenAt ?? input.queuedAt;
+  return at ? (backdatedCapability('dose', at, now) as 'pets.dose.give' | 'pets.dose.give.old') : 'pets.dose.give';
+};
+
+/** One dose press under either capability (review S2: a retry across the 12-hour line keeps the recorded one). */
+export const DOSE_CAPABILITIES: readonly DeviceCapability[] = UNDO_OF['pets.dose.undo'];
 
 export type RequiredLevel = 'device' | 'face' | 'pin' | 'admin-pin' | 'not_on_tablets' | 'never';
 
@@ -403,3 +443,10 @@ export const deviceRefusalResponse = (
       return { kind: 'message', message: "Couldn't save. Try again." };
   }
 };
+
+/**
+ * Said at once when the person chosen for a PIN-level action has no tablet PIN (emulator
+ * evidence D6), instead of a PIN pad that can only refuse; the tablet then offers choosing
+ * someone else.
+ */
+export const noTabletPinMessage = (name: string): string => `${name.trim() || 'This person'} has no tablet PIN. An adult can set one in Household > Members.`;

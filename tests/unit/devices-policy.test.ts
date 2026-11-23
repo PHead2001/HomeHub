@@ -75,7 +75,7 @@ describe('policy table', () => {
       'pets.weight.add': 'face', 'pets.weight.undo': 'face',
       'pets.note.pin': 'pin', 'pets.note.unpin': 'pin', 'pets.note.editPinned': 'pin', 'pets.note.delete': 'pin',
       'pets.log.delete': 'pin', 'pets.log.correctTime': 'pin', 'pets.medication.confirmLegacy': 'pin',
-      'pets.course.edit': 'pin', 'pets.course.finish': 'pin', 'pets.slots.confirm': 'pin', 'pets.slots.edit': 'pin',
+      'pets.course.edit': 'pin', 'pets.course.finish': 'pin', 'pets.course.resume': 'pin', 'pets.slots.confirm': 'pin', 'pets.slots.edit': 'pin',
       'pets.profile.edit': 'pin', 'pets.pet.create': 'pin', 'pets.pet.delete': 'pin', 'pets.photo.upload': 'not_on_tablets',
     };
     for (const [capability, levelClass] of Object.entries(expected)) {
@@ -128,10 +128,11 @@ describe('policy table', () => {
     assert.equal(isDeviceCapability(undefined), false);
   });
 
-  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care)', () => {
+  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care, F4b-2 doses, notes and weights)', () => {
     assert.deepEqual([...UNDO_PROVEN].sort(), [
       'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
-      'pets.care.add', 'pets.care.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
+      'pets.care.add', 'pets.care.undo', 'pets.dose.give', 'pets.dose.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
+      'pets.note.add', 'pets.note.undo', 'pets.weight.add', 'pets.weight.undo',
     ]);
   });
 
@@ -146,6 +147,22 @@ describe('policy table', () => {
     for (const capability of DEVICE_CAPABILITIES) {
       if (policy(capability).queueable) assert.equal(policy(capability).levelClass, 'face', capability);
     }
+  });
+});
+
+describe('household-notice dismissal is not on tablets (lead decision, WT-10d)', () => {
+  it('the dismissal and its Undo are class not_on_tablets: the tablet refuses them with the standard copy', () => {
+    const adult = { pointsPin: 'off' as const, actorRole: 'member' as const };
+    for (const capability of ['notifications.dismiss', 'notifications.dismiss.undo'] as const) {
+      assert.equal(DEVICE_ACTION_POLICY[capability].levelClass, 'not_on_tablets', capability);
+      assert.equal(DEVICE_ACTION_POLICY[capability].permissions, null, capability);
+      assert.equal(requiredLevel(capability, adult), 'not_on_tablets', capability);
+      assert.ok(!UNDO_PROVEN.has(capability), capability);
+    }
+    assert.deepEqual(deviceRefusalResponse('not_on_tablets'), { kind: 'message', message: "That isn't available on wall tablets yet. Use your phone." });
+    // No tablet executor sends it; the notices view offers no dismissal.
+    const runtime = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
+    assert.doesNotMatch(runtime, /'notifications\.dismiss/);
   });
 });
 

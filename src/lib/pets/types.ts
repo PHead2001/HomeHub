@@ -30,6 +30,12 @@ export type PetProfile = Omit<Pet, 'type'> & {
   mealPlan?: MealPlan;
   /** Plans that applied before the current one, oldest first (PE-22g; at most `MEAL_PLAN_HISTORY_MAX`). */
   mealPlanHistory?: MealPlanHistoryEntry[];
+  /** Optional vet contact (P5, PE-28a): name and clinic up to 80 characters, the phone digits and separators (up to 30). */
+  vetName?: string;
+  vetClinic?: string;
+  vetPhone?: string;
+  /** The unit the pet's weights are shown in (P5, PE-28c); kg when absent. */
+  weightUnit?: 'kg' | 'lb';
 };
 
 /** One meal of the day (PE-22a). `id` never changes when the meal is renamed or moved. */
@@ -89,8 +95,14 @@ export type PetFeedingLog = FeedingLog & LoggedBy & {
   backdated?: boolean;
   /** With `repeat: 'confirmed'`: the last feeding's log the member was asked about ("Feed again?", PE-23g). */
   confirmOf?: string | null;
-  /** The meal slot this feeding was for (PE-22c); absent on older, offline and backdated entries (assigned by time). */
+  /**
+   * The meal slot this feeding was for (PE-22c): a live feed's target, or an earlier feeding's
+   * meal (the slot whose window holds its time, while the pet's current plan has it). Absent on
+   * older and offline entries (assigned by time).
+   */
   slotId?: string;
+  /** An earlier feeding whose meal was already fed (or no meal's window held its time): an extra of its day, never a meal. */
+  extra?: boolean;
   /** The effective time before its first correction (PE-5e); `date` is the corrected time. */
   originalDate?: unknown;
   /** Server time of the latest correction of `date`, and who made it. */

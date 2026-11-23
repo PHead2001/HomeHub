@@ -5,6 +5,8 @@
 // (SL-10), who is acting right now with "Done", household notices and Tablet settings.
 // Nothing personal while resting (WT-5a).
 
+import { useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Bell, Settings } from 'lucide-react';
 import { ConnectionStatus } from '@/components/shell/connection-status';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
@@ -39,17 +41,7 @@ export function TabletTopBar({ now }: { now: Date }) {
         </p>
       )}
       <div className="flex-1" />
-      {actor && (
-        <div className="flex items-center gap-2 rounded-full bg-primary/10 py-1 pl-3 pr-1 text-sm" data-testid="tablet-acting">
-          <span>
-            {actor.name}
-            {acting?.level === 'pin' ? ' (PIN)' : ''}
-          </span>
-          <button type="button" onClick={done} className="min-h-12 rounded-full px-4 font-semibold text-primary" data-testid="tablet-done">
-            Done
-          </button>
-        </div>
-      )}
+      {actor && <ActingPill label={`${actor.name}${acting?.level === 'pin' ? ' (PIN)' : ''}`} onDone={done} />}
       <button
         type="button"
         onClick={() => navigate(NOTICES_PATH)}
@@ -75,5 +67,57 @@ export function TabletTopBar({ now }: { now: Date }) {
       </button>
       <ConnectionStatus />
     </header>
+  );
+}
+
+const PILL = 'flex items-center gap-2 rounded-full bg-primary/10 py-1 pl-3 pr-1 text-sm';
+
+/**
+ * Who is acting, with Done, above an open dialog's overlay and taking taps through its modal
+ * lock (D3): Done ends the remembered person even while a pet sheet or another dialog is open
+ * (the dialog closes as an outside tap, and the tap still reaches Done). The shell is
+ * `position: fixed`, which makes it its own stacking context, so no z-index inside it can
+ * rise above a dialog's overlay (portalled to the body at z-50): the pill itself is portalled
+ * to the body at z-60, placed over an invisible copy that keeps its place in the bar.
+ */
+function ActingPill({ label, onDone }: { label: string; onDone: () => void }) {
+  const slot = useRef<HTMLDivElement>(null);
+  const [rect, setRect] = useState<{ top: number; left: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = slot.current;
+    if (!el) return;
+    const place = () => {
+      const box = el.getBoundingClientRect();
+      setRect((prev) => (prev && prev.top === box.top && prev.left === box.left ? prev : { top: box.top, left: box.left }));
+    };
+    place();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
+    observer?.observe(el);
+    if (el.parentElement) observer?.observe(el.parentElement);
+    window.addEventListener('resize', place);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', place);
+    };
+  }, [label]);
+  const body = (
+    <>
+      <span>{label}</span>
+      <span className="min-h-12 rounded-full px-4 font-semibold">Done</span>
+    </>
+  );
+  return (
+    <>
+      <div ref={slot} aria-hidden className={`${PILL} invisible`}>{body}</div>
+      {rect && typeof document !== 'undefined' && createPortal(
+        <div className={`pointer-events-auto fixed z-[60] ${PILL}`} style={{ top: rect.top, left: rect.left }} data-testid="tablet-acting">
+          <span>{label}</span>
+          <button type="button" onClick={onDone} className="min-h-12 rounded-full px-4 font-semibold text-primary" data-testid="tablet-done">
+            Done
+          </button>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }

@@ -17,12 +17,26 @@ import {
   type ResilientHandle,
 } from '../dashboard/resilient-listener';
 
+/**
+ * On a registered wall tablet a refused Pets listener keeps trying (every minute, as the
+ * tablet's own listeners do: a tablet never restarts by itself, and a real removal ends the
+ * session through its revocation flow). Set by the tablet shell while it is mounted.
+ */
+let deviceRecoveryMs: number | null = null;
+export function setPetListenerRecovery(ms: number | null): void {
+  deviceRecoveryMs = ms;
+}
+
 export function petSnapshotListener<T extends { metadata: { fromCache: boolean } }>(
   subscribe: (next: (value: T) => void, error: (error: unknown) => void) => () => void,
   handlers: { next: (value: T) => void; status?: (status: ListenerStatus) => void },
   environment?: ResilientEnvironment,
 ): ResilientHandle {
-  return resilientListener<T>(subscribe, { ...handlers, confirmed: (snapshot) => !snapshot.metadata.fromCache }, environment);
+  return resilientListener<T>(subscribe, {
+    ...handlers,
+    confirmed: (snapshot) => !snapshot.metadata.fromCache,
+    ...(deviceRecoveryMs !== null ? { recoverUnauthorizedAfterMs: deviceRecoveryMs } : {}),
+  }, environment);
 }
 
 /* ------------------------------------------------------------------------- */

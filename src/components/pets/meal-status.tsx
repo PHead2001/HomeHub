@@ -22,7 +22,7 @@ import type { PetProfile } from '@/lib/pets/types';
  * ("Breakfast ✓ 7:42 am · Sam", "Dinner 6:00 pm", "Lunch missed"). Every text
  * is printed, so colour is never the only signal.
  */
-export function MealSlotsStatus({ status, timeZone, id, compact }: { status: Extract<MealStatus, { kind: 'slots' }>; timeZone: string | null; id?: string; compact?: boolean }) {
+export function MealSlotsStatus({ status, timeZone, id, compact }: { status: SlotsStatus; timeZone: string | null; id?: string; compact?: boolean }) {
   const headline = mealHeadline(status);
   return (
     <div id={id} className="min-w-0 space-y-1" data-testid="meal-slots-status">
@@ -31,24 +31,45 @@ export function MealSlotsStatus({ status, timeZone, id, compact }: { status: Ext
           'inline-flex max-w-full items-center gap-1.5 rounded-full text-sm font-medium',
           status.due ? 'border border-warning/80 bg-warning/10 px-2.5 py-0.5 text-warning' : status.complete ? 'text-success' : 'text-foreground',
         )}
-        data-meal-state={status.due ? 'due' : status.complete ? 'complete' : status.offDay ? 'off' : 'pending'}
+        data-meal-state={mealStateOf(status)}
       >
         {status.due ? <Clock aria-hidden className="h-3.5 w-3.5 shrink-0" /> : status.complete ? <Check aria-hidden className="h-3.5 w-3.5 shrink-0" /> : null}
         <span className="min-w-0 break-words">{headline}</span>
       </p>
-      {!compact && status.day.slots.length > 0 && (
-        <ul className="space-y-0.5 text-xs text-muted-foreground" aria-label="Today's meals">
-          {status.day.slots.map((state) => (
-            <li key={state.slot.id} className={cn('break-words', slotTone(state))} data-slot-phase={state.phase}>
-              {slotLine(state, timeZone)}
-            </li>
-          ))}
-          {status.day.off.length > 0 && (
-            <li className="text-muted-foreground">{status.day.off.map((slot) => slot.name).join(', ')}: not today</li>
-          )}
-        </ul>
-      )}
+      {!compact && <MealSlotList status={status} timeZone={timeZone} />}
     </div>
+  );
+}
+
+type SlotsStatus = Extract<MealStatus, { kind: 'slots' }>;
+
+/** The slot status as one word, on `data-meal-state` wherever a card shows it (grid, board, rows). */
+export function mealStateOf(status: SlotsStatus): 'due' | 'complete' | 'off' | 'pending' {
+  return status.due ? 'due' : status.complete ? 'complete' : status.offDay ? 'off' : 'pending';
+}
+
+/**
+ * One line per slot of today ("Breakfast ✓ 7:42 am · Sam", "Dinner 6:00 pm",
+ * "Lunch missed"), each with its `data-slot-phase`. `inline` (the board and
+ * the phone rows) runs them together on one compact line that wraps between
+ * meals instead of truncating, so nothing is cut at any text size.
+ */
+export function MealSlotList({ status, timeZone, className, inline }: { status: SlotsStatus; timeZone: string | null; className?: string; inline?: boolean }) {
+  if (status.day.slots.length === 0) return null;
+  return (
+    <ul
+      className={cn(inline ? 'flex min-w-0 flex-wrap gap-x-1.5 text-xs text-muted-foreground' : 'space-y-0.5 text-xs text-muted-foreground', className)}
+      aria-label="Today's meals"
+    >
+      {status.day.slots.map((state, index) => (
+        <li key={state.slot.id} className={cn('min-w-0 break-words', slotTone(state))} data-slot-phase={state.phase}>
+          {slotLine(state, timeZone)}{inline && (index < status.day.slots.length - 1 || status.day.off.length > 0) ? ' ·' : ''}
+        </li>
+      ))}
+      {status.day.off.length > 0 && (
+        <li className="min-w-0 break-words text-muted-foreground">{status.day.off.map((slot) => slot.name).join(', ')}: not today</li>
+      )}
+    </ul>
   );
 }
 
@@ -135,7 +156,7 @@ export function FeedingWeekStrip({
  */
 export function SetMealTimesButton({ petName, onClick, className }: { petName: string; onClick: () => void; className?: string }) {
   return (
-    <Button type="button" variant="outline" size="sm" className={cn('w-full', className)} onClick={onClick} aria-label={`Set meal times for ${petName}`} data-testid="set-meal-times">
+    <Button type="button" variant="outline" className={cn('w-full', className)} onClick={onClick} aria-label={`Set meal times for ${petName}`} data-testid="set-meal-times">
       <CalendarClock aria-hidden className="mr-2 h-4 w-4" />
       Set meal times
     </Button>

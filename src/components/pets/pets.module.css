@@ -14,11 +14,15 @@
   --ambient-scale: calc(var(--ambient-intensity, 0.06) / 0.06);
 }
 
-/* Species avatar blink: a 140 ms blink every 7 s. Paused while the tab is hidden. */
+/*
+ * Species avatar blink: a 140 ms blink every 7 s, six times (about 40 s after the
+ * art appears), then the eyes stay open (PE-21d: no endless ambient work on a
+ * wall screen that runs for weeks). Paused while the tab is hidden.
+ */
 .eyes {
   transform-box: fill-box;
   transform-origin: center;
-  animation: pet-blink 7s ease-in-out infinite;
+  animation: pet-blink 7s ease-in-out 6;
 }
 
 .eyes[data-delay='1'] { animation-delay: -2.3s; }
@@ -32,12 +36,13 @@
 /*
  * Species avatar idle (ambient): a slow 24 s sway and bob of the whole figure,
  * 1.5 px and 1.5 degrees at the default intensity (under 2 at the 7% presets),
- * staggered between cards. Paused while the tab is hidden; none under reduced motion.
+ * staggered between cards, three cycles (PE-21d), ending at rest (the base
+ * state). Paused while the tab is hidden; none under reduced motion.
  */
 .idle {
   transform-box: view-box;
   transform-origin: 60px 104px;
-  animation: pet-idle 24s ease-in-out infinite;
+  animation: pet-idle 24s ease-in-out 3;
 }
 
 .idle[data-delay='1'] { animation-delay: -8s; }

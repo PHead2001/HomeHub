@@ -187,6 +187,8 @@ export const PRE_AUTH_LIMITS = {
   gate: { perAddress: 240, perInstance: 6000 },
   pin: { perAddress: 30, perInstance: 600 },
   pinEnd: { perAddress: 60, perInstance: 1200 },
+  /** "Does this person have a PIN?" before a pad opens (D6): its own buckets, never a PIN entry's. */
+  pinStatus: { perAddress: 60, perInstance: 1200 },
 } as const;
 
 /** Before anything else: the caller's address bucket (IPv6 by /64, `addressBucket`). */

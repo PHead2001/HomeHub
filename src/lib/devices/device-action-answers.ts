@@ -4,6 +4,7 @@
 import type { DeviceCapability, DeviceRefusal } from './action-policy';
 import type { SendResult } from './offline-queue';
 import { publicDisplayName } from '@/lib/member-directory';
+import { PINNED_NOTES_MAX } from '@/lib/pets/notes';
 
 /** Each action capability and the capability that undoes it (only these offer Undo). */
 export const UNDO_CAPABILITY_OF: Partial<Record<DeviceCapability, DeviceCapability>> = {
@@ -13,16 +14,95 @@ export const UNDO_CAPABILITY_OF: Partial<Record<DeviceCapability, DeviceCapabili
   'pets.feed.backdated': 'pets.feed.undo',
   'pets.feed.backdated.old': 'pets.feed.undo',
   'pets.care.add': 'pets.care.undo',
+  'pets.dose.give': 'pets.dose.undo',
+  'pets.dose.give.old': 'pets.dose.undo',
+  'pets.note.add': 'pets.note.undo',
+  'pets.weight.add': 'pets.weight.undo',
 };
 
 /**
- * Capabilities the tablet can send to the server today (F4a: chores; F4b-1: pets feeding
- * and care). Everything else (doses, notes, weight, deletes, profile edits) is refused at once.
+ * Capabilities the tablet can send to the server (F4a: chores; F4b-1: pets feeding and care;
+ * F4b-2: doses, notes, weights and their Undo, and the PIN-level Pets actions). Everything
+ * else (pet create, photos, every other section's writes) is refused at once.
  */
 export const SENDABLE_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>([
   'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
   'pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old', 'pets.feed.undo', 'pets.care.add', 'pets.care.undo',
+  'pets.dose.give', 'pets.dose.give.old', 'pets.dose.undo', 'pets.note.add', 'pets.note.undo', 'pets.weight.add', 'pets.weight.undo',
+  'pets.note.pin', 'pets.note.unpin', 'pets.note.editPinned', 'pets.note.delete', 'pets.log.delete', 'pets.log.correctTime',
+  'pets.course.finish', 'pets.course.resume', 'pets.course.edit', 'pets.medication.confirmLegacy',
+  'pets.slots.edit', 'pets.profile.edit', 'pets.pet.delete',
 ]);
+
+const DOSE_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>(['pets.dose.give', 'pets.dose.give.old']);
+export const isDoseCapability = (capability: DeviceCapability): boolean => DOSE_CAPABILITIES.has(capability);
+
+/** The PIN-level Pets actions (JC-14): one answer shape, no Undo of their own. */
+export const PET_PIN_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>([
+  'pets.note.pin', 'pets.note.unpin', 'pets.note.editPinned', 'pets.note.delete', 'pets.log.delete', 'pets.log.correctTime',
+  'pets.course.finish', 'pets.course.resume', 'pets.course.edit', 'pets.medication.confirmLegacy',
+  'pets.slots.edit', 'pets.profile.edit', 'pets.pet.delete',
+]);
+
+type PlainPointer = { logId: string; occurrence: string; occurrenceAt: number; givenAt: number | null; byUid: string | null; byName: string | null };
+
+/** A dose answer asking "Already given?" (nothing was written; the answer goes back with the same opId, bound to the dose named). */
+export type DoseAgainCheck = {
+  kind: 'dose';
+  staleConfirm: boolean;
+  check: { last: PlainPointer | null; occurrence: { key: string; fold?: 1; day: string; time: string | null; at: number }; reason: 'given' | 'moved' | 'recent' };
+};
+
+/** The "Already given?" question in a dose answer, or null (names only: an email is never shown). */
+export function doseAgainCheck(capability: DeviceCapability, data: unknown): DoseAgainCheck | null {
+  if (!isDoseCapability(capability)) return null;
+  const result = ((data ?? {}) as { result?: Record<string, unknown> }).result;
+  if (!result || result.status !== 'needsConfirm') return null;
+  const check = (result.check ?? {}) as Record<string, unknown>;
+  const occurrence = (check.occurrence ?? {}) as Record<string, unknown>;
+  const last = check.last && typeof check.last === 'object' ? check.last as Record<string, unknown> : null;
+  const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+  return {
+    kind: 'dose',
+    staleConfirm: result.staleConfirm === true,
+    check: {
+      last: last && str(last.logId)
+        ? { logId: str(last.logId), occurrence: str(last.occurrence), occurrenceAt: num(last.occurrenceAt) ?? 0, givenAt: num(last.givenAt), byUid: str(last.byUid) || null, byName: publicDisplayName(str(last.byName), '') || null }
+        : null,
+      // `fold` keeps the later of two same-clock occurrences apart (P3: the answer is bound to `occurrenceId`).
+      occurrence: { key: str(occurrence.key), ...(occurrence.fold === 1 ? { fold: 1 as const } : {}), day: str(occurrence.day), time: str(occurrence.time) || null, at: num(occurrence.at) ?? 0 },
+      reason: check.reason === 'moved' ? 'moved' : check.reason === 'recent' ? 'recent' : 'given',
+    },
+  };
+}
+
+/** A question the server asked before writing anything: "Feed again?" or "Already given?". */
+export type ConfirmCheck = FeedAgainCheck | DoseAgainCheck;
+export const confirmCheckOf = (capability: DeviceCapability, data: unknown): ConfirmCheck | null =>
+  feedAgainCheck(capability, data) ?? doseAgainCheck(capability, data);
+
+/** Why a dose was not recorded (the personal dialog's copy). */
+export const DOSE_REFUSAL_COPY: Record<string, string> = {
+  missing: 'This course was removed meanwhile.',
+  finished: 'This course was finished meanwhile.',
+  occurrence: 'The schedule changed meanwhile. Pick the dose time again.',
+  future: 'Pick a time that has already passed.',
+  'too-old': 'Pick a time within the last 7 days.',
+};
+
+/** Why a PIN-level Pets action changed nothing (plain words for the toast). */
+export const PET_PIN_REFUSAL_COPY: Record<string, string> = {
+  gone: 'That was removed meanwhile.',
+  changed: 'Someone changed this meanwhile. Check it and save again.',
+  missing: 'That course was removed meanwhile.',
+  'not-active': 'That course was finished meanwhile.',
+  invalid: 'Check the form and try again.',
+  'duplicate-name': 'Another pet already has that name.',
+  // The shared pinned-note cap (P5's pinRefusal).
+  'pin-limit': `Up to ${PINNED_NOTES_MAX} pinned notes. Unpin or remove one first.`,
+  future: 'Pick a time that has already passed.',
+  unchanged: 'That is already the time.',
+};
 
 const FEED_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>(['pets.feed', 'pets.feed.backdated', 'pets.feed.backdated.old']);
 export const isFeedCapability = (capability: DeviceCapability): boolean => FEED_CAPABILITIES.has(capability);
@@ -87,6 +167,26 @@ export function choreAnswerMeaning(capability: DeviceCapability, data: unknown, 
     if (value.status === 'added') return { undoable: true, message: `${label}: logged.` };
     return { undoable: false, notice: true, message: "Couldn't save. Try again." };
   }
+  if (isDoseCapability(capability)) {
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    // "Already given?" answered with Cancel: nothing was written, nothing to say.
+    if (value.cancelled === true || result.status === 'needsConfirm') return { undoable: false, notice: true, message: '' };
+    if (result.status === 'saved') return { undoable: true, message: `${label}: recorded.` };
+    // The Give dose dialog shows why inline.
+    if (result.status === 'refused') return { undoable: false, notice: true, message: '' };
+    return { undoable: false, notice: true, message: "Couldn't save. Try again." };
+  }
+  if (capability === 'pets.note.add' || capability === 'pets.weight.add') {
+    if (value.status === 'added') return { undoable: true, message: `${label}: saved.` };
+    return { undoable: false, notice: true, message: PET_PIN_REFUSAL_COPY.invalid };
+  }
+  if (PET_PIN_CAPABILITIES.has(capability)) {
+    if (value.status === 'saved' || value.status === 'deleted') return { undoable: false, message: `${label}.` };
+    // A pet delete that stopped after the pet left every list: the hourly upkeep finishes it.
+    if (value.status === 'finishing') return { undoable: false, message: `${label}. Its history is still being cleared.` };
+    if (value.status === 'already') return { undoable: false, notice: true, message: 'Nothing to change.' };
+    return { undoable: false, notice: true, message: PET_PIN_REFUSAL_COPY[str(value.reason)] ?? "Couldn't save. Try again." };
+  }
   if (capability === 'chores.complete') {
     const outcome = (value.outcome ?? {}) as Record<string, unknown>;
     if (outcome.status === 'completed') return { undoable: true, message: `${label}: done.` };
@@ -140,10 +240,38 @@ export function queuedSendResult(capability: DeviceCapability, answer: { ok: tru
     if (value.status === 'added') return { ok: true };
     return { ok: false, code: 'invalid_input', reason: 'that care entry could not be saved.' };
   }
-  if (capability === 'chores.complete.undo' || capability === 'chores.take.undo' || capability === 'pets.feed.undo' || capability === 'pets.care.undo') {
+  if (isDoseCapability(capability)) {
+    // A queued dose happened: it is never asked "Already given?" (the server records it as offline).
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'saved') return { ok: true };
+    const why = DOSE_REFUSAL_COPY[str(result.reason)];
+    return { ok: false, code: 'invalid_input', reason: why ? `that dose was not recorded: ${why.charAt(0).toLowerCase()}${why.slice(1)}` : 'that dose could not be saved.' };
+  }
+  if (capability === 'pets.note.add' || capability === 'pets.weight.add') {
+    if (value.status === 'added') return { ok: true };
+    return { ok: false, code: 'invalid_input', reason: capability === 'pets.note.add' ? 'that note could not be saved.' : 'that weight could not be saved.' };
+  }
+  if (capability === 'chores.complete.undo' || capability === 'chores.take.undo' || capability === 'pets.feed.undo' || capability === 'pets.care.undo'
+    || capability === 'pets.dose.undo' || capability === 'pets.note.undo' || capability === 'pets.weight.undo') {
     if (['undone', 'untaken', 'already', 'not_applied'].includes(str(value.status))) return { ok: true };
     return { ok: false, code: 'changed_since' };
   }
   // A capability without a known outcome shape is never assumed to have applied.
   return { ok: false, code: 'unclassified' };
 }
+
+/**
+ * An intent's own fields: never the request's identity (token, household, person, PIN
+ * session, opId or queue fields), which come from the shell alone (F4b-2 review N4).
+ */
+const RESERVED_REQUEST_KEYS = new Set(['idToken', 'householdId', 'actorUid', 'pinSessionId', 'opId', 'queued']);
+export const intentFields = (intent: Readonly<Record<string, unknown>>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(intent).filter(([key]) => !RESERVED_REQUEST_KEYS.has(key)));
+
+/**
+ * A tablet form's opId after an attempt (Codex review 6): kept while the attempt may still be
+ * on its way or was refused (a retry then replays or is decided again), renewed once it was
+ * applied or saved on the tablet (the next submit is a new intent).
+ */
+export const formOpAfter = (outcome: { ok: boolean; queued?: boolean; uncertain?: boolean }): 'keep' | 'renew' =>
+  outcome.ok || outcome.queued ? 'renew' : 'keep';

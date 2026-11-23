@@ -21,20 +21,11 @@ const MAX_TIMER_MS = 60 * 60 * 1000;
 /** Fire just after midnight, never a moment before it. */
 const MIDNIGHT_SLACK_MS = 250;
 
-import { householdDayZone } from './household-zone';
+import { householdDayZone, householdToday } from './household-zone';
 
-// The zone rule lives in household-zone.ts (no React, importable from server code).
-export { deviceTimeZone, householdDayZone } from './household-zone';
-
-/** `yyyy-MM-dd` of the household's current calendar day. */
-export function householdToday(timeZone: string | null | undefined, now: Date = new Date()): string {
-  return localDay(now, householdDayZone(timeZone));
-}
-
-/** The instant a household day (default: today) began, its local midnight. */
-export function householdDayStart(timeZone: string | null | undefined, day: string = householdToday(timeZone)): Date {
-  return new Date(zonedMidnightIso(day, householdDayZone(timeZone)));
-}
+// The zone rule and the pure day functions live in household-zone.ts (no React, importable
+// from server code: the tablet's Pets operations use them).
+export { deviceTimeZone, householdDayStart, householdDayZone, householdToday } from './household-zone';
 
 /** Milliseconds from `now` to the next household midnight (at least 1 s). */
 export function msUntilHouseholdMidnight(timeZone: string | null | undefined, now: Date = new Date()): number {
