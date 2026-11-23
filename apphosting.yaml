@@ -67,3 +67,18 @@ env:
     value: V1
     availability:
       - RUNTIME
+
+  # Registered wall tablets (docs/modules/devices/README.md, "Flags"). The server
+  # switch is read on every call (set to "false" to stop every tablet action at once,
+  # no rebuild); the public one is inlined at build time and shows the Devices tab,
+  # /setup and the tablet PIN and kid-profile controls.
+  - variable: HOMEHUB_DEVICES_ENABLED
+    value: "true"
+    availability:
+      - RUNTIME
+
+  - variable: NEXT_PUBLIC_HOMEHUB_DEVICES
+    value: "true"
+    availability:
+      - BUILD
+      - RUNTIME
