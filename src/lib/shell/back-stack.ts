@@ -112,6 +112,15 @@ export function createBackStack(env: BackEnvironment) {
   };
 }
 
+/**
+ * Whether a Navigation API `navigate` event means this page is being replaced: a
+ * cross-document navigation that is not a download (an `<a download>` click, such as
+ * Home Wrapped's image, fires `navigate` with `downloadRequest` set and the page stays).
+ */
+export function isLeavingNavigation(event: { destination?: { sameDocument?: boolean } | null; downloadRequest?: string | null }): boolean {
+  return event.destination?.sameDocument === false && (event.downloadRequest === undefined || event.downloadRequest === null);
+}
+
 let browserStack: ReturnType<typeof createBackStack> | null = null;
 
 /** The one stack for this page (created on first use, in the browser only). */
@@ -131,8 +140,7 @@ export function browserBackStack(): ReturnType<typeof createBackStack> | null {
     // Any full navigation (where the Navigation API exists, as in Chrome): stop taking entries back.
     const navigation = (window as Window & { navigation?: EventTarget }).navigation;
     navigation?.addEventListener('navigate', (event) => {
-      const destination = (event as Event & { destination?: { sameDocument?: boolean } }).destination;
-      if (destination && destination.sameDocument === false) stack.leave();
+      if (isLeavingNavigation(event as Event & { destination?: { sameDocument?: boolean }; downloadRequest?: string | null })) stack.leave();
     });
     // ...and the page is still here: the load was stopped or failed, or it came back from the
     // back-forward cache.
