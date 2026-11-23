@@ -66,6 +66,7 @@ import { activeFace } from '@/lib/devices/face-memory';
 import { pathOfView, resolveTabletPath, sameView, startView, type KnownTargets } from '@/lib/devices/start-page';
 import { watchKeepAwake, type WakeLockApi } from '@/lib/devices/wake-lock';
 import { isShellBusy, subscribeShellBusy, whileBusy } from '@/lib/shell/busy';
+import { browserBackStack } from '@/lib/shell/back-stack';
 import { useShellBusy } from '@/hooks/use-shell-busy';
 import { DashboardScopeProvider, type DashboardScope } from '@/lib/dashboard/dashboard-scope';
 import { useDashboardData } from '@/lib/dashboard/use-dashboard-data';
@@ -178,7 +179,12 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
         }
       },
       // A full load: Firestore was terminated above and cannot be reused in this page.
-      'navigate': () => window.location.replace(new URL(destinationAfter(reason), window.location.origin).href),
+      // Dialogs closing as the shell unmounts must not take their history entries back after
+      // this: a traversal would cancel the load (Android, 2026-11-23).
+      'navigate': () => {
+        browserBackStack()?.leave();
+        window.location.replace(new URL(destinationAfter(reason), window.location.origin).href);
+      },
     });
   }, [stopListeners]);
 
