@@ -82,3 +82,10 @@ env:
     availability:
       - BUILD
       - RUNTIME
+
+  # Diagnostic for the pending X-Forwarded-For hop check (devices README, "Redemption
+  # guards"): each tablet-code redemption logs the header's entry count, no addresses.
+  - variable: HOMEHUB_LOG_FORWARDED_SHAPE
+    value: "true"
+    availability:
+      - RUNTIME
