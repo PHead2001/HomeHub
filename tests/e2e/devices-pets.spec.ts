@@ -283,6 +283,26 @@ test('a behaviour note and a weighing are face-level with Undo; pinning a note a
   await closeDialogs(page);
 });
 
+test('a touch pick in "Who\'s here?" saves the note and keeps the pet sheet open (Android, 2026-11-23)', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  await forgetFace(page);
+  await openPets(page);
+  await page.getByTestId('tablet-pet-more-tab-meds').tap();
+  await page.getByTestId('tablet-pet-tab-notes').tap();
+  await page.getByTestId('tablet-note-text').fill('Touch pick');
+  await page.getByTestId('tablet-note-save').tap();
+  await expect(page.getByTestId('who-is-here')).toBeVisible();
+  await promptReady(page, 'who-is-here');
+  // A touch is judged as outside only at its click, after the pick has closed "Who's here?".
+  await page.getByTestId(`who-person-${OWNER_UID}`).tap();
+  await expect.poll(async () => (await pet('tab-meds').collection('notes').where('text', '==', 'Touch pick').get()).size, { timeout: 15_000 }).toBe(1);
+  await expect(page.getByTestId('who-is-here')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('tablet-pet-sheet')).toBeVisible();
+  await closeDialogs(page);
+});
+
 for (const viewport of TABLET_VIEWPORTS) {
   test(`at ${viewport.width}x${viewport.height} the Pets board has no page scroll; the pet sheet keeps 48 px controls`, async ({}, testInfo) => {
     desktopOnly(testInfo);

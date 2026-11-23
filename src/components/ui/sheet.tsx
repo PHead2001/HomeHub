@@ -6,6 +6,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { tapBelongsToAnotherLayer } from "@/lib/ui/outside-tap"
 
 const Sheet = SheetPrimitive.Root
 
@@ -56,13 +57,18 @@ interface SheetContentProps
 const SheetContent = React.forwardRef<
   React.ElementRef<typeof SheetPrimitive.Content>,
   SheetContentProps
->(({ side = "right", className, children, ...props }, ref) => (
+>(({ side = "right", className, children, onPointerDownOutside, ...props }, ref) => (
   <SheetPortal>
     <SheetOverlay />
     <SheetPrimitive.Content
       ref={ref}
       className={cn(sheetVariants({ side }), className)}
       {...props}
+      // A touch is judged at its click: a tap in a dialog above that has just closed is not ours.
+      onPointerDownOutside={(event) => {
+        if (tapBelongsToAnotherLayer(event.detail.originalEvent.target)) event.preventDefault()
+        onPointerDownOutside?.(event)
+      }}
     >
       {children}
       <SheetPrimitive.Close data-dialog-close className="hit-slop absolute right-4 top-4 rounded-sm text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none">
