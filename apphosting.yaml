@@ -83,9 +83,10 @@ env:
       - BUILD
       - RUNTIME
 
-  # Diagnostic for the pending X-Forwarded-For hop check (devices README, "Redemption
-  # guards"): each tablet-code redemption logs the header's entry count, no addresses.
-  - variable: HOMEHUB_LOG_FORWARDED_SHAPE
-    value: "true"
+  # Measured on this backend 2026-11-23 (devices README, "Redemption guards"): with no
+  # client-sent header, X-Forwarded-For arrives with 3 entries, so the client is two
+  # left of the rightmost. HOMEHUB_LOG_FORWARDED_SHAPE=true logs the count again.
+  - variable: HOMEHUB_TRUSTED_PROXY_HOPS
+    value: "2"
     availability:
       - RUNTIME
