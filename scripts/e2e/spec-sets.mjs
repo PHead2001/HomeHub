@@ -2,7 +2,8 @@
 // tests/unit/e2e-spec-sets.test.ts can cover the partition.
 //
 // Every `tests/e2e/*.spec.ts` file is in exactly one set:
-// - smoke: the hand-maintained SMOKE_SPECS list (the "Validate and run authenticated smoke" job);
+// - smoke: the hand-maintained SMOKE_SPECS list (the "Authenticated smoke (shard i/N)" jobs, gated by
+//   the "Validate and run authenticated smoke" check);
 // - extended: every other spec, computed from the directory listing at run time
 //   (the "Extended E2E (specs outside the smoke list)" job).
 // `*.local.spec.ts` files (local-only) and `visual.spec.ts` (Windows-only baselines) are in neither.
@@ -50,6 +51,25 @@ export const isLocalSpec = (name) => name.endsWith('.local.spec.ts');
 
 /** @param {string} name */
 export const isCiExcluded = (name) => isLocalSpec(name) || name === VISUAL_SPEC;
+
+/**
+ * Turns the E2E_SHARD value ("i/N", set by the smoke shard jobs) into Playwright arguments.
+ * Unset or empty gives no arguments, so local runs are unchanged. Anything else that is not
+ * "i/N" with 1 <= i <= N throws, so a typo cannot quietly run the whole list or nothing.
+ * @param {string | undefined} value
+ * @returns {string[]}
+ */
+export function shardArgs(value) {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return [];
+  const match = /^(\d+)\/(\d+)$/.exec(trimmed);
+  const current = match ? Number(match[1]) : NaN;
+  const total = match ? Number(match[2]) : NaN;
+  if (!match || current < 1 || total < 1 || current > total) {
+    throw new Error(`E2E_SHARD must look like "1/3" (shard number from 1 to the shard total), got "${trimmed}".`);
+  }
+  return [`--shard=${current}/${total}`];
+}
 
 /**
  * Splits the spec files of tests/e2e into the smoke and extended sets.
