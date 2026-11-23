@@ -95,9 +95,17 @@ export function createBackStack(env: BackEnvironment) {
         pushNow(top);
       }
     },
-    /** The page is leaving (a full navigation has started): never traverse history again. */
+    /** The page is leaving (a full navigation has started): no traversal while it is pending. */
     leave(): void {
       pageLeaving = true;
+    },
+    /**
+     * The page stayed (that navigation was stopped or failed, or the page came back from the
+     * back-forward cache): closing a dialog takes its entry back again. Entries released while
+     * the page was leaving stay in the history as harmless extra stops (Codex #201).
+     */
+    stay(): void {
+      pageLeaving = false;
     },
     /** For tests: how many dialogs hold an entry. */
     size: () => open.length,
@@ -126,6 +134,10 @@ export function browserBackStack(): ReturnType<typeof createBackStack> | null {
       const destination = (event as Event & { destination?: { sameDocument?: boolean } }).destination;
       if (destination && destination.sameDocument === false) stack.leave();
     });
+    // ...and the page is still here: the load was stopped or failed, or it came back from the
+    // back-forward cache.
+    navigation?.addEventListener('navigateerror', () => stack.stay());
+    window.addEventListener('pageshow', (event) => { if (event.persisted) stack.stay(); });
   }
   return browserStack;
 }

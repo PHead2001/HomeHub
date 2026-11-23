@@ -91,6 +91,17 @@ describe('D4: Back closes the topmost dialog', () => {
     assert.equal(stack.size(), 0);
   });
 
+  it('a page that stays (its load stopped, or restored from the back-forward cache) takes entries back again (Codex #201)', () => {
+    const { stack, calls, flush, history } = env();
+    stack.leave();
+    stack.stay();
+    const sheet = stack.open(() => undefined);
+    sheet.release();
+    assert.deepEqual(calls, ['push 1', 'go -1']);
+    flush();
+    assert.deepEqual(history(), [0]);
+  });
+
   it('Back closes only the topmost of nested dialogs; nothing navigates', () => {
     const { stack, back, history } = env();
     const closed: string[] = [];
