@@ -22,33 +22,36 @@ function PetCardSkeleton() {
   );
 }
 
-/** The board card's placeholder: band, 80 px avatar, name and status, Feed (PE-9). */
+/** The board card's placeholder: avatar and name as the header, band, status, Feed (PE-9). */
 function BoardCardSkeleton() {
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border bg-card shadow-raised" aria-hidden>
-      <Skeleton className="h-11 w-full rounded-none" />
-      <div className="flex flex-1 gap-4 p-4">
-        <Skeleton className="h-20 w-20 rounded-xl" />
-        <div className="flex-1 space-y-2">
-          <Skeleton className="h-5 w-1/2" />
-          <Skeleton className="h-7 w-3/4" />
-        </div>
+      <div className="flex items-center gap-3 px-3 pb-2 pt-3">
+        <Skeleton className="h-12 w-12 rounded-xl" />
+        <Skeleton className="h-7 w-1/2" />
       </div>
-      <Skeleton className="mx-4 mb-4 h-11" />
+      <Skeleton className="h-9 w-full rounded-none" />
+      <div className="flex flex-1 flex-col gap-2 px-3 pb-3 pt-2">
+        <Skeleton className="h-6 w-3/4" />
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="mt-auto h-11" />
+      </div>
     </div>
   );
 }
 
-/** The phone row's placeholder: 64 px avatar, name and status, Feed (PE-13a). */
+/** The phone row's placeholder: 64 px avatar, name and status, then Feed on its own line (PE-13a). */
 function RowCardSkeleton() {
   return (
-    <div className="flex items-center gap-3 rounded-lg border bg-card p-3 shadow-raised" aria-hidden>
-      <Skeleton className="h-16 w-16 rounded-full" />
-      <div className="flex-1 space-y-2">
-        <Skeleton className="h-5 w-1/2" />
-        <Skeleton className="h-4 w-3/4" />
+    <div className="flex flex-col gap-2 rounded-lg border bg-card p-3 shadow-raised" aria-hidden>
+      <div className="flex items-start gap-3">
+        <Skeleton className="h-16 w-16 rounded-full" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-6 w-1/2" />
+          <Skeleton className="h-4 w-3/4" />
+        </div>
       </div>
-      <Skeleton className="h-12 w-24" />
+      <Skeleton className="h-12 w-full" />
     </div>
   );
 }

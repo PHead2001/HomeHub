@@ -14,6 +14,12 @@ import { deviceCodeInstructions } from '../../src/lib/devices/device-codes';
 const read = (path: string) => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
 
 describe('D1: the tablet Undo is a 48 px target', () => {
+  it('every toast action (personal accounts too) is at least 44 px, 48 px on a coarse pointer', () => {
+    const toast = read('src/components/ui/toast.tsx');
+    assert.match(toast, /const ToastAction[\s\S]*?"inline-flex min-h-11 min-w-11 [^"]*coarse:min-h-12 coarse:min-w-12/);
+    assert.doesNotMatch(toast, /const ToastAction[\s\S]*?"inline-flex h-8 /);
+  });
+
   it('the Undo action carries min-h-12 and min-w-12', () => {
     assert.match(read('src/components/devices/use-device-actions.tsx'), /<ToastAction altText=\{`Undo: \$\{entry\.label\}`\} className="min-h-12 min-w-12[^"]*"/);
   });

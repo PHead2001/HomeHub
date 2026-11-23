@@ -1,19 +1,25 @@
 'use client';
 
 import * as React from 'react';
-import { Loader2, Utensils } from 'lucide-react';
+import { Clock, Loader2, Utensils } from 'lucide-react';
 import { Button, type ButtonProps } from '@/components/ui/button';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { playFeedback } from '@/lib/feedback';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
-import { formatPortion, type FeedingPlan, type FeedingStatus, type QuickFeedFood } from '@/lib/pets/care';
+import { useAuth } from '@/hooks/use-auth';
+import { feedingHeadline, formatPortion, type FeedingEntry, type FeedingPlan, type FeedingStatus, type QuickFeedFood } from '@/lib/pets/care';
 import type { KnownFeedings } from '@/lib/pets/feed-decision';
-import { feedTarget, type MealStatus } from '@/lib/pets/meal-plan';
+import { earlierDayOf } from '@/lib/pets/feed-earlier';
+import { newFeedOpId } from '@/lib/pets/feed-plan';
+import { feedTarget, formatClock, type MealStatus, type planForDay } from '@/lib/pets/meal-plan';
 import type { FeedPetResult } from '@/lib/pets/feed-operation';
 import type { FoodType } from '@/lib/pets/types';
 import { cn } from '@/lib/utils';
 import { usePointerFine } from './use-pets-layout';
 import { FeedAgainDialog, useFeedAction, type FeedAction, type FeedSuccess } from './use-feed-action';
+import { FeedEarlierDialog, type FeedEarlierChoice } from './feed-earlier-dialog';
+import { FeedPressFill, useFeedPress } from './feed-press';
+import { useNow } from './use-now';
 import styles from './pets.module.css';
 
 const PAWS = [
@@ -61,9 +67,22 @@ export type QuickFeedOptions = {
   food: QuickFeedFood;
   /** Last feed and today's count from the loaded logs (the check's fallback while a pet has no feeding state). */
   known?: KnownFeedings | null;
+  /** The pet's plan source, for "When did <pet> eat?" (the meal a chosen time counts for). */
+  pet?: Parameters<typeof planForDay>[0];
+  /** The loaded feedings (null while loading or unavailable), for the same. */
+  logs?: FeedingEntry[] | null;
 };
 
-export type FeedSource = 'tap' | 'hold';
+/** "When did <pet> eat?" on a feed controller: the dialog's open state and its save. */
+export type EarlierFeedController = {
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  /** Logs one feeding at the chosen time through the shared feed operation (`opId`: one dialog, one feeding). */
+  feedAt: (choice: FeedEarlierChoice, opId?: string | null) => Promise<FeedPetResult | null>;
+};
+
+/** Where a feeding was started (the paw burst plays from that control): the Feed button. */
+export type FeedSource = 'tap';
 
 /** Focuses the pet's Feed button (`data-feed-button`), when it is on the page. */
 function focusFeedButton(petId: string) {
@@ -95,10 +114,12 @@ export type QuickFeedController = {
   returnFocus: () => void;
   /** Logs one feeding, or opens "Feed again?"; resolves with the operation's result (null when nothing ran). */
   feed: (source: FeedSource) => Promise<FeedPetResult | null>;
+  /** "When did <pet> eat?" (press and hold Feed, the clock button, right-click, Shift+Enter, the actions menu). */
+  earlier?: EarlierFeedController;
 };
 
 /**
- * The quick feeding behind one-tap feeding, hold to feed and the `?feed=1`
+ * The quick feeding behind one-tap feeding and the `?feed=1`
  * confirm (H09): logs the planned portion with the latest food type through the
  * shared feed operation (`feedPet`, via `useFeedAction`), which first checks
  * whether someone fed the pet in the last 90 minutes or today is complete and
@@ -111,6 +132,11 @@ export function useQuickFeed({ petId, petName, plan, meal, food, known }: QuickF
   const reducedMotion = useReducedMotion();
   const [burst, setBurst] = React.useState<QuickFeedController['burst']>(null);
   const sourceRef = React.useRef<FeedSource>('tap');
+  const { household } = useAuth();
+  const timeZone = household?.timeZone ?? null;
+  // The last earlier-time choice, for the toast (also when Retry runs it again).
+  const earlierRef = React.useRef<FeedEarlierChoice | null>(null);
+  const [earlierOpen, setEarlierOpen] = React.useState(false);
   const returnFocus = React.useCallback(() => focusFeedButton(petId), [petId]);
   // With slots the target slot's portion; the operation re-checks the slot and logs its portion.
   const target = meal ? feedTarget(meal) : { label: formatPortion(plan.amount, plan.unit), slotName: null, amount: plan.amount, unit: plan.unit };
@@ -125,6 +151,16 @@ export function useQuickFeed({ petId, petName, plan, meal, food, known }: QuickF
       if (!reducedMotion) setBurst({ key: Date.now(), source: sourceRef.current });
     },
     describe: (result) => {
+      const earlier = earlierRef.current;
+      if (earlier?.backdatedAt) {
+        // A chosen earlier time: when, and the meal and portion it counts for (household zone).
+        const day = earlierDayOf(earlier.at, new Date(), timeZone);
+        const when = `${day === 'yesterday' ? 'yesterday ' : ''}at ${formatClock(earlier.at, timeZone)}`;
+        return {
+          title: `${petName} fed ${when}`,
+          description: `${earlier.slotName ? `${earlier.slotName}: ` : earlier.extra ? 'Extra feeding: ' : ''}${formatPortion((result.portion ?? earlier.portion).amount, (result.portion ?? earlier.portion).unit)} logged.`,
+        };
+      }
       // What was actually written: the slot and portion the operation chose.
       const logged = result.portion ? formatPortion(result.portion.amount, result.portion.unit) : portion;
       const meal = result.slot ? `${result.slot.name}: ` : '';
@@ -147,10 +183,25 @@ export function useQuickFeed({ petId, petName, plan, meal, food, known }: QuickF
     // Never log before the history says which food the pet eats.
     if (!allowed || !ready || saving) return null;
     sourceRef.current = source;
+    earlierRef.current = null;
     return run({ portion: { amount: target.amount, unit: target.unit }, portionFromSlot: true, food: foodType, known });
   }, [allowed, ready, saving, run, target.amount, target.unit, foodType, known]);
 
-  return { allowed, saving, portion, label: target.label, slotName: target.slotName, foodType, ready, foodFallback, burst, action, feed, returnFocus };
+  const feedAt = React.useCallback(async (choice: FeedEarlierChoice, opId?: string | null) => {
+    if (!allowed || !ready || saving) return null;
+    sourceRef.current = 'tap';
+    earlierRef.current = choice;
+    // The operation logs the planned portion (portionFromSlot): for a backdated entry the plan in
+    // force at the chosen time, for a live one (within a minute of now) the meal Feed would pick;
+    // `choice.portion` is only the fallback when the plan says nothing.
+    return run(
+      { portion: choice.portion, portionFromSlot: true, food: foodType, known, ...(choice.backdatedAt ? { backdatedAt: choice.backdatedAt } : {}) },
+      opId ? { opId } : undefined,
+    );
+  }, [allowed, ready, saving, run, foodType, known]);
+  const earlier = React.useMemo<EarlierFeedController>(() => ({ open: earlierOpen, setOpen: setEarlierOpen, feedAt }), [earlierOpen, feedAt]);
+
+  return { allowed, saving, portion, label: target.label, slotName: target.slotName, foodType, ready, foodFallback, burst, action, feed, returnFocus, earlier };
 }
 
 /**
@@ -240,9 +291,9 @@ export function FeedConfirmPanel({
 }
 
 export type QuickFeedButtonProps = QuickFeedOptions & {
-  /** A controller shared with hold to feed; without one the button owns its own. */
+  /** A controller shared with the card (its actions menu opens Feed earlier); without one the button owns its own. */
   controller?: QuickFeedController;
-  /** Id of hint text (e.g. "or press and hold the photo") for `aria-describedby`. */
+  /** Id of the text describing the button (the pet's fed status) for `aria-describedby`. */
   describedBy?: string;
   className?: string;
   size?: ButtonProps['size'];
@@ -252,12 +303,11 @@ export type QuickFeedButtonProps = QuickFeedOptions & {
 };
 
 /**
- * One-tap feeding at the planned portion (section 3 Pets, H09) and the accessible
- * alternative to hold to feed (owner decision): the tap logs at once and the
- * toast confirms what was logged, with Undo for 10 s for everyone who can log.
- * A single reversible tap is the alternative to holding; the tap asks first only
- * when the shared operation's last-fed check says so ("Sam fed Rex 12 min ago.
- * Feed again?", in `FeedAgainDialog`, which also serves hold to feed), and the
+ * One-tap feeding at the planned portion (section 3 Pets, H09): the tap logs at
+ * once and the toast confirms what was logged, with Undo for 10 s for everyone
+ * who can log; pressing and holding it (touch, pen) opens Feed earlier. The tap
+ * asks first only when the shared operation's last-fed check says so ("Sam fed
+ * Rex 12 min ago. Feed again?", in `FeedAgainDialog`), and the
  * "Log feeding" home-screen shortcut always asks (`FeedPickerDialog`), because
  * nothing on a pet was tapped there. The full form stays on the pet page behind
  * "Log with details".
@@ -267,31 +317,97 @@ export function QuickFeedButton({ controller, describedBy, className, size, vari
   const quick = controller ?? own;
   // The keyboard hint ("Log a feeding from anywhere  F") only with a mouse or trackpad (PE-12d, as HP-19a).
   const fine = usePointerFine();
+  const { household } = useAuth();
+  const now = useNow();
+  const hintId = React.useId();
+  const earlier = quick.earlier;
+  // One dialog is one feeding: its operation id is made when it opens and reused by every save from it.
+  const opIdRef = React.useRef<string | null>(null);
+  const earlierOpen = Boolean(earlier?.open);
+  React.useEffect(() => {
+    if (earlierOpen) opIdRef.current = newFeedOpId();
+  }, [earlierOpen]);
+  const pressEnabled = Boolean(earlier) && quick.allowed && quick.ready && !quick.saving;
+  const { press, handlers } = useFeedPress({ enabled: pressEnabled, onHold: () => earlier?.setOpen(true) });
 
   if (!quick.allowed) return null;
+
+  // Desktop (fine pointer): a split button, Feed plus a clock that chooses the time; on touch the
+  // clock stays where there is room (cards, the pet page) and the compact phone rows rely on the hold.
+  const clock = Boolean(earlier) && (fine || !compact);
+  const timeZone = household?.timeZone ?? null;
 
   const button = (
       <Button
         data-feed-button={options.petId}
+        data-press-phase={press.phase}
         type="button"
         size={size}
         variant={variant}
-        className="w-full"
+        className={cn('w-full min-w-0 select-none [-webkit-touch-callout:none] [touch-action:manipulation]', clock && 'rounded-r-none')}
         onClick={() => void quick.feed('tap')}
         disabled={quick.saving || !quick.ready}
         aria-label={`Feed ${options.petName}, ${quick.label.replace(' · ', ', ')}`}
-        aria-describedby={describedBy}
+        aria-describedby={[describedBy, earlier ? hintId : null].filter(Boolean).join(' ') || undefined}
+        {...(earlier ? handlers : {})}
       >
         {quick.saving ? <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" /> : <Utensils aria-hidden className="mr-2 h-4 w-4" />}
-        <span className="min-w-0 truncate">{compact ? 'Feed' : quick.label === quick.portion ? `Feed · ${quick.portion}` : `Feed ${quick.label}`}</span>
+        {compact ? <span className="min-w-0 truncate">Feed</span> : (
+          // "Feed" never truncates: the meal and portion show whole when they fit on the button's
+          // one line, else wrap onto a clipped second line and drop out (the accessible name keeps them).
+          <span className="flex h-5 min-w-0 flex-wrap items-center gap-x-1 overflow-hidden leading-5" data-feed-label>
+            <span className="shrink-0">Feed</span>
+            <span className="whitespace-nowrap">{quick.label === quick.portion ? ` · ${quick.portion}` : ` ${quick.label}`}</span>
+          </span>
+        )}
+        <FeedPressFill press={press} />
       </Button>
   );
 
   return (
     <span className={cn('relative inline-flex', className)}>
-      {fine ? <ShortcutHint shortcut="log-feeding" label="Log a feeding from anywhere">{button}</ShortcutHint> : button}
+      <span className="flex w-full min-w-0">
+        {fine ? <ShortcutHint shortcut="log-feeding" label="Log a feeding from anywhere">{button}</ShortcutHint> : button}
+        {clock && earlier && (
+          <Button
+            type="button"
+            size="icon"
+            variant={variant}
+            className={cn('h-[var(--target-min)] w-[var(--target-min)] shrink-0 rounded-l-none border-l', variant === 'default' ? 'border-primary-foreground/30' : 'border-border')}
+            aria-label={`Choose feeding time for ${options.petName}`}
+            title={fine ? 'Fed earlier? Choose the time' : undefined}
+            data-feed-earlier={options.petId}
+            disabled={quick.saving || !quick.ready}
+            onClick={() => earlier.setOpen(true)}
+          >
+            <Clock aria-hidden />
+          </Button>
+        )}
+      </span>
+      {earlier && (
+        <span id={hintId} className="sr-only">
+          {fine
+            ? `To log an earlier feeding, use the clock button, right-click Feed, or press Shift+Enter.`
+            : `Press and hold Feed to log an earlier feeding.`}
+        </span>
+      )}
       {quick.burst?.source === 'tap' ? <PawBurst key={quick.burst.key} /> : null}
       <FeedAgainDialog action={quick.action} petName={options.petName} returnFocus={quick.returnFocus} />
+      {earlier && (
+        <FeedEarlierDialog
+          open={earlier.open}
+          onOpenChange={earlier.setOpen}
+          petName={options.petName}
+          timeZone={timeZone}
+          pet={options.pet ?? null}
+          logs={options.logs ?? null}
+          fallbackPortion={{ amount: options.plan.amount, unit: options.plan.unit }}
+          lastFed={options.status ? feedingHeadline(options.status, now, timeZone) : null}
+          saving={quick.saving}
+          onSave={async (choice) => (await earlier.feedAt(choice, opIdRef.current)) !== null}
+          onCloseAutoFocus={(event) => { event.preventDefault(); quick.returnFocus(); }}
+        />
+      )}
     </span>
   );
 }
