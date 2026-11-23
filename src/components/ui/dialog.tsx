@@ -6,6 +6,7 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { trackKeyboardInset } from "@/lib/keyboard-inset"
+import { tapBelongsToAnotherLayer } from "@/lib/ui/outside-tap"
 
 const Dialog = DialogPrimitive.Root
 
@@ -53,7 +54,7 @@ const DialogContent = React.forwardRef<
     /** A bottom sheet on phones that stays above the on-screen keyboard (SH-19b). */
     phoneSheet?: boolean
   }
->(({ className, children, hideClose = false, phoneSheet = false, ...props }, ref) => (
+>(({ className, children, hideClose = false, phoneSheet = false, onPointerDownOutside, ...props }, ref) => (
   // SH-19: never taller than the screen minus the safe areas; the content scrolls inside.
   // WT-29: Android Chrome does not shrink the layout viewport for the on-screen keyboard, so
   // a centred dialog also leaves out `--keyboard-inset` and centres in the uncovered part,
@@ -68,6 +69,11 @@ const DialogContent = React.forwardRef<
         className
       )}
       {...props}
+      // A touch is judged at its click: a tap in a dialog above that has just closed is not ours.
+      onPointerDownOutside={(event) => {
+        if (tapBelongsToAnotherLayer(event.detail.originalEvent.target)) event.preventDefault()
+        onPointerDownOutside?.(event)
+      }}
     >
       <KeyboardInsetTracker />
       {children}
