@@ -45,7 +45,11 @@ const seedAsset = async (id: string, name: string, location: string) => {
 };
 const filterOf = async (id: string) => ((await asset(id).get()).get('schedules') as Array<Record<string, unknown>>)[0];
 
-const forget = async (page: Page) => { await page.getByTestId('tablet-done').click().catch(() => undefined); };
+// Ends the remembered face, if one is showing (a click on an absent button would wait out the test).
+const forget = async (page: Page) => {
+  const done = page.getByTestId('tablet-done');
+  if (await done.isVisible().catch(() => false)) await done.click();
+};
 
 const openMaintenance = async (page: Page) => {
   // The tablet page is shared by the tests: when an earlier test left it on Maintenance, stay there
