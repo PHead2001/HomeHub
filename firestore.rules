@@ -1748,7 +1748,7 @@ service cloud.firestore {
     function validHomeAssetFields(data, keys) {
       return keys.hasOnly([
           'householdId', 'name', 'category', 'location', 'brand', 'model', 'serialNumber', 'purchaseDate',
-          'purchasePrice', 'warrantyExpiration', 'warrantyProvider', 'status', 'notes', 'schedules',
+          'purchasePrice', 'warrantyExpiration', 'warrantyProvider', 'warrantyLifetime', 'status', 'notes', 'schedules',
           'createdAt', 'updatedAt'
         ]) &&
         (!('name' in keys) || nonEmptyString(data.name, 1000)) &&
@@ -1761,6 +1761,7 @@ service cloud.firestore {
         (!('purchasePrice' in keys) || data.purchasePrice is number) &&
         (!('warrantyExpiration' in keys) || boundedString(data.warrantyExpiration, 40)) &&
         (!('warrantyProvider' in keys) || boundedString(data.warrantyProvider, 1000)) &&
+        (!('warrantyLifetime' in keys) || data.warrantyLifetime is bool) &&
         (!('status' in keys) || data.status in ['active', 'needs_attention', 'retired']) &&
         (!('notes' in keys) || boundedString(data.notes, 20000)) &&
         (!('schedules' in keys) || boundedList(data.schedules, 100)) &&

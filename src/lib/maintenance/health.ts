@@ -1,8 +1,17 @@
-// Home health score (H10). Pure and deterministic: computed from the same
-// reminders the Reminders tab and the hourly server job use, plus flagged status
-// and recent logs. The formula is documented in
-// docs/modules/maintenance-center/README.md ("Home health score"); keep both in sync.
-import { addDays, diffDays, isDayString } from '../../../functions/src/shared/calendar';
+// Home health score (H10, MA-10). Pure and deterministic: computed from the same
+// reminders the Reminders tab and the hourly server job use, plus flagged status.
+// The formula is documented in docs/modules/maintenance-center/README.md
+// ("Home health score"); keep both in sync.
+//
+// Honest by construction:
+// - only tracked items are scored (a scheduled schedule, a registration or
+//   inspection date, or a "Needs attention" flag); with none, there is no score;
+// - the home score is the average of the tracked items' scores;
+// - nothing that is merely coming up or due soon costs points, and nothing can
+//   raise a score while time passes (warranties do not count at all; expiry costs
+//   the same as overdue work); snoozed reminders cost nothing;
+// - recent logs earn no bonus.
+import { diffDays, isDayString, toDay } from '../../../functions/src/shared/calendar';
 import {
   buildMaintenanceReminders,
   type AssetInput,
@@ -11,31 +20,32 @@ import {
 } from '../../../functions/src/shared/maintenance-reminders';
 import type { HomeAsset, MaintenanceLog, Vehicle } from '../types';
 import { spanLabel } from './reminder-copy';
+import { getAssetScheduleMode, getVehicleScheduleMode } from './schedules';
 
 export const HEALTH_RULES = {
-  /** Overdue schedule/service: base points, plus `overduePerStep` per 30 days or 500 miles late, capped. */
+  /** Overdue schedule/service or expired registration/inspection: base points, plus `overduePerStep` per 30 days or 500 miles late, capped. */
   overdueBase: 10,
   overduePerStep: 2,
   overdueMax: 20,
+  /** Schedule/service due today. */
   dueToday: 5,
-  dueSoon: 2,
-  /** Registration or inspection that has expired. */
-  documentExpired: 15,
-  /** Warranty ending today or within the reminder window (an expired warranty costs nothing). */
-  warrantyEnding: 2,
+  /** Due soon or upcoming costs nothing. */
+  dueSoon: 0,
+  /** Registration/inspection expiring today. */
+  documentExpiresToday: 5,
+  /** Registration/inspection expiring soon costs nothing. */
+  documentExpiresSoon: 0,
+  /** Warranties never affect health (they appear in reminders and Coming up only). */
+  warranty: 0,
   /** Asset or vehicle flagged "Needs attention". */
   needsAttention: 10,
-  /** Each log for an item in the last `recentDays` days. */
-  recentLog: 2,
-  recentLogMaxPerItem: 6,
-  recentLogMaxOverall: 10,
-  recentDays: 90,
 } as const;
 
 export type HealthBand = 'good' | 'fair' | 'poor';
 
 export type HealthDeduction = {
   id: string;
+  /** Points off the item's own score. */
   points: number;
   /** Item name, e.g. "Main HVAC System". */
   targetName: string;
@@ -50,15 +60,20 @@ export type HealthResult = {
   score: number;
   band: HealthBand;
   deductions: HealthDeduction[];
-  bonus: number;
-  /** Logs counted toward the bonus. */
-  recentLogs: number;
+  /** Items averaged into this score (1 for an item's own score). */
+  tracked: number;
+};
+
+/** The home has active items but none is tracked yet: no score rather than a meaningless 100. */
+export type HealthUnscored = {
+  score: null;
+  reason: 'not_enough_tracked';
 };
 
 export type HomeHealth = {
-  /** Null when there is nothing active to score. */
-  overall: HealthResult | null;
-  /** Keyed by `home_asset:{id}` / `vehicle:{id}`; retired, sold items are absent. */
+  /** Null when there is nothing active at all; unscored when nothing active is tracked. */
+  overall: HealthResult | HealthUnscored | null;
+  /** Keyed by `home_asset:{id}` / `vehicle:{id}`; only tracked, active items (retired, sold and untracked are absent). */
   targets: Record<string, HealthResult>;
 };
 
@@ -72,38 +87,45 @@ export const HEALTH_BAND_LABELS: Record<HealthBand, string> = {
   poor: 'Needs attention',
 };
 
+/** True for a scored result (narrows `HomeHealth['overall']`). */
+export const isScored = (health: HealthResult | HealthUnscored | null | undefined): health is HealthResult =>
+  Boolean(health) && typeof health!.score === 'number';
+
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
 
 const overduePoints = (steps: number) =>
   Math.min(HEALTH_RULES.overdueMax, HEALTH_RULES.overdueBase + HEALTH_RULES.overduePerStep * Math.max(0, steps));
 
-const dayOf = (value?: string) => {
+const dayOf = (value: string | undefined, timeZone?: string) => {
   if (!value) return null;
+  if (timeZone) return toDay(value, timeZone);
   const day = value.slice(0, 10);
   return isDayString(day) ? day : null;
 };
 
-/** Points and plain-language reason for one reminder, or null when it costs nothing. */
+/**
+ * Points and plain-language reason for one reminder, or null when it costs
+ * nothing. Never decreases as time passes for the same data: upcoming and due soon
+ * cost 0, due today 5, overdue 10 rising by 2 per 30 days (or 500 miles) to 20.
+ */
 export const reminderDeduction = (
   reminder: MaintenanceReminder,
   today: string,
+  timeZone?: string,
 ): { points: number; reason: string } | null => {
-  const due = dayOf(reminder.dueDate);
+  if (reminder.group === 'warranty') return null;
+  // A snooze only applies to an upcoming or due-soon date, which costs nothing anyway.
+  if (reminder.snoozed) return null;
+  const due = dayOf(reminder.dueDate, timeZone);
   const daysLate = due ? -diffDays(due, today) : 0;
-  const daysLeft = due ? diffDays(due, today) : 0;
-
-  if (reminder.group === 'warranty') {
-    if (reminder.status === 'due_today') return { points: HEALTH_RULES.warrantyEnding, reason: 'warranty ends today' };
-    if (reminder.status === 'due_soon') return { points: HEALTH_RULES.warrantyEnding, reason: `warranty ends in ${spanLabel(daysLeft)}` };
-    return null;
-  }
 
   if (reminder.group === 'vehicle_document') {
     const bare = reminder.title.replace(/^Vehicle /, '');
     const name = bare.charAt(0).toUpperCase() + bare.slice(1);
-    if (reminder.status === 'overdue') return { points: HEALTH_RULES.documentExpired, reason: `${name} expired ${spanLabel(daysLate)} ago` };
-    if (reminder.status === 'due_today') return { points: HEALTH_RULES.dueToday, reason: `${name} expires today` };
-    if (reminder.status === 'due_soon') return { points: HEALTH_RULES.dueSoon, reason: `${name} expires in ${spanLabel(daysLeft)}` };
+    if (reminder.status === 'overdue') {
+      return { points: overduePoints(Math.floor(Math.max(0, daysLate) / 30)), reason: `${name} expired ${spanLabel(daysLate)} ago` };
+    }
+    if (reminder.status === 'due_today') return { points: HEALTH_RULES.documentExpiresToday, reason: `${name} expires today` };
     return null;
   }
 
@@ -122,46 +144,63 @@ export const reminderDeduction = (
     return { points: Math.max(byDate, byMiles, HEALTH_RULES.overdueBase), reason };
   }
   if (reminder.status === 'due_today') return { points: HEALTH_RULES.dueToday, reason: `${reminder.title} is due today` };
-  if (reminder.status === 'due_soon') {
-    const reason = due && daysLeft > 0
-      ? `${reminder.title} is due in ${spanLabel(daysLeft)}`
-      : `${reminder.title} is due soon`;
-    return { points: HEALTH_RULES.dueSoon, reason };
-  }
   return null;
 };
 
-const result = (deductions: HealthDeduction[], bonus: number, recentLogs: number): HealthResult => {
-  const score = clamp(100 - deductions.reduce((total, item) => total + item.points, 0) + bonus);
-  return {
-    score,
-    band: healthBand(score),
-    deductions: [...deductions].sort((a, b) => b.points - a.points || a.targetName.localeCompare(b.targetName)),
-    bonus,
-    recentLogs,
-  };
+const validDay = (value: string | undefined, timeZone: string) => Boolean(toDay(value, timeZone));
+
+/**
+ * Whether an item counts toward the home score. Depends only on stored fields,
+ * never on the date, so the tracked set (and the average) cannot shift as time
+ * passes: an asset with a scheduled (non-checklist) schedule; a vehicle with a
+ * scheduled service or a registration or inspection date; any item flagged
+ * "Needs attention". A warranty alone does not make an item tracked.
+ */
+export const isTrackedAsset = (asset: HomeAsset) =>
+  asset.status === 'needs_attention' || (asset.schedules || []).some((schedule) => getAssetScheduleMode(schedule) === 'scheduled');
+
+export const isTrackedVehicle = (vehicle: Vehicle, timeZone: string) =>
+  vehicle.status === 'needs_attention'
+  || (vehicle.serviceSchedules || []).some((schedule) => getVehicleScheduleMode(schedule) === 'scheduled')
+  || validDay(vehicle.registrationExpiration, timeZone)
+  || validDay(vehicle.inspectionExpiration, timeZone);
+
+const sortDeductions = (deductions: HealthDeduction[]) =>
+  [...deductions].sort((a, b) => b.points - a.points || a.targetName.localeCompare(b.targetName) || a.reason.localeCompare(b.reason));
+
+const itemResult = (deductions: HealthDeduction[]): HealthResult => {
+  const score = clamp(100 - deductions.reduce((total, item) => total + item.points, 0));
+  return { score, band: healthBand(score), deductions: sortDeductions(deductions), tracked: 1 };
 };
 
 /**
- * Scores the home and every active asset and vehicle.
- * Item score = 100 − its deductions + min(6, 2 × logs in the last 90 days), 0–100.
- * Home score = 100 − all deductions + min(10, the items' bonuses), 0–100.
+ * Scores the home and every tracked, active asset and vehicle.
+ * Item score = 100 - its deductions, 0-100.
+ * Home score = the average of the tracked items' scores (rounded), or no score
+ * (`not_enough_tracked`) when nothing active is tracked. `logs` is accepted for
+ * compatibility and ignored (there is no log bonus).
  */
 export const computeHomeHealth = (input: {
   assets: HomeAsset[];
   vehicles: Vehicle[];
-  logs: MaintenanceLog[];
+  logs?: MaintenanceLog[];
   today: string;
   timeZone: string;
 }): HomeHealth => {
-  const { assets, vehicles, logs, today, timeZone } = input;
+  const { assets, vehicles, today, timeZone } = input;
   const activeAssets = assets.filter((asset) => asset.status !== 'retired');
   const activeVehicles = vehicles.filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold');
   if (activeAssets.length === 0 && activeVehicles.length === 0) return { overall: null, targets: {} };
 
+  const trackedAssets = activeAssets.filter(isTrackedAsset);
+  const trackedVehicles = activeVehicles.filter((vehicle) => isTrackedVehicle(vehicle, timeZone));
+  if (trackedAssets.length === 0 && trackedVehicles.length === 0) {
+    return { overall: { score: null, reason: 'not_enough_tracked' }, targets: {} };
+  }
+
   const reminders = buildMaintenanceReminders(
-    activeAssets as unknown as AssetInput[],
-    activeVehicles as unknown as VehicleInput[],
+    trackedAssets as unknown as AssetInput[],
+    trackedVehicles as unknown as VehicleInput[],
     today,
     timeZone,
   );
@@ -171,7 +210,7 @@ export const computeHomeHealth = (input: {
   };
 
   reminders.forEach((reminder) => {
-    const deduction = reminderDeduction(reminder, today);
+    const deduction = reminderDeduction(reminder, today, timeZone);
     if (!deduction) return;
     push(healthKey(reminder.targetType, reminder.targetId), {
       id: reminder.id,
@@ -185,11 +224,11 @@ export const computeHomeHealth = (input: {
   });
 
   const flagged = [
-    ...activeAssets.filter((asset) => asset.status === 'needs_attention').map((asset) => ({
+    ...trackedAssets.filter((asset) => asset.status === 'needs_attention').map((asset) => ({
       targetType: 'home_asset' as const, id: asset.id, name: asset.name,
       deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}`,
     })),
-    ...activeVehicles.filter((vehicle) => vehicle.status === 'needs_attention').map((vehicle) => ({
+    ...trackedVehicles.filter((vehicle) => vehicle.status === 'needs_attention').map((vehicle) => ({
       targetType: 'vehicle' as const, id: vehicle.id, name: vehicle.nickname,
       deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`,
     })),
@@ -204,33 +243,21 @@ export const computeHomeHealth = (input: {
     deepLink: item.deepLink,
   }));
 
-  const since = addDays(today, -HEALTH_RULES.recentDays);
-  const recentCount = (targetType: 'home_asset' | 'vehicle', id: string) => logs.filter((log) => {
-    const day = dayOf(log.date);
-    if (!day || day < since || day > today) return false;
-    const type = log.targetType || (log.assetId ? 'home_asset' : log.vehicleId ? 'vehicle' : 'general');
-    return targetType === 'home_asset' ? type === 'home_asset' && log.assetId === id : type === 'vehicle' && log.vehicleId === id;
-  }).length;
-
   const targets: Record<string, HealthResult> = {};
-  let bonusTotal = 0;
-  let logsTotal = 0;
-  const all = [
-    ...activeAssets.map((asset) => ({ type: 'home_asset' as const, id: asset.id })),
-    ...activeVehicles.map((vehicle) => ({ type: 'vehicle' as const, id: vehicle.id })),
+  const keys = [
+    ...trackedAssets.map((asset) => healthKey('home_asset', asset.id)),
+    ...trackedVehicles.map((vehicle) => healthKey('vehicle', vehicle.id)),
   ];
-  all.forEach(({ type, id }) => {
-    const key = healthKey(type, id);
-    const count = recentCount(type, id);
-    const bonus = Math.min(HEALTH_RULES.recentLogMaxPerItem, HEALTH_RULES.recentLog * count);
-    bonusTotal += bonus;
-    logsTotal += count;
-    targets[key] = result(byTarget.get(key) || [], bonus, count);
-  });
+  keys.forEach((key) => { targets[key] = itemResult(byTarget.get(key) || []); });
 
-  const allDeductions = [...byTarget.values()].flat();
+  const score = clamp(keys.reduce((total, key) => total + targets[key].score, 0) / keys.length);
   return {
-    overall: result(allDeductions, Math.min(HEALTH_RULES.recentLogMaxOverall, bonusTotal), logsTotal),
+    overall: {
+      score,
+      band: healthBand(score),
+      deductions: sortDeductions([...byTarget.values()].flat()),
+      tracked: keys.length,
+    },
     targets,
   };
 };
