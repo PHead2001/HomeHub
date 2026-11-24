@@ -10,7 +10,7 @@
  *   view permissions; a change there starts from nothing (GOAL-lastgood). The
  *   household's day (`useHouseholdToday`, D-6) is not part of it: at household
  *   midnight only the day-scoped queries (today's chores, today's completions, the
- *   home-health log window) subscribe again, and their old values stay until the
+ *   notification window) subscribe again, and their old values stay until the
  *   new snapshots answer, so nothing blanks.
  * - Every listener is resilient (HP-5, `resilient-listener.ts`): an error retries with
  *   backoff and on `online` / visible, and `retry()` retries now.
@@ -41,12 +41,10 @@ import { deduplicateNotifications, parseNotificationDoc } from '@/lib/notificati
 import { NOTIFICATION_WINDOW_DAYS } from './notification-display';
 import { notificationWindowQuery, viewableNotificationCategories } from '@/app/notifications/notification-query';
 import { SECTION_LIMITS, type DashboardFacts, type RawDoc } from './facts';
-import { assembleDashboardFacts, feedingFailureKey, HEALTH_FAILURE, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
+import { assembleDashboardFacts, feedingFailureKey, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
 import { leaderboardEnabledFrom } from './streaks';
 import { deviceStorage, readHouseOutline, readHouseSnapshot, writeHouseSnapshot, type HouseOutlineRoom } from './house-snapshot';
 import type { ChoreFacts } from './facts';
-import { HEALTH_RULES } from '../maintenance/health';
-import { addDays } from '../../../functions/src/shared/calendar';
 import { resilientListener, type ResilientHandle } from './resilient-listener';
 import {
   applyAnswer,
@@ -129,7 +127,6 @@ const PLAN = [
   { id: 'pantry', group: 'pantry', access: 'shopping', scope: 'context' },
   { id: 'maintenance.assets', group: 'maintenance', access: 'maintenance', scope: 'context' },
   { id: 'maintenance.vehicles', group: 'maintenance', access: 'maintenance', scope: 'context' },
-  { id: 'health.logs', group: HEALTH_FAILURE, access: 'maintenance', scope: 'day' },
   { id: 'pets', group: 'pets', access: 'pets', scope: 'context' },
   // Day-scoped: the 7-day query window moves forward each household day.
   { id: 'notifications', group: 'notifications', access: 'notifications', scope: 'day' },
@@ -325,10 +322,6 @@ export function useDashboardData(enabled = true, options: { sections?: boolean }
       pantry: () => watchQuery('pantry', 'pantry', query(base('pantry-inventory')), (s, r) => ({ ...r, pantry: docs(s) })),
       'maintenance.assets': () => watchQuery('maintenance.assets', 'maintenance', query(base('home-assets')), (s, r) => ({ ...r, assets: docs(s) })),
       'maintenance.vehicles': () => watchQuery('maintenance.vehicles', 'maintenance', query(base('vehicles')), (s, r) => ({ ...r, vehicles: docs(s) })),
-      // Home health (H10 in the house): only logs recent enough to count toward the bonus (two
-      // days of margin for time zones); `computeHomeHealth` applies the exact window. The
-      // window moves with the household day, so this is a day-scoped query.
-      'health.logs': () => watchQuery('health.logs', HEALTH_FAILURE, query(base('maintenance'), where('date', '>=', addDays(today, -(HEALTH_RULES.recentDays + 2)))), (s, r) => ({ ...r, logs: docs(s) })),
       pets: () => {
         // Feeding dates come in two shapes (Timestamps, and ISO strings on older entries).
         // Firestore orders types separately, so each shape is read on its own and merged

@@ -4,7 +4,7 @@ import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import type { AuthorizedHouseholdUser } from '@/ai/action-auth';
 import { adminDb } from '@/lib/server/firebase-admin';
 import type { HomeOverviewFacts } from '@/ai/overview-types';
-import { DAY_MS, dayDistance, label, summarizeOverviewPantry, toDate } from '@/ai/overview-fact-helpers';
+import { DAY_MS, dayDistance, label, summarizeOverviewMaintenance, summarizeOverviewPantry, toDate } from '@/ai/overview-fact-helpers';
 import { isAssignedTo, type AssigneeRecord } from '@functions/shared/assignee';
 import { isAddressedToMember } from '@functions/shared/notification-audience';
 
@@ -73,62 +73,9 @@ export const aggregateHomeOverviewFacts = async (user: AuthorizedHouseholdUser):
       household.collection('home-assets').get(),
       household.collection('vehicles').get(),
     ]);
-    const assets = docsData(assetSnapshot);
-    const vehicles = docsData(vehicleSnapshot);
-    const dueItems: Array<{ label: string; due?: Date; overdue: boolean; dueSoon: boolean }> = [];
-    let checklistItems = 0;
-
-    for (const asset of assets) {
-      for (const schedule of Array.isArray(asset.schedules) ? asset.schedules : []) {
-        if (schedule?.mode === 'checklist') {
-          checklistItems += 1;
-          continue;
-        }
-        const due = toDate(schedule?.nextDueDate);
-        if (!due) continue;
-        const distance = dayDistance(due, now);
-        dueItems.push({ label: label(schedule?.scheduleName, label(asset.name, 'Asset maintenance')), due, overdue: distance < 0, dueSoon: distance >= 0 && distance <= 7 });
-      }
-      const warranty = toDate(asset.warrantyExpiration);
-      if (warranty) {
-        const distance = dayDistance(warranty, now);
-        if (distance <= 30) dueItems.push({ label: `${label(asset.name, 'Asset')} warranty`, due: warranty, overdue: distance < 0, dueSoon: distance >= 0 && distance <= 30 });
-      }
-    }
-
-    for (const vehicle of vehicles) {
-      for (const schedule of Array.isArray(vehicle.serviceSchedules) ? vehicle.serviceSchedules : []) {
-        if (schedule?.mode === 'checklist') {
-          checklistItems += 1;
-          continue;
-        }
-        const due = toDate(schedule?.nextDueDate);
-        const dateDistance = due ? dayDistance(due, now) : null;
-        const currentMileage = typeof vehicle.currentMileage === 'number' ? vehicle.currentMileage : null;
-        const nextMileage = typeof schedule?.nextDueMileage === 'number' ? schedule.nextDueMileage : null;
-        const mileageRemaining = currentMileage !== null && nextMileage !== null ? nextMileage - currentMileage : null;
-        const overdue = (dateDistance !== null && dateDistance < 0) || (mileageRemaining !== null && mileageRemaining <= 0);
-        const dueSoon = (dateDistance !== null && dateDistance >= 0 && dateDistance <= 7)
-          || (mileageRemaining !== null && mileageRemaining > 0 && mileageRemaining <= 500);
-        if (overdue || dueSoon) dueItems.push({ label: label(schedule?.serviceName, `${label(vehicle.nickname, 'Vehicle')} service`), due: due || undefined, overdue, dueSoon });
-      }
-      for (const [dateValue, suffix] of [[vehicle.registrationExpiration, 'registration'], [vehicle.inspectionExpiration, 'inspection']] as const) {
-        const due = toDate(dateValue);
-        if (!due) continue;
-        const distance = dayDistance(due, now);
-        if (distance <= 30) dueItems.push({ label: `${label(vehicle.nickname, 'Vehicle')} ${suffix}`, due, overdue: distance < 0, dueSoon: distance >= 0 && distance <= 30 });
-      }
-    }
-
-    facts.maintenance = {
-      assetsNeedingAttention: assets.filter(asset => asset.status === 'needs_attention').length
-        + vehicles.filter(vehicle => vehicle.status === 'needs_attention').length,
-      overdue: dueItems.filter(item => item.overdue).length,
-      dueSoon: dueItems.filter(item => !item.overdue && item.dueSoon).length,
-      checklistItems,
-      urgent: dueItems.sort((left, right) => (left.due?.getTime() || Infinity) - (right.due?.getTime() || Infinity)).slice(0, 6)
-        .map(item => ({ label: item.label, ...(item.due ? { due: item.due.toISOString().slice(0, 10) } : {}) })),
-    };
+    // The same computation as the dashboard and Maintenance (household zone, snoozed not due).
+    const timeZone = (await household.get()).get('timeZone');
+    facts.maintenance = summarizeOverviewMaintenance(docsData(assetSnapshot), docsData(vehicleSnapshot), now, typeof timeZone === 'string' ? timeZone : null);
   }
 
   if (user.permissions['pets.view']) {

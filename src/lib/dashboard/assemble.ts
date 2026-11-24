@@ -11,8 +11,8 @@
 import { newestFirst } from '../pets/care';
 import { computeChoreStats } from '../chores/stats';
 import type { ChoreRecord } from '../chores/dates';
-import { computeHomeHealth } from '../maintenance/health';
-import type { HomeAsset, MaintenanceLog, Vehicle } from '../types';
+import { computeHomeHealth, isScored } from '../maintenance/health';
+import type { HomeAsset, Vehicle } from '../types';
 import { householdDayZone, householdToday } from '../household-day';
 import type { Notification } from '../types';
 import type { ViewPermission } from '@functions/shared/push-audience';
@@ -64,8 +64,6 @@ export type DashboardRaw = {
   leaderboard?: 'on' | 'off';
   /** Household membership records, for streaks. */
   members?: RawDoc[];
-  /** Maintenance logs from the last 90+ days, for the home health score. */
-  logs?: RawDoc[];
 };
 
 /** Extra failure keys: these hide one tile or badge and never make a section unavailable. */
@@ -153,15 +151,17 @@ export function assembleDashboardFacts(
   // HP-11b: the golden roof counts the same completions listener, so it turns gold live.
   if (access.chores && !failed.has(STREAKS_FAILURE) && raw.completedChores) facts.completedChores = raw.completedChores.length;
 
-  // Home health: Maintenance's own score, in the household's time zone.
-  if (access.maintenance && !failed.has('maintenance') && !failed.has(HEALTH_FAILURE) && raw.assets && raw.vehicles && raw.logs) {
-    facts.health = computeHomeHealth({
+  // Home health: Maintenance's own score (MA-10), in the household's time zone, from
+  // the same assets and vehicles as the maintenance facts. Null when nothing is
+  // tracked yet (no score is shown rather than a meaningless 100).
+  if (access.maintenance && !failed.has('maintenance') && !failed.has(HEALTH_FAILURE) && raw.assets && raw.vehicles) {
+    const overall = computeHomeHealth({
       assets: raw.assets as unknown as HomeAsset[],
       vehicles: raw.vehicles as unknown as Vehicle[],
-      logs: raw.logs as unknown as MaintenanceLog[],
       today,
       timeZone: zone,
     }).overall;
+    facts.health = isScored(overall) ? overall : null;
   }
 
   // Counted here from the documents at `now` (expiry and the 7-day window move with time),

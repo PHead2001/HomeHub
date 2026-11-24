@@ -179,3 +179,75 @@ describe('snoozed maintenance reminders (D16)', () => {
     assert.equal(actionableReminders(reminders).length, 1);
   });
 });
+
+describe('maintenance notification identities stay stable (M3)', () => {
+  const today = '2026-11-05';
+  const base = {
+    assets: [{ id: 'hvac', name: 'Main HVAC', warrantyExpiration: '2026-11-20', schedules: [{ id: 's1', scheduleName: 'Replace filter', nextDueDate: '2026-10-01' }] }],
+    vehicles: [{ id: 'suv', nickname: 'Family SUV', currentMileage: 48_100, registrationExpiration: '2026-11-10', serviceSchedules: [{ id: 'oil', serviceName: 'Oil change', nextDueMileage: 48_500, nextDueDate: '2027-02-01' }] }],
+  };
+  const identities = (assets: typeof base.assets, vehicles: typeof base.vehicles) =>
+    actionableReminders(buildMaintenanceReminders(assets, vehicles, today, CHI))
+      .map(r => [r.id, r.sourceType, r.sourceId, r.stateKey, deterministicNotificationId(r.sourceType, r.sourceId, r.stateKey)].join(' '));
+
+  // Literal values: these are the identities of documents already in Firestore.
+  const expected = [
+    `asset-schedule-hvac-0-overdue maintenance_asset_schedule hvac:s1 overdue|2026-10-01 ${deterministicNotificationId('maintenance_asset_schedule', 'hvac:s1', 'overdue|2026-10-01')}`,
+    `maintenance_vehicle_registration-suv-due_soon maintenance_vehicle_registration suv due_soon|2026-11-10 ${deterministicNotificationId('maintenance_vehicle_registration', 'suv', 'due_soon|2026-11-10')}`,
+    `asset-warranty-hvac-due_soon maintenance_asset_warranty hvac due_soon|2026-11-20 ${deterministicNotificationId('maintenance_asset_warranty', 'hvac', 'due_soon|2026-11-20')}`,
+    `vehicle-service-suv-0-due_soon maintenance_vehicle_service suv:oil due_soon|2027-02-01|48500 ${deterministicNotificationId('maintenance_vehicle_service', 'suv:oil', 'due_soon|2027-02-01|48500')}`,
+  ];
+
+  test('existing reminders keep their ids, source and state keys', () => {
+    assert.deepEqual(identities(base.assets, base.vehicles), expected);
+    assert.equal(deterministicNotificationId('maintenance_asset_schedule', 'hvac:s1', 'overdue|2026-10-01'), getDeterministicNotificationId({ sourceType: 'maintenance_asset_schedule', sourceId: 'hvac:s1', stateKey: 'overdue|2026-10-01' }));
+  });
+
+  test('anchor, anchor month/day, a stale snooze (with snoozedFrom) and warrantyLifetime: false change nothing', () => {
+    const assets = [{
+      ...base.assets[0], warrantyLifetime: false,
+      schedules: [{ ...base.assets[0].schedules[0], anchor: 'calendar' as const, anchorMonth: 10, anchorDay: 1, snoozedUntil: '2026-09-01', snoozedFrom: '2026-08-25' }],
+    }];
+    const vehicles = [{ ...base.vehicles[0], serviceSchedules: [{ ...base.vehicles[0].serviceSchedules[0], anchor: 'completion' as const, snoozedUntil: '2027-02-01' }] }];
+    // The oil change is due soon by mileage, so its date snooze does not quiet it.
+    assert.deepEqual(identities(assets as never, vehicles as never), expected);
+  });
+
+  test('a lifetime warranty stops the warranty reminder and nothing else', () => {
+    const assets = [{ ...base.assets[0], warrantyLifetime: true }];
+    assert.deepEqual(identities(assets as never, base.vehicles), expected.filter(line => !line.startsWith('asset-warranty')));
+  });
+
+  test('expiries warn 30 days out (registration, inspection, warranty); schedules 14', () => {
+    const vehicles = [{ id: 'car', nickname: 'Car', registrationExpiration: '2026-12-05', inspectionExpiration: '2026-12-06' }];
+    const assets = [{ id: 'tv', name: 'TV', warrantyExpiration: '2026-12-05', schedules: [{ id: 'x', scheduleName: 'Dust', nextDueDate: '2026-11-20' }] }];
+    const built = buildMaintenanceReminders(assets, vehicles, today, CHI);
+    // The inspection (31 days) is outside the window.
+    assert.deepEqual(built.map(r => `${r.sourceType}:${r.status}`), [
+      'maintenance_asset_warranty:due_soon',
+      'maintenance_vehicle_registration:due_soon',
+      'maintenance_asset_schedule:upcoming',
+    ]);
+    // Upcoming expiries are only reported with a lookahead, and never notified.
+    const ahead = buildMaintenanceReminders(assets, vehicles, today, CHI, { expiryLookaheadDays: 90 });
+    assert.equal(ahead.find(r => r.sourceType === 'maintenance_vehicle_inspection')?.status, 'upcoming');
+    assert.deepEqual(actionableReminders(ahead).map(r => r.id), actionableReminders(built).map(r => r.id));
+  });
+
+  test('the household day decides around DST (America/Chicago)', () => {
+    const assets = [{ id: 'hvac', name: 'Main HVAC', schedules: [{ id: 's1', scheduleName: 'Replace filter', nextDueDate: '2026-03-08' }] }];
+    // 05:30Z Mar 8 is 23:30 Mar 7 CST: due tomorrow, not today.
+    assert.equal(buildMaintenanceReminders(assets, [], localDay(new Date('2026-03-08T05:30:00Z'), CHI), CHI)[0].status, 'due_soon');
+    assert.equal(buildMaintenanceReminders(assets, [], localDay(new Date('2026-03-08T07:30:00Z'), CHI), CHI)[0].status, 'due_today');
+    // A legacy ISO due date stored as local midnight CDT on Nov 1 is Nov 1, the day DST ends.
+    const legacy = [{ id: 'hvac', name: 'Main HVAC', schedules: [{ id: 's1', scheduleName: 'Replace filter', nextDueDate: zonedMidnightIso('2026-11-01', CHI) }] }];
+    assert.equal(buildMaintenanceReminders(legacy, [], '2026-11-01', CHI)[0].status, 'due_today');
+    assert.equal(buildMaintenanceReminders(legacy, [], localDay(new Date('2026-11-02T06:30:00Z'), CHI), CHI)[0].status, 'overdue');
+  });
+
+  test('a snoozed reminder says until when; the field never reaches the state key', () => {
+    const snoozed = buildMaintenanceReminders([{ id: 'hvac', name: 'Main HVAC', schedules: [{ id: 's1', scheduleName: 'Replace filter', nextDueDate: '2026-11-12', snoozedUntil: '2026-11-12' }] }], [], today, CHI)[0];
+    assert.equal(snoozed.snoozedUntil, '2026-11-12');
+    assert.equal(snoozed.stateKey, 'due_soon|2026-11-12');
+  });
+});
