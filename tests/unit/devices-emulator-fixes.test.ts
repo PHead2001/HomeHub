@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { createBackStack } from '../../src/lib/shell/back-stack';
+import { createBackStack, isLeavingNavigation } from '../../src/lib/shell/back-stack';
 import { TABLET_INFO_TOAST_MS, TABLET_TOAST_LIMIT, resumedUndo, tabletToastDuration, tabletToasts } from '../../src/lib/devices/tablet-toasts';
 import { noTabletPinMessage } from '../../src/lib/devices/action-policy';
 import { deviceCodeInstructions } from '../../src/lib/devices/device-codes';
@@ -100,6 +100,15 @@ describe('D4: Back closes the topmost dialog', () => {
     assert.deepEqual(calls, ['push 1', 'go -1']);
     flush();
     assert.deepEqual(history(), [0]);
+  });
+
+  it('only a cross-document navigation that is not a download counts as leaving the page', () => {
+    assert.equal(isLeavingNavigation({ destination: { sameDocument: false }, downloadRequest: null }), true);
+    assert.equal(isLeavingNavigation({ destination: { sameDocument: false } }), true);
+    assert.equal(isLeavingNavigation({ destination: { sameDocument: false }, downloadRequest: 'homehub-wrapped-2026.png' }), false, 'a download keeps the page');
+    assert.equal(isLeavingNavigation({ destination: { sameDocument: false }, downloadRequest: '' }), false, 'an empty download name is still a download');
+    assert.equal(isLeavingNavigation({ destination: { sameDocument: true }, downloadRequest: null }), false);
+    assert.equal(isLeavingNavigation({}), false);
   });
 
   it('Back closes only the topmost of nested dialogs; nothing navigates', () => {
