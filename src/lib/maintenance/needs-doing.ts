@@ -11,7 +11,7 @@
 // room and leave the list while a room is chosen.
 import type { MaintenanceReminder } from '../../../functions/src/shared/maintenance-reminders';
 import type { HomeAsset, Vehicle } from '../types';
-import { matchesRoom } from './filters';
+import { labelKey, matchesRoom, UNASSIGNED } from './filters';
 import { reminderGroups, type ReminderGroupKey } from './reminder-groups';
 
 /** The reminder groups the list shows, in order. Upcoming work is in Coming up instead. */
@@ -47,11 +47,15 @@ export function needsDoing(input: {
   roomName?: string | null;
 }): NeedsDoing {
   const room = input.roomName?.trim() ? input.roomName : null;
+  // "Unassigned" (the location chip for assets with none) keeps the assets without a location.
+  const unassigned = room !== null && labelKey(room) === labelKey(UNASSIGNED);
+  const roomHas = (location: unknown) => (unassigned ? !labelKey(location) || matchesRoom(location, UNASSIGNED) : matchesRoom(location, room));
   const assetsById = new Map(input.assets.map((asset) => [asset.id, asset]));
   const inRoom = (reminder: MaintenanceReminder) => {
     if (!room) return true;
     if (reminder.targetType !== 'home_asset') return false;
-    return matchesRoom(assetsById.get(reminder.targetId)?.location, room);
+    const asset = assetsById.get(reminder.targetId);
+    return Boolean(asset) && roomHas(asset?.location);
   };
   const { groups } = reminderGroups(input.reminders.filter(inRoom));
   const shown = groups
@@ -60,7 +64,7 @@ export function needsDoing(input: {
   const reminders = shown.flatMap((group) => group.reminders);
   const flagged: FlaggedItem[] = [
     ...input.assets
-      .filter((asset) => asset.status === 'needs_attention' && (!room || matchesRoom(asset.location, room)))
+      .filter((asset) => asset.status === 'needs_attention' && (!room || roomHas(asset.location)))
       .map((asset) => ({
         targetType: 'home_asset' as const,
         id: asset.id,

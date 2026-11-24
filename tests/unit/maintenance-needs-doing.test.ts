@@ -66,6 +66,10 @@ describe('Needs doing (MA-12, MA-14)', () => {
     assert.deepEqual(kitchen.flagged.map((item) => item.id), ['fridge']);
     const nowhere = needsDoing({ reminders, assets: [hvac, fridge], vehicles: [car], roomName: 'Attic' });
     assert.deepEqual([nowhere.reminders.length, nowhere.flagged.length, nowhere.count], [0, 0, 0]);
+    // "Unassigned" keeps the assets without a location.
+    const shed: HomeAsset = { ...fridge, id: 'shed', name: 'Shed light', location: undefined, status: 'needs_attention', schedules: [] };
+    const unassigned = needsDoing({ reminders, assets: [hvac, fridge, shed], vehicles: [car], roomName: 'unassigned' });
+    assert.deepEqual([unassigned.reminders.length, unassigned.flagged.map((item) => item.id)], [0, ['shed']]);
     // A blank room is no filter.
     assert.equal(needsDoing({ reminders, assets: [hvac, fridge], vehicles: [car], roomName: '  ' }).count, needsDoing({ reminders, assets: [hvac, fridge], vehicles: [car] }).count);
   });
