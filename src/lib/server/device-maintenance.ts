@@ -248,6 +248,8 @@ export async function editSchedulesFromTablet(input: DeviceMaintenanceRequest & 
   sized(input, SCHEDULES_MAX_BYTES);
   if (input.ownerType !== 'home_asset' && input.ownerType !== 'vehicle') throw new DeviceActionError('invalid_input');
   if (!Array.isArray(input.base) || !Array.isArray(input.values)) throw new DeviceActionError('invalid_input');
+  // Always an existing record: never a create.
+  if (typeof input.ownerId !== 'string' || !input.ownerId) throw new DeviceActionError('invalid_input');
   const listField = input.ownerType === 'home_asset' ? 'schedules' : 'serviceSchedules';
   const authority = await authorize('maintenance.editSchedules', input, options);
   const kind = input.ownerType === 'home_asset' ? 'save_asset' : 'save_vehicle';
