@@ -40,6 +40,23 @@ describe('householdToday', () => {
     // Across a DST change (Chicago falls back on 2026-11-01): that day has 25 hours.
     assert.equal(msUntilHouseholdMidnight(CHICAGO, new Date('2026-11-01T05:00:00Z')), 25 * 60 * 60_000);
   });
+
+  it('finds the next midnight across DST in the household zone (MA-1)', () => {
+    // Chicago springs forward on 2026-03-08: midnight CST (06:00Z) to the next midnight CDT (05:00Z) is 23 hours.
+    assert.equal(msUntilHouseholdMidnight(CHICAGO, new Date('2026-03-08T06:00:00Z')), 23 * 60 * 60_000);
+    // Half an hour before that day starts, the next midnight is the 8th's, not the 9th's.
+    assert.equal(msUntilHouseholdMidnight(CHICAGO, new Date('2026-03-08T05:30:00Z')), 30 * 60_000);
+    // Just after 2 a.m. CST jumps to 3 a.m. CDT (08:00Z), 21 hours are left of the 8th.
+    assert.equal(msUntilHouseholdMidnight(CHICAGO, new Date('2026-03-08T08:00:00Z')), 21 * 60 * 60_000);
+    // Chicago falls back on 2026-11-01: midnight CDT (05:00Z); the repeated 1 a.m. hour makes it 25 hours.
+    assert.equal(msUntilHouseholdMidnight(CHICAGO, new Date('2026-11-01T07:30:00Z')), (22 * 60 + 30) * 60_000);
+    // East of UTC: Sydney springs forward on 2026-10-04 (midnight AEST is 14:00Z the day before), a 23-hour day.
+    assert.equal(msUntilHouseholdMidnight('Australia/Sydney', new Date('2026-10-03T14:00:00Z')), 23 * 60 * 60_000);
+    // ... and falls back on 2026-04-05, a 25-hour day.
+    assert.equal(msUntilHouseholdMidnight('Australia/Sydney', new Date('2026-04-04T13:00:00Z')), 25 * 60 * 60_000);
+    // A half-hour zone east of UTC without DST: Kolkata's midnight is 18:30Z the day before.
+    assert.equal(msUntilHouseholdMidnight('Asia/Kolkata', new Date('2026-11-24T18:00:00Z')), 30 * 60_000);
+  });
 });
 
 describe('watchHouseholdDay', () => {
@@ -62,6 +79,36 @@ describe('watchHouseholdDay', () => {
     // And again the next household midnight, 24 h later.
     mock.timers.tick(24 * 60 * 60_000);
     assert.deepEqual(days, ['2026-11-10', '2026-11-11']);
+    stop();
+  });
+
+  for (const [zone, from, expected] of [
+    ['America/Chicago', '2026-03-07T12:00:00Z', ['2026-03-08', '2026-03-09', '2026-03-10']],
+    ['America/Chicago', '2026-10-31T12:00:00Z', ['2026-11-01', '2026-11-02', '2026-11-03']],
+    ['Australia/Sydney', '2026-10-03T00:00:00Z', ['2026-10-04', '2026-10-05', '2026-10-06']],
+    ['Australia/Sydney', '2026-04-04T00:00:00Z', ['2026-04-05', '2026-04-06', '2026-04-07']],
+  ] as const) {
+    it(`rolls over once per day across the DST change in ${zone} from ${from.slice(0, 10)}, never skipping or doubling`, () => {
+      mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date(from) });
+      const days: string[] = [];
+      const stop = watchHouseholdDay(zone, (day) => days.push(day), environment());
+      // Three days in quarter-hour steps: the timer (capped at an hour) fires many times.
+      for (let minute = 0; minute < 3 * 24 * 60; minute += 15) mock.timers.tick(15 * 60_000);
+      assert.deepEqual(days, expected);
+      stop();
+    });
+  }
+
+  it('re-checks when the window regains focus', () => {
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date('2026-11-09T10:00:00Z') });
+    const env = environment();
+    let clock = new Date('2026-11-09T10:00:00Z');
+    env.now = () => clock;
+    const days: string[] = [];
+    const stop = watchHouseholdDay(AUCKLAND, (day) => days.push(day), env);
+    clock = new Date('2026-11-09T12:00:00Z');
+    env.window.dispatchEvent(new Event('focus'));
+    assert.deepEqual(days, ['2026-11-10']);
     stop();
   });
 

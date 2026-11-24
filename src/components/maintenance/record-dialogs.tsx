@@ -28,7 +28,7 @@ type AssetSave = { base?: AssetValues; values: AssetValues };
  * only the dialog), initialised once per opening from the record as it was then; that is also the
  * `base` the server compares with, so a snapshot arriving while the form is open never resets it.
  */
-export function AssetDialog({
+export const AssetDialog = React.memo(function AssetDialog({
   open,
   session,
   onOpenChange,
@@ -47,7 +47,7 @@ export function AssetDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 type AssetDialogBodyProps = {
   record: HomeAsset | null;
@@ -301,7 +301,7 @@ type VehicleSave = { base?: VehicleValues; values: VehicleValues };
  * only the dialog), initialised once per opening from the record as it was then; that is also the
  * `base` the server compares with, so a snapshot arriving while the form is open never resets it.
  */
-export function VehicleDialog({
+export const VehicleDialog = React.memo(function VehicleDialog({
   open,
   session,
   onOpenChange,
@@ -320,7 +320,7 @@ export function VehicleDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 type VehicleDialogBodyProps = {
   record: Vehicle | null;

@@ -1,0 +1,58 @@
+'use client';
+
+import { useEffect, useMemo, useReducer, useRef } from 'react';
+import { collection, onSnapshot, orderBy, query, type QuerySnapshot } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import { resilientListener, type ResilientHandle } from '@/lib/dashboard/resilient-listener';
+import {
+  MAINTENANCE_COLLECTIONS, MAINTENANCE_ORDER, initialLiveState, liveReducer, liveView, type MaintenanceLiveView,
+} from '@/lib/maintenance/live-data';
+
+/**
+ * Live home assets, vehicles, logs and attachment metadata of a household (MA-2): one
+ * `onSnapshot` listener per collection, each a `resilientListener` (bounded backoff, retried
+ * at once on `online` and when the page is visible again). Only a server-confirmed snapshot
+ * resets the retry schedule, so a refused read settles on `unauthorized` (see live-data.ts).
+ * Changes from this page's server actions, quick add and other devices arrive through these
+ * listeners, so nothing re-reads after a write. `key` names the household and member; when
+ * it changes or is null the listeners stop and nothing of the old key is shown.
+ */
+export function useMaintenanceLiveData(householdId: string | null | undefined, key: string | null): MaintenanceLiveView & { retry: () => void } {
+  const [state, dispatch] = useReducer(liveReducer, key, initialLiveState);
+  const handles = useRef<ResilientHandle[]>([]);
+
+  useEffect(() => {
+    if (!key || !householdId) return;
+    const started = MAINTENANCE_COLLECTIONS.map((name) => {
+      const order = MAINTENANCE_ORDER[name];
+      const source = query(collection(db, 'households', householdId, name), orderBy(order.field, order.direction));
+      let answered = false;
+      return resilientListener<QuerySnapshot>(
+        (next, error) => onSnapshot(source, { includeMetadataChanges: true }, next, error),
+        {
+          next: (snapshot) => {
+            // A metadata-only change (cache -> server, a write acknowledged) changes no record.
+            if (answered && snapshot.docChanges().length === 0) return;
+            answered = true;
+            dispatch({ type: 'answer', key, collection: name, docs: snapshot.docs.map((item) => ({ id: item.id, ...item.data() })) });
+          },
+          confirmed: (snapshot) => !snapshot.metadata.fromCache,
+          status: (status) => {
+            if (status.kind === 'live') return;
+            if (status.kind === 'retrying') console.warn(`Maintenance ${name} listener failed; retrying in ${status.delayMs} ms.`);
+            dispatch({ type: 'failure', key, collection: name, failure: status.kind });
+          },
+        },
+      );
+    });
+    handles.current = started;
+    return () => {
+      started.forEach((handle) => handle.stop());
+      if (handles.current === started) handles.current = [];
+    };
+  }, [householdId, key]);
+
+  const view = useMemo(() => liveView(state, key), [state, key]);
+  const retry = useMemo(() => () => handles.current.forEach((handle) => handle.retryNow()), []);
+  return useMemo(() => ({ ...view, retry }), [view, retry]);
+}

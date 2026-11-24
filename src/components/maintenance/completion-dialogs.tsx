@@ -52,7 +52,7 @@ export function completionFormValues(target: ScheduleCompletionTarget, today: st
 }
 
 /** Complete Scheduled Maintenance: record the work and set when it is next due. */
-export function ScheduleCompletionDialog({
+export const ScheduleCompletionDialog = React.memo(function ScheduleCompletionDialog({
   target,
   session,
   onOpenChange,
@@ -72,7 +72,7 @@ export function ScheduleCompletionDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 type CompletionBodyProps = {
   target: ScheduleCompletionTarget;
@@ -214,7 +214,7 @@ function ScheduleCompletionBody({ target, today, busy, notice, mileageMessage, o
 }
 
 /** Confirm mileage (MA-6a): Mark done on a service due by mileage asks for the odometer first. */
-export function MileageDialog({
+export const MileageDialog = React.memo(function MileageDialog({
   target,
   session,
   onOpenChange,
@@ -233,7 +233,7 @@ export function MileageDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 type MileageBodyProps = {
   target: Extract<ScheduleCompletionTarget, { targetType: 'vehicle' }>;

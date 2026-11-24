@@ -26,7 +26,7 @@ export type LogFormHandle = { setError: (field: keyof LogFormValues, message: st
  * Add or edit a maintenance log; opened by Log service it also completes that schedule. The
  * form is this dialog's own state, initialised once per opening (see AssetDialog).
  */
-export function LogDialog({
+export const LogDialog = React.memo(function LogDialog({
   open,
   session,
   onOpenChange,
@@ -44,7 +44,7 @@ export function LogDialog({
       </DialogContent>
     </Dialog>
   );
-}
+});
 
 type LogDialogBodyProps = {
   record: MaintenanceLog | null;

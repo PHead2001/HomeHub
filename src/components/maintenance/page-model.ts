@@ -6,16 +6,8 @@
 import { z } from 'zod';
 import { format, isValid, parseISO } from 'date-fns';
 import type {
-  HomeAsset,
-  HomeAssetSchedule,
-  MaintenanceAttachment,
-  MaintenanceAttachmentTargetType,
-  MaintenanceLog,
-  MaintenanceLogType,
-  MaintenanceScheduleMode,
-  MaintenanceTargetType,
-  Vehicle,
-  VehicleServiceSchedule,
+  HomeAsset, HomeAssetSchedule, MaintenanceAttachment, MaintenanceAttachmentTargetType, MaintenanceLog, MaintenanceLogType,
+  MaintenanceScheduleMode, MaintenanceTargetType, Vehicle, VehicleServiceSchedule,
 } from '@/lib/types';
 import { getAssetScheduleMode, getVehicleScheduleMode, type ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
 import { scheduleRef, type StoredSchedule } from '@/lib/maintenance/operations';
@@ -368,10 +360,7 @@ export const formatDate = (date?: string) => {
 export const optionalDate = (date?: string) => (date ? formatDate(date) : undefined);
 export const optionalCurrency = (value?: number) => (typeof value === 'number' ? formatCurrency(value) : undefined);
 
-export const MAINTENANCE_TABS = ['overview', 'assets', 'vehicles', 'reminders', 'logs'] as const;
-export type MaintenanceTab = typeof MAINTENANCE_TABS[number];
-export const isMaintenanceTab = (value: string | null): value is MaintenanceTab =>
-  Boolean(value && (MAINTENANCE_TABS as readonly string[]).includes(value));
+export { MAINTENANCE_TABS, isMaintenanceTab, type MaintenanceTab } from '@/lib/maintenance/deep-link';
 
 export const humanizeLabel = (status: string) => {
   return status.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
