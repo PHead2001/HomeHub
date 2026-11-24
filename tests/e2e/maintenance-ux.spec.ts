@@ -243,10 +243,16 @@ test.describe('maintenance center UX', () => {
     // One minute before midnight on Aug 1 in the household's zone (the seed household has none,
     // so the server default, America/Chicago: midnight is 05:00 UTC). The clock is installed, not
     // fixed, so the page's timer to the next household midnight runs.
+    // Reduced motion: a leaving card is removed at once instead of animating out on the
+    // installed clock (the animation is not what this test checks).
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.clock.install({ time: new Date('2026-08-02T04:59:00.000Z') });
     await page.goto('/maintenance?tab=reminders');
     await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
-    const filterIn = (testId: string) => page.getByTestId(testId).getByRole('listitem').filter({ hasText: 'Replace air filter' });
+    // The HVAC unit's own filter: other specs in the same shard can add another
+    // "Replace air filter" schedule to the seeded household.
+    const filterIn = (testId: string) => page.getByTestId(testId).getByRole('listitem')
+      .filter({ hasText: 'Replace air filter' }).filter({ hasText: 'Main HVAC System' });
     // The HVAC filter is due Aug 1: due today, so in Due Soon.
     await expect(filterIn('reminders-due-soon')).toHaveCount(1);
     await expect(filterIn('reminders-overdue')).toHaveCount(0);
