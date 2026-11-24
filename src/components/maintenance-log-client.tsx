@@ -4,23 +4,21 @@ import * as React from 'react';
 import { buildMaintenanceReminders, type MaintenanceReminder } from '@functions/shared/maintenance-reminders';
 import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { isAfter, subDays } from 'date-fns';
 import {
   AlertCircle,
-  CalendarDays,
   
   
   
   
   
   
-  Loader2,
+  
+  
   
   Plus,
   
-  Wrench,
+  
 } from 'lucide-react';
 import { summarizeMaintenanceLog } from '@/ai/flows/summarize-maintenance-log';
 import { AiClientError, getAiActionContext, unwrapAiActionResult } from '@/ai/client';
@@ -38,33 +36,10 @@ import {
   parseNotificationDoc,
 } from '@/lib/notifications';
 import { EmptyState } from '@/components/empty-state';
-import { FieldError, fieldErrorProps } from '@/components/field-error';
 import {  type MarkDoneResult, type ReminderBusy } from '@/components/maintenance/reminder-list';
 import { useInPageMorph } from '@/components/shopping/use-in-page-morph';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent,  CardHeader } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs,  TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuth } from '@/hooks/use-auth';
@@ -74,9 +49,9 @@ import { notificationsBySourceQuery } from '@/app/notifications/notification-que
 import { playFeedback } from '@/lib/feedback';
 import { computeHomeHealth,  type HealthDeduction } from '@/lib/maintenance/health';
 import {
-  calculateNextAssetDueDate,
-  calculateNextVehicleDueDate,
-  calculateNextVehicleMileage,
+  
+  
+  
   findReminderSchedule,
   
   
@@ -113,7 +88,7 @@ import {
   refusalMessage,
 } from '@/components/maintenance/maintenance-action-client';
 import { createPendingRequests } from '@/lib/maintenance/action-call';
-import { MAX_MILEAGE, cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type StoredSchedule } from '@/lib/maintenance/operations';
+import { cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type StoredSchedule } from '@/lib/maintenance/operations';
 import { publicDisplayName } from '@/lib/member-directory';
 import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
@@ -123,15 +98,18 @@ import { LogsTab } from '@/components/maintenance/logs-tab';
 import { OverviewTab } from '@/components/maintenance/overview-tab';
 import { RemindersTab } from '@/components/maintenance/reminders-tab';
 import { VehiclesTab } from '@/components/maintenance/vehicles-tab';
-import { AutoResizeTextarea,  MileageWarning, SaveNotice } from '@/components/maintenance/page-parts';
+import { AssetDialog, VehicleDialog } from '@/components/maintenance/record-dialogs';
+import { LogDialog, type LogFormHandle } from '@/components/maintenance/log-dialog';
+import { MileageDialog, ScheduleCompletionDialog, type CompletionFormHandle } from '@/components/maintenance/completion-dialogs';
+import { DeleteDialogs } from '@/components/maintenance/delete-dialogs';
 import {
-  assetCategories, assetFormFromRecord, assetScheduleToForm, assetStatuses, assetValuesOf, emptyAssetForm, emptyLogForm,
-  emptyScheduleCompletionForm, emptyVehicleForm, formatDate, frequencyTypes, getAttachmentsForTarget, getLogTargetType, getLogTitle,
-  humanizeLabel, isMaintenanceTab, logFormFromRecord, logSchema, logTypes, logValuesOf,  
-    assetSchema, scheduleCompletionSchema, vehicleFormFromRecord, vehicleScheduleToForm, vehicleSchema,
-  vehicleStatuses, vehicleValuesOf, createLocalId, sanitizeFileName, cleanForFirestore, parseLogDate, toNumber, trimOptional, todayInputValue,
-  type AssetFormValues, type AssetScheduleForm, type AssetValues, type LogFormValues, type LogPreset, type LogValues, type MaintenanceTab,
-  type SaveNoticeState, type ScheduleCompletionFormValues, type ScheduleRemovalTarget, type VehicleFormValues, type VehicleScheduleForm,
+        
+   formatDate,  getAttachmentsForTarget, getLogTargetType, 
+   isMaintenanceTab,    logValuesOf,  
+        
+    createLocalId, sanitizeFileName, cleanForFirestore, parseLogDate, toNumber, trimOptional,
+    type AssetValues, type LogFormValues, type LogPreset, type LogValues, type MaintenanceTab,
+  type SaveNoticeState, getScheduleCompletionName, type ScheduleCompletionFormValues,   
   type VehicleValues,
 } from '@/components/maintenance/page-model';
 
@@ -180,24 +158,18 @@ export function MaintenanceLogClient() {
   const [assetToDelete, setAssetToDelete] = useState<HomeAsset | null>(null);
   const [vehicleToDelete, setVehicleToDelete] = useState<Vehicle | null>(null);
   const [attachmentToDelete, setAttachmentToDelete] = useState<MaintenanceAttachment | null>(null);
-  const [scheduleToRemove, setScheduleToRemove] = useState<ScheduleRemovalTarget | null>(null);
   const [deletingRecord, setDeletingRecord] = useState<string | null>(null);
   const [scheduleCompletionTarget, setScheduleCompletionTarget] = useState<ScheduleCompletionTarget | null>(null);
   /** The schedule a "Log service" log completes when saved (D16). */
   const [logScheduleTarget, setLogScheduleTarget] = useState<ScheduleCompletionTarget | null>(null);
-  const [assetScheduleForms, setAssetScheduleForms] = useState<AssetScheduleForm[]>([]);
-  const [vehicleScheduleForms, setVehicleScheduleForms] = useState<VehicleScheduleForm[]>([]);
-  const [assetScheduleErrors, setAssetScheduleErrors] = useState<Record<string, string>>({});
-  const [vehicleScheduleErrors, setVehicleScheduleErrors] = useState<Record<string, string>>({});
+  const [logPreset, setLogPreset] = useState<LogPreset | undefined>(undefined);
+  // Bumped on every dialog opening: the dialog's form starts over from the record as it is then.
+  const [dialogSession, setDialogSession] = useState(0);
   const [showInactiveVehicles, setShowInactiveVehicles] = useState(false);
   const [uploadingAttachmentTarget, setUploadingAttachmentTarget] = useState<string | null>(null);
   const [deletingAttachmentId, setDeletingAttachmentId] = useState<string | null>(null);
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [loadingSummaries, setLoadingSummaries] = useState<Record<string, boolean>>({});
-  // What each edit form showed when it opened (`base`): the server writes only what differs.
-  const [assetBase, setAssetBase] = useState<AssetValues | null>(null);
-  const [vehicleBase, setVehicleBase] = useState<VehicleValues | null>(null);
-  const [logBase, setLogBase] = useState<LogValues | null>(null);
   // Requests in flight, by form or card action: their buttons are disabled with a spinner.
   const [inFlight, setInFlight] = useState<Record<string, boolean>>({});
   const inFlightRef = useRef(new Set<string>());
@@ -211,31 +183,13 @@ export function MaintenanceLogClient() {
   const [mileageCheck, setMileageCheck] = useState<{ key: string; reading: number; message: string } | null>(null);
   // Confirm mileage (MA-6a): Mark done on a service due by mileage asks for the odometer.
   const [mileageTarget, setMileageTarget] = useState<Extract<ScheduleCompletionTarget, { targetType: 'vehicle' }> | null>(null);
-  const [mileageInput, setMileageInput] = useState('');
-  const [mileageInputError, setMileageInputError] = useState<string | null>(null);
   // Bumped by a successful Undo: the reminder lists start over, so the reopened cycle's
   // card (same cycle key as the one that was checked) shows unchecked with its actions.
   const [reminderListEpoch, setReminderListEpoch] = useState(0);
 
-  const assetForm = useForm<AssetFormValues>({
-    resolver: zodResolver(assetSchema),
-    defaultValues: emptyAssetForm,
-  });
 
-  const vehicleForm = useForm<VehicleFormValues>({
-    resolver: zodResolver(vehicleSchema),
-    defaultValues: emptyVehicleForm,
-  });
 
-  const logForm = useForm<LogFormValues>({
-    resolver: zodResolver(logSchema),
-    defaultValues: emptyLogForm(),
-  });
 
-  const scheduleCompletionForm = useForm<ScheduleCompletionFormValues>({
-    resolver: zodResolver(scheduleCompletionSchema),
-    defaultValues: emptyScheduleCompletionForm(),
-  });
 
   const getCollectionRef = useCallback((collectionName: 'home-assets' | 'vehicles' | 'maintenance' | 'maintenance-attachments' | 'notifications') => {
     if (!currentUser?.householdId) return null;
@@ -571,141 +525,50 @@ export function MaintenanceLogClient() {
 
   const openAssetDialog = (asset?: HomeAsset) => {
     setEditingAsset(asset || null);
-    const form = asset ? assetFormFromRecord(asset) : emptyAssetForm;
-    const scheduleForms = asset?.schedules?.map(assetScheduleToForm) || [];
-    assetForm.reset(form);
-    setAssetScheduleForms(scheduleForms);
-    // What the form showed when it opened: only fields that differ from it are saved (MA-3c).
-    setAssetBase(asset ? assetValuesOf(form, scheduleForms) : null);
-    setAssetScheduleErrors({});
     clearNotice('asset');
     discardPending('asset');
+    setDialogSession(session => session + 1);
     setAssetDialogOpen(true);
   };
 
   const openVehicleDialog = (vehicle?: Vehicle) => {
     setEditingVehicle(vehicle || null);
-    const form = vehicle ? vehicleFormFromRecord(vehicle) : emptyVehicleForm;
-    const scheduleForms = vehicle?.serviceSchedules?.map(vehicleScheduleToForm) || [];
-    vehicleForm.reset(form);
-    setVehicleScheduleForms(scheduleForms);
-    setVehicleBase(vehicle ? vehicleValuesOf(form, scheduleForms) : null);
-    setVehicleScheduleErrors({});
     clearNotice('vehicle');
     discardPending('vehicle');
     setMileageCheck(null);
+    setDialogSession(session => session + 1);
     setVehicleDialogOpen(true);
   };
 
   const openLogDialog = (preset?: LogPreset, log?: MaintenanceLog, schedule: ScheduleCompletionTarget | null = null) => {
     setEditingLog(log || null);
+    setLogPreset(preset);
     setLogScheduleTarget(log ? null : schedule);
-    const form = log ? logFormFromRecord(log) : emptyLogForm(preset);
-    logForm.reset(form);
-    setLogBase(log ? logValuesOf(form) : null);
     clearNotice('log');
     discardPending('log');
     setMileageCheck(null);
+    setDialogSession(session => session + 1);
     setLogDialogOpen(true);
   };
 
-  const addAssetSchedule = () => {
-    setAssetScheduleForms(prev => [...prev, assetScheduleToForm()]);
-  };
 
-  const updateAssetSchedule = (id: string, field: keyof Omit<AssetScheduleForm, 'id'>, value: string) => {
-    setAssetScheduleForms(prev => prev.map(schedule => (
-      schedule.id === id ? { ...schedule, [field]: value } : schedule
-    )));
-    setAssetScheduleErrors(prev => ({ ...prev, [id]: '' }));
-  };
 
-  const removeAssetSchedule = (id: string) => {
-    setAssetScheduleForms(prev => prev.filter(schedule => schedule.id !== id));
-    setAssetScheduleErrors(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  };
 
-  const requestAssetScheduleRemoval = (schedule: AssetScheduleForm) => {
-    setScheduleToRemove({
-      targetType: 'home_asset',
-      id: schedule.id,
-      name: schedule.scheduleName.trim() || 'this maintenance item',
-    });
-  };
 
-  const addVehicleSchedule = () => {
-    setVehicleScheduleForms(prev => [...prev, vehicleScheduleToForm()]);
-  };
 
-  const updateVehicleSchedule = (id: string, field: keyof Omit<VehicleScheduleForm, 'id'>, value: string) => {
-    setVehicleScheduleForms(prev => prev.map(schedule => (
-      schedule.id === id ? { ...schedule, [field]: value } : schedule
-    )));
-    setVehicleScheduleErrors(prev => ({ ...prev, [id]: '' }));
-  };
 
-  const removeVehicleSchedule = (id: string) => {
-    setVehicleScheduleForms(prev => prev.filter(schedule => schedule.id !== id));
-    setVehicleScheduleErrors(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  };
 
-  const requestVehicleScheduleRemoval = (schedule: VehicleScheduleForm) => {
-    setScheduleToRemove({
-      targetType: 'vehicle',
-      id: schedule.id,
-      name: schedule.serviceName.trim() || 'this service item',
-    });
-  };
 
-  const confirmScheduleRemoval = () => {
-    if (!scheduleToRemove) return;
-    if (scheduleToRemove.targetType === 'home_asset') removeAssetSchedule(scheduleToRemove.id);
-    else removeVehicleSchedule(scheduleToRemove.id);
-    setScheduleToRemove(null);
-  };
 
-  const getScheduleCompletionName = (target: ScheduleCompletionTarget) => {
-    return target.targetType === 'home_asset'
-      ? target.schedule.scheduleName || 'Scheduled maintenance'
-      : target.schedule.serviceName || 'Scheduled maintenance';
-  };
 
   const openScheduleCompletionDialog = (target: ScheduleCompletionTarget) => {
-    const completedDate = todayInputValue();
-    const completedMileage = target.targetType === 'vehicle'
-      ? target.vehicle.currentMileage?.toString() || target.schedule.lastCompletedMileage?.toString() || ''
-      : '';
-
-    scheduleCompletionForm.reset({
-      completedDate,
-      mileage: completedMileage,
-      nextDueDate: target.targetType === 'home_asset'
-        ? calculateNextAssetDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || ''
-        : calculateNextVehicleDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || '',
-      nextDueMileage: target.targetType === 'vehicle'
-        ? calculateNextVehicleMileage(target.schedule, toNumber(completedMileage))?.toString() || target.schedule.nextDueMileage?.toString() || ''
-        : '',
-      notes: '',
-    });
     setMileageCheck(null);
     clearNotice('complete');
     discardPending('complete');
+    setDialogSession(session => session + 1);
     setScheduleCompletionTarget(target);
   };
 
-  // Moves focus to the first schedule with a problem (its name field) on submit.
-  const focusScheduleField = (kind: 'asset' | 'vehicle', scheduleId?: string) => {
-    if (!scheduleId) return;
-    requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-schedule-name="${kind}-${CSS.escape(scheduleId)}"]`)?.focus());
-  };
 
   /* ------------------------------------------------------------------------ */
   /* Server operations (M1): every save, completion and snooze goes through    */
@@ -893,26 +756,13 @@ export function MaintenanceLogClient() {
     }, options.surface);
   };
 
-  const saveAsset = async (values: AssetFormValues) => {
+  const saveAsset = async ({ base, values }: { base?: AssetValues; values: AssetValues }) => {
     if (!currentUser?.householdId) return;
-    const nextAssetScheduleErrors = Object.fromEntries(assetScheduleForms.flatMap((schedule) => {
-      if (!schedule.scheduleName.trim()) return [[schedule.id, 'Enter a name for this maintenance item.']];
-      if (schedule.mode === 'checklist') return [];
-      if (!(schedule.frequencyType && toNumber(schedule.intervalValue)) && !schedule.nextDueDate) {
-        return [[schedule.id, 'Scheduled maintenance needs a frequency interval or next due date.']];
-      }
-      return [];
-    }));
-    if (Object.keys(nextAssetScheduleErrors).length > 0) {
-      setAssetScheduleErrors(nextAssetScheduleErrors);
-      focusScheduleField('asset', Object.keys(nextAssetScheduleErrors)[0]);
-      return;
-    }
     const editing = editingAsset;
     const save: { opId: string; id?: string; base?: AssetValues; values: AssetValues } = {
       opId: newOpId(),
-      ...(editing ? { id: editing.id, base: assetBase ?? undefined } : {}),
-      values: assetValuesOf(values, assetScheduleForms),
+      ...(editing ? { id: editing.id, base } : {}),
+      values,
     };
     await runOp('asset', save.opId, context => saveHomeAsset({ ...context, save }), async (result) => {
       setAssetDialogOpen(false);
@@ -922,33 +772,15 @@ export function MaintenanceLogClient() {
     }, 'dialog');
   };
 
-  const saveVehicle = async (values: VehicleFormValues) => {
+  const saveVehicle = async ({ base, values: vehicleValues }: { base?: VehicleValues; values: VehicleValues }) => {
     if (!currentUser?.householdId) return;
-    const nextVehicleScheduleErrors = Object.fromEntries(vehicleScheduleForms.flatMap((schedule) => {
-      if (!schedule.serviceName.trim()) return [[schedule.id, 'Enter a name for this service item.']];
-      if (schedule.mode === 'checklist') return [];
-      const hasDueMechanism = Boolean(
-        toNumber(schedule.intervalMiles)
-        || toNumber(schedule.intervalMonths)
-        || toNumber(schedule.nextDueMileage)
-        || schedule.nextDueDate
-      );
-      if (!hasDueMechanism) return [[schedule.id, 'Scheduled service needs a date, mileage, or interval.']];
-      return [];
-    }));
-    if (Object.keys(nextVehicleScheduleErrors).length > 0) {
-      setVehicleScheduleErrors(nextVehicleScheduleErrors);
-      focusScheduleField('vehicle', Object.keys(nextVehicleScheduleErrors)[0]);
-      return;
-    }
     const editing = editingVehicle;
-    const vehicleValues = vehicleValuesOf(values, vehicleScheduleForms);
     // An edited odometer below (or far above) the recorded one asks first.
     if (editing && vehicleValues.currentMileage !== editing.currentMileage
       && !mileageConfirmed('vehicle', vehicleValues.currentMileage, editing.currentMileage)) return;
     const save: { opId: string; id?: string; base?: VehicleValues; values: VehicleValues } = {
       opId: newOpId(),
-      ...(editing ? { id: editing.id, base: vehicleBase ?? undefined } : {}),
+      ...(editing ? { id: editing.id, base } : {}),
       values: vehicleValues,
     };
     await runOp('vehicle', save.opId, context => saveVehicleAction({ ...context, save }), async (result) => {
@@ -960,25 +792,10 @@ export function MaintenanceLogClient() {
     }, 'dialog');
   };
 
-  const saveLog = async (values: LogFormValues) => {
+  const saveLog = async ({ values, base }: { values: LogFormValues; base?: LogValues }, form: LogFormHandle) => {
     if (!currentUser?.householdId) return;
 
-    // Field problems are shown under the field (FormMessage), never as a toast.
-    if (values.targetType === 'home_asset' && !values.assetId) {
-      logForm.setError('assetId', { message: 'Choose a home asset or switch the log to general.' }, { shouldFocus: true });
-      return;
-    }
-
-    if (values.targetType === 'vehicle' && !values.vehicleId) {
-      logForm.setError('vehicleId', { message: 'Choose a vehicle or switch the log to general.' }, { shouldFocus: true });
-      return;
-    }
-
     const reading = values.targetType === 'vehicle' ? toNumber(values.mileage) : undefined;
-    if (typeof reading === 'number' && (!Number.isInteger(reading) || reading < 0 || reading > MAX_MILEAGE)) {
-      logForm.setError('mileage', { message: 'Enter the mileage as a whole number.' }, { shouldFocus: true });
-      return;
-    }
     const logVehicle = values.targetType === 'vehicle' ? vehicles.find(vehicle => vehicle.id === values.vehicleId) : undefined;
     const readingChanged = !editingLog || reading !== editingLog.mileage;
     if (readingChanged && !mileageConfirmed('log', reading, logVehicle?.currentMileage)) return;
@@ -997,7 +814,7 @@ export function MaintenanceLogClient() {
       // the only way to miss is a cleared mileage on a mileage-interval service).
       const completion = serviceCompletionValues(linked, values.date, linked.targetType === 'vehicle' ? reading : undefined);
       if (!completion) {
-        logForm.setError('mileage', { message: 'Enter the mileage so the next service can be scheduled.' }, { shouldFocus: true });
+        form.setError('mileage', 'Enter the mileage so the next service can be scheduled.');
         return;
       }
       await completeSchedule('log', linked, { ...completion, notes: values.notes }, {
@@ -1017,7 +834,7 @@ export function MaintenanceLogClient() {
         },
         onRefused: reason => {
           const field = refusalField(reason);
-          logForm.setError(field === 'completedDate' ? 'date' : 'mileage', { message: refusalMessage(reason) }, { shouldFocus: true });
+          form.setError(field === 'completedDate' ? 'date' : 'mileage', refusalMessage(reason));
         },
       });
       return;
@@ -1026,7 +843,7 @@ export function MaintenanceLogClient() {
     const editing = editingLog;
     const save: { opId: string; id?: string; base?: LogValues; values: LogValues } = {
       opId: newOpId(),
-      ...(editing ? { id: editing.id, base: logBase ?? undefined } : {}),
+      ...(editing ? { id: editing.id, base } : {}),
       values: logValuesOf(values),
     };
     await runOp('log', save.opId, context => saveMaintenanceLog({ ...context, save }), async () => {
@@ -1038,14 +855,10 @@ export function MaintenanceLogClient() {
     }, 'dialog');
   };
 
-  const completeScheduledMaintenance = async (values: ScheduleCompletionFormValues) => {
+  const completeScheduledMaintenance = async (values: ScheduleCompletionFormValues, form: CompletionFormHandle) => {
     if (!scheduleCompletionTarget) return;
     const target = scheduleCompletionTarget;
     const mileage = target.targetType === 'vehicle' ? toNumber(values.mileage) : undefined;
-    if (typeof mileage === 'number' && (!Number.isInteger(mileage) || mileage < 0 || mileage > MAX_MILEAGE)) {
-      scheduleCompletionForm.setError('mileage', { message: 'Enter the mileage as a whole number.' }, { shouldFocus: true });
-      return;
-    }
     if (target.targetType === 'vehicle' && !mileageConfirmed('complete', mileage, target.vehicle.currentMileage)) return;
     await completeSchedule('complete', target, {
       completedDate: values.completedDate,
@@ -1058,10 +871,9 @@ export function MaintenanceLogClient() {
       toastTitle: 'Scheduled maintenance completed',
       settled: () => {
         setScheduleCompletionTarget(null);
-        scheduleCompletionForm.reset(emptyScheduleCompletionForm());
         setMileageCheck(null);
       },
-      onRefused: reason => scheduleCompletionForm.setError(refusalField(reason), { message: refusalMessage(reason) }, { shouldFocus: true }),
+      onRefused: reason => form.setError(refusalField(reason), refusalMessage(reason)),
     });
   };
 
@@ -1087,8 +899,7 @@ export function MaintenanceLogClient() {
     setMileageCheck(null);
     clearNotice('mileage');
     discardPending('mileage');
-    setMileageInput(typeof target.vehicle.currentMileage === 'number' ? String(target.vehicle.currentMileage) : '');
-    setMileageInputError(null);
+    setDialogSession(session => session + 1);
     setMileageTarget(target);
   };
 
@@ -1121,15 +932,9 @@ export function MaintenanceLogClient() {
     }
   };
 
-  const submitMileageConfirm = async () => {
+  const submitMileageConfirm = async (reading: number, setMileageInputError: (message: string) => void) => {
     const target = mileageTarget;
     if (!target) return;
-    const reading = Number(mileageInput.trim());
-    if (!mileageInput.trim() || !Number.isInteger(reading) || reading < 0 || reading > MAX_MILEAGE) {
-      setMileageInputError('Enter the odometer reading as a whole number.');
-      return;
-    }
-    setMileageInputError(null);
     if (!mileageConfirmed('mileage', reading, target.vehicle.currentMileage)) return;
     const values = serviceCompletionValues(target, today, reading);
     if (!values) {
@@ -1573,734 +1378,102 @@ export function MaintenanceLogClient() {
         </Tabs>
       </div>
 
-      <Dialog open={assetDialogOpen} onOpenChange={(open) => {
-        if (!open && !closable('asset')) return;
-        setAssetDialogOpen(open);
-        if (!open) setAssetScheduleForms([]);
-      }}>
-        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-3xl flex-col overflow-hidden p-0">
-          <DialogHeader className="px-6 pb-0 pr-10 pt-6">
-            <DialogTitle>{editingAsset ? 'Edit Home Asset' : 'Add Home Asset'}</DialogTitle>
-            <DialogDescription>Track core asset details and schedule-ready maintenance metadata.</DialogDescription>
-          </DialogHeader>
-          <Form {...assetForm}>
-            <form onSubmit={assetForm.handleSubmit(saveAsset)} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
-                <div className="grid gap-4 pb-2 sm:grid-cols-2">
-                  <FormField control={assetForm.control} name="name" render={({ field }) => (
-                    <FormItem><FormLabel>Name</FormLabel><FormControl><Input placeholder="Dishwasher" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="category" render={({ field }) => (
-                    <FormItem><FormLabel>Category</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{assetCategories.map(category => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="location" render={({ field }) => (
-                    <FormItem><FormLabel>Location / Room</FormLabel><FormControl><Input placeholder="Kitchen" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="status" render={({ field }) => (
-                    <FormItem><FormLabel>Status</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{assetStatuses.map(status => <SelectItem key={status} value={status}>{humanizeLabel(status)}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="brand" render={({ field }) => (
-                    <FormItem><FormLabel>Brand</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="model" render={({ field }) => (
-                    <FormItem><FormLabel>Model</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="serialNumber" render={({ field }) => (
-                    <FormItem><FormLabel>Serial Number</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="purchasePrice" render={({ field }) => (
-                    <FormItem><FormLabel>Purchase Price</FormLabel><FormControl><Input type="number" min="0" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="purchaseDate" render={({ field }) => (
-                    <FormItem><FormLabel>Purchase Date</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="warrantyExpiration" render={({ field }) => (
-                    <FormItem><FormLabel>Warranty Expiration</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="warrantyProvider" render={({ field }) => (
-                    <FormItem className="sm:col-span-2"><FormLabel>Warranty Provider</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={assetForm.control} name="notes" render={({ field }) => (
-                    <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={3} placeholder="Install details, filters, shutoff location, or service context." {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                </div>
-                <div className="mt-3 rounded-lg border p-3">
-                  <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      <CalendarDays className="h-4 w-4" />
-                      Scheduled maintenance
-                    </div>
-                    <Button type="button" variant="outline" size="sm" onClick={addAssetSchedule}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Add scheduled maintenance
-                    </Button>
-                  </div>
-                  {assetScheduleForms.length === 0 ? (
-                    <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                      No scheduled maintenance yet.
-                    </p>
-                  ) : (
-                    <div className="space-y-3">
-                      {assetScheduleForms.map((schedule, index) => (
-                        <div key={schedule.id} className="rounded-md border p-3">
-                          <div className="mb-3 flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium">Maintenance item #{index + 1}</p>
-                            <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" aria-label={`Remove asset maintenance ${schedule.scheduleName || `item ${index + 1}`}`} onClick={() => requestAssetScheduleRemoval(schedule)}>
-                              Remove
-                            </Button>
-                          </div>
-                          <div className="grid gap-4 sm:grid-cols-2">
-                            <FormItem>
-                              <FormLabel>Schedule Name</FormLabel>
-                              <FormControl>
-                                <Input
-                                  placeholder="Filter replacement"
-                                  data-schedule-name={`asset-${schedule.id}`}
-                                  aria-invalid={assetScheduleErrors[schedule.id] ? true : undefined}
-                                  aria-describedby={assetScheduleErrors[schedule.id] ? fieldErrorProps(`asset-schedule-${schedule.id}`, true)['aria-describedby'] : undefined}
-                                  value={schedule.scheduleName}
-                                  onChange={(event) => updateAssetSchedule(schedule.id, 'scheduleName', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Maintenance Type</FormLabel>
-                              <Select
-                                onValueChange={(value) => updateAssetSchedule(schedule.id, 'mode', value)}
-                                value={schedule.mode}
-                              >
-                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                                <SelectContent>
-                                  <SelectItem value="scheduled">Scheduled maintenance</SelectItem>
-                                  <SelectItem value="checklist">Unscheduled checklist</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </FormItem>
-                            {schedule.mode === 'scheduled' && (
-                              <>
-                            <FormItem>
-                              <FormLabel>Frequency Type</FormLabel>
-                              <Select
-                                onValueChange={(value) => updateAssetSchedule(schedule.id, 'frequencyType', value)}
-                                value={schedule.frequencyType}
-                              >
-                                <FormControl>
-                                  <SelectTrigger><SelectValue placeholder="Select frequency" /></SelectTrigger>
-                                </FormControl>
-                                <SelectContent>
-                                  {frequencyTypes.map(type => <SelectItem key={type} value={type}>{type}</SelectItem>)}
-                                </SelectContent>
-                              </Select>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Interval Value</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="number"
-                                  min="1"
-                                  value={schedule.intervalValue}
-                                  onChange={(event) => updateAssetSchedule(schedule.id, 'intervalValue', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Last Completed</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="date"
-                                  value={schedule.lastCompletedDate}
-                                  onChange={(event) => updateAssetSchedule(schedule.id, 'lastCompletedDate', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Next Due</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="date"
-                                  value={schedule.nextDueDate}
-                                  onChange={(event) => updateAssetSchedule(schedule.id, 'nextDueDate', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                              </>
-                            )}
-                          </div>
-                          <FieldError id={`asset-schedule-${schedule.id}`} className="mt-3">{assetScheduleErrors[schedule.id]}</FieldError>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" disabled={Boolean(inFlight.asset)} onClick={() => setAssetDialogOpen(false)}>Cancel</Button>
-                <Button type="submit" disabled={Boolean(inFlight.asset)}>
-                  {inFlight.asset && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
-                  Save Asset
-                </Button>
-              </DialogFooter>
-              <SaveNotice notice={notices.asset} busy={Boolean(inFlight.asset)} />
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
+      <AssetDialog
+        open={assetDialogOpen}
+        session={dialogSession}
+        record={editingAsset}
+        busy={Boolean(inFlight.asset)}
+        notice={notices.asset}
+        onOpenChange={(open) => {
+          if (!open && !closable('asset')) return;
+          setAssetDialogOpen(open);
+        }}
+        onSave={saveAsset}
+      />
 
-      <Dialog open={vehicleDialogOpen} onOpenChange={(open) => {
-        if (!open && !closable('vehicle')) return;
-        setVehicleDialogOpen(open);
-        if (!open) setVehicleScheduleForms([]);
-      }}>
-        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-3xl flex-col overflow-hidden p-0">
-          <DialogHeader className="px-6 pb-0 pr-10 pt-6">
-            <DialogTitle>{editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}</DialogTitle>
-            <DialogDescription>Track vehicle details and schedule-ready service metadata.</DialogDescription>
-          </DialogHeader>
-          <Form {...vehicleForm}>
-            <form onSubmit={vehicleForm.handleSubmit(saveVehicle)} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
-                <div className="grid gap-4 pb-2 sm:grid-cols-2">
-                  <FormField control={vehicleForm.control} name="nickname" render={({ field }) => (
-                    <FormItem><FormLabel>Nickname</FormLabel><FormControl><Input placeholder="Family SUV" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="status" render={({ field }) => (
-                    <FormItem><FormLabel>Status</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{vehicleStatuses.map(status => <SelectItem key={status} value={status}>{humanizeLabel(status)}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="year" render={({ field }) => (
-                    <FormItem><FormLabel>Year</FormLabel><FormControl><Input type="number" min="1900" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="make" render={({ field }) => (
-                    <FormItem><FormLabel>Make</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="model" render={({ field }) => (
-                    <FormItem><FormLabel>Model</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="trim" render={({ field }) => (
-                    <FormItem><FormLabel>Trim</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="vin" render={({ field }) => (
-                    <FormItem><FormLabel>VIN</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="licensePlate" render={({ field }) => (
-                    <FormItem><FormLabel>License Plate</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="currentMileage" render={({ field }) => (
-                    <FormItem><FormLabel>Current Mileage</FormLabel><FormControl><Input type="number" min="0" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="purchasePrice" render={({ field }) => (
-                    <FormItem><FormLabel>Purchase Price</FormLabel><FormControl><Input type="number" min="0" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="purchaseDate" render={({ field }) => (
-                    <FormItem><FormLabel>Purchase Date</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="insuranceProvider" render={({ field }) => (
-                    <FormItem><FormLabel>Insurance Provider</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="registrationExpiration" render={({ field }) => (
-                    <FormItem><FormLabel>Registration Expiration</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="inspectionExpiration" render={({ field }) => (
-                    <FormItem><FormLabel>Inspection Expiration</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={vehicleForm.control} name="notes" render={({ field }) => (
-                    <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={3} placeholder="Service preferences, tire size, warranty notes, or ownership context." {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                </div>
-                <div className="mt-3 rounded-lg border p-3">
-                  <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      <Wrench className="h-4 w-4" />
-                      Scheduled maintenance
-                    </div>
-                    <Button type="button" variant="outline" size="sm" onClick={addVehicleSchedule}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Add scheduled maintenance
-                    </Button>
-                  </div>
-                  {vehicleScheduleForms.length === 0 ? (
-                    <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                      No scheduled maintenance yet.
-                    </p>
-                  ) : (
-                    <div className="space-y-3">
-                      {vehicleScheduleForms.map((schedule, index) => (
-                        <div key={schedule.id} className="rounded-md border p-3">
-                          <div className="mb-3 flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium">Service item #{index + 1}</p>
-                            <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" aria-label={`Remove vehicle service ${schedule.serviceName || `item ${index + 1}`}`} onClick={() => requestVehicleScheduleRemoval(schedule)}>
-                              Remove
-                            </Button>
-                          </div>
-                          <div className="grid gap-4 sm:grid-cols-2">
-                            <FormItem>
-                              <FormLabel>Service Name</FormLabel>
-                              <FormControl>
-                                <Input
-                                  placeholder="Brake fluid flush"
-                                  data-schedule-name={`vehicle-${schedule.id}`}
-                                  aria-invalid={vehicleScheduleErrors[schedule.id] ? true : undefined}
-                                  aria-describedby={vehicleScheduleErrors[schedule.id] ? fieldErrorProps(`vehicle-schedule-${schedule.id}`, true)['aria-describedby'] : undefined}
-                                  value={schedule.serviceName}
-                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'serviceName', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Maintenance Type</FormLabel>
-                              <Select
-                                onValueChange={(value) => updateVehicleSchedule(schedule.id, 'mode', value)}
-                                value={schedule.mode}
-                              >
-                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                                <SelectContent>
-                                  <SelectItem value="scheduled">Scheduled maintenance</SelectItem>
-                                  <SelectItem value="checklist">Unscheduled checklist</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </FormItem>
-                            {schedule.mode === 'scheduled' && (
-                              <>
-                            <FormItem>
-                              <FormLabel>Interval Miles</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  value={schedule.intervalMiles}
-                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'intervalMiles', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Interval Months</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  value={schedule.intervalMonths}
-                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'intervalMonths', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Last Completed Mileage</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  value={schedule.lastCompletedMileage}
-                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'lastCompletedMileage', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Last Completed Date</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="date"
-                                  value={schedule.lastCompletedDate}
-                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'lastCompletedDate', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Next Due Mileage</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  value={schedule.nextDueMileage}
-                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'nextDueMileage', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                            <FormItem>
-                              <FormLabel>Next Due Date</FormLabel>
-                              <FormControl>
-                                <Input
-                                  type="date"
-                                  value={schedule.nextDueDate}
-                                  onChange={(event) => updateVehicleSchedule(schedule.id, 'nextDueDate', event.target.value)}
-                                />
-                              </FormControl>
-                            </FormItem>
-                              </>
-                            )}
-                          </div>
-                          <FieldError id={`vehicle-schedule-${schedule.id}`} className="mt-3">{vehicleScheduleErrors[schedule.id]}</FieldError>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-              {mileageCheck?.key === 'vehicle' && (
-                <div className="px-6 pb-3">
-                  <MileageWarning message={mileageCheck.message} />
-                </div>
-              )}
-              <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" disabled={Boolean(inFlight.vehicle)} onClick={() => setVehicleDialogOpen(false)}>Cancel</Button>
-                <Button type="submit" disabled={Boolean(inFlight.vehicle)}>
-                  {inFlight.vehicle && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
-                  {mileageCheck?.key === 'vehicle' ? 'Save anyway' : 'Save Vehicle'}
-                </Button>
-              </DialogFooter>
-              <SaveNotice notice={notices.vehicle} busy={Boolean(inFlight.vehicle)} />
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
+      <VehicleDialog
+        open={vehicleDialogOpen}
+        session={dialogSession}
+        record={editingVehicle}
+        busy={Boolean(inFlight.vehicle)}
+        notice={notices.vehicle}
+        mileageMessage={mileageCheck?.key === 'vehicle' ? mileageCheck.message : undefined}
+        onOpenChange={(open) => {
+          if (!open && !closable('vehicle')) return;
+          setVehicleDialogOpen(open);
+        }}
+        onSave={saveVehicle}
+      />
 
-      <Dialog open={logDialogOpen} onOpenChange={(open) => {
-        if (!open && !closable('log')) return;
-        setLogDialogOpen(open);
-        if (!open) {
-          setEditingLog(null);
-          setLogScheduleTarget(null);
-        }
-      }}>
-        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-2xl flex-col overflow-hidden p-0">
-          <DialogHeader className="px-6 pb-0 pr-10 pt-6">
-            <DialogTitle>{editingLog ? 'Edit Maintenance Log' : 'Add Maintenance Log'}</DialogTitle>
-            <DialogDescription>
-              {logScheduleTarget
-                ? `Saving marks ${getScheduleCompletionName(logScheduleTarget)} done for ${logScheduleTarget.targetType === 'home_asset' ? logScheduleTarget.asset.name : logScheduleTarget.vehicle.nickname} and sets when it is next due.`
-                : 'Link a log to a home asset, vehicle, or keep it general.'}
-            </DialogDescription>
-          </DialogHeader>
-          <Form {...logForm}>
-            <form onSubmit={logForm.handleSubmit(saveLog)} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
-                <div className="grid gap-4 sm:grid-cols-2">
-                <FormField control={logForm.control} name="targetType" render={({ field }) => (
-                  <FormItem><FormLabel>Log For</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent><SelectItem value="general">General</SelectItem><SelectItem value="home_asset">Home Asset</SelectItem><SelectItem value="vehicle">Vehicle</SelectItem></SelectContent></Select><FormMessage /></FormItem>
-                )} />
-                {logForm.watch('targetType') === 'home_asset' && (
-                  <FormField control={logForm.control} name="assetId" render={({ field }) => (
-                    <FormItem><FormLabel>Home Asset</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue placeholder="Choose asset" /></SelectTrigger></FormControl><SelectContent>{assets.map(asset => <SelectItem key={asset.id} value={asset.id}>{asset.name}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
-                  )} />
-                )}
-                {logForm.watch('targetType') === 'vehicle' && (
-                  <FormField control={logForm.control} name="vehicleId" render={({ field }) => (
-                    <FormItem><FormLabel>Vehicle</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue placeholder="Choose vehicle" /></SelectTrigger></FormControl><SelectContent>{vehicles.map(vehicle => <SelectItem key={vehicle.id} value={vehicle.id}>{vehicle.nickname}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
-                  )} />
-                )}
-                <FormField control={logForm.control} name="title" render={({ field }) => (
-                  <FormItem className={logForm.watch('targetType') === 'general' ? 'sm:col-span-1' : 'sm:col-span-2'}><FormLabel>Title</FormLabel><FormControl><Input placeholder="Replaced air filter" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={logForm.control} name="date" render={({ field }) => (
-                  <FormItem><FormLabel>Date</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={logForm.control} name="type" render={({ field }) => (
-                  <FormItem><FormLabel>Type</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{logTypes.map(type => <SelectItem key={type} value={type}>{humanizeLabel(type)}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
-                )} />
-                <FormField control={logForm.control} name="cost" render={({ field }) => (
-                  <FormItem><FormLabel>Cost</FormLabel><FormControl><Input type="number" min="0" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={logForm.control} name="serviceProvider" render={({ field }) => (
-                  <FormItem><FormLabel>Service Provider</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                <FormField control={logForm.control} name="partsUsed" render={({ field }) => (
-                  <FormItem className={logForm.watch('targetType') === 'vehicle' ? '' : 'sm:col-span-2'}><FormLabel>Parts Used</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                {logForm.watch('targetType') === 'vehicle' && (
-                  <FormField control={logForm.control} name="mileage" render={({ field }) => (
-                    <FormItem><FormLabel>Mileage</FormLabel><FormControl><Input type="number" inputMode="numeric" min="0" step="1" {...field} /></FormControl><FormMessage /></FormItem>
-                  )} />
-                )}
-                <MileageWarning message={mileageCheck?.key === 'log' ? mileageCheck.message : undefined} />
-                <FormField control={logForm.control} name="notes" render={({ field }) => (
-                  <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={4} placeholder="Describe what happened, what was done, and any follow-up needed." {...field} /></FormControl><FormMessage /></FormItem>
-                )} />
-                </div>
-              </div>
-              <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" disabled={Boolean(inFlight.log)} onClick={() => setLogDialogOpen(false)}>Cancel</Button>
-                <Button type="submit" disabled={Boolean(inFlight.log)}>
-                  {inFlight.log && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
-                  {mileageCheck?.key === 'log' ? 'Save anyway' : editingLog ? 'Update Log' : 'Save Log'}
-                </Button>
-              </DialogFooter>
-              <SaveNotice notice={notices.log} busy={Boolean(inFlight.log)} />
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
+      <LogDialog
+        open={logDialogOpen}
+        session={dialogSession}
+        record={editingLog}
+        preset={logPreset}
+        scheduleTarget={logScheduleTarget}
+        assets={assets}
+        vehicles={vehicles}
+        today={today}
+        busy={Boolean(inFlight.log)}
+        notice={notices.log}
+        mileageMessage={mileageCheck?.key === 'log' ? mileageCheck.message : undefined}
+        onOpenChange={(open) => {
+          if (!open && !closable('log')) return;
+          setLogDialogOpen(open);
+          if (!open) {
+            setEditingLog(null);
+            setLogScheduleTarget(null);
+          }
+        }}
+        onSave={saveLog}
+      />
 
-      <Dialog open={!!scheduleCompletionTarget} onOpenChange={(open) => {
-        if (!open && !closable('complete')) return;
-        if (!open) {
-          setScheduleCompletionTarget(null);
-          scheduleCompletionForm.reset(emptyScheduleCompletionForm());
-        }
-      }}>
-        <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-xl flex-col overflow-hidden p-0">
-          <DialogHeader className="px-6 pb-0 pr-10 pt-6">
-            <DialogTitle>Complete Scheduled Maintenance</DialogTitle>
-            <DialogDescription>
-              Record the completed work and set when it should come up again.
-            </DialogDescription>
-          </DialogHeader>
-          <Form {...scheduleCompletionForm}>
-            <form onSubmit={scheduleCompletionForm.handleSubmit(completeScheduledMaintenance)} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
-                {scheduleCompletionTarget && (
-                  <div className="mb-4 rounded-lg border p-3">
-                    <p className="text-sm font-medium">{getScheduleCompletionName(scheduleCompletionTarget)}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {scheduleCompletionTarget.targetType === 'home_asset'
-                        ? scheduleCompletionTarget.asset.name
-                        : scheduleCompletionTarget.vehicle.nickname}
-                    </p>
-                  </div>
-                )}
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField control={scheduleCompletionForm.control} name="completedDate" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Completed Date</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="date"
-                          {...field}
-                          onChange={(event) => {
-                            field.onChange(event);
-                            const completedDate = event.target.value;
-                            if (!scheduleCompletionTarget || !completedDate) return;
-                            const nextDate = scheduleCompletionTarget.targetType === 'home_asset'
-                              ? calculateNextAssetDueDate(scheduleCompletionTarget.schedule, completedDate)
-                              : calculateNextVehicleDueDate(scheduleCompletionTarget.schedule, completedDate);
-                            if (nextDate) {
-                              scheduleCompletionForm.setValue('nextDueDate', nextDate);
-                            }
-                          }}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  {scheduleCompletionTarget?.targetType === 'vehicle' && (
-                    <FormField control={scheduleCompletionForm.control} name="mileage" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Completed Mileage</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            inputMode="numeric"
-                            min="0"
-                            step="1"
-                            {...field}
-                            onChange={(event) => {
-                              field.onChange(event);
-                              const nextMileage = scheduleCompletionTarget
-                                ? calculateNextVehicleMileage(scheduleCompletionTarget.schedule, toNumber(event.target.value))
-                                : undefined;
-                              if (typeof nextMileage === 'number') {
-                                scheduleCompletionForm.setValue('nextDueMileage', nextMileage.toString());
-                              }
-                            }}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                  )}
-                  <FormField control={scheduleCompletionForm.control} name="nextDueDate" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Next Due Date</FormLabel>
-                      <FormControl><Input type="date" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  {scheduleCompletionTarget?.targetType === 'vehicle' && (
-                    <FormField control={scheduleCompletionForm.control} name="nextDueMileage" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Next Due Mileage</FormLabel>
-                        <FormControl><Input type="number" min="0" {...field} /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                  )}
-                  <MileageWarning message={mileageCheck?.key === 'complete' ? mileageCheck.message : undefined} />
-                  <FormField control={scheduleCompletionForm.control} name="notes" render={({ field }) => (
-                    <FormItem className="sm:col-span-2">
-                      <FormLabel>Log Notes</FormLabel>
-                      <FormControl><AutoResizeTextarea rows={3} placeholder="What was completed, parts used, or follow-up notes." {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                </div>
-              </div>
-              <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" disabled={Boolean(inFlight.complete)} onClick={() => setScheduleCompletionTarget(null)}>Cancel</Button>
-                <Button type="submit" disabled={Boolean(inFlight.complete)}>
-                  {inFlight.complete && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
-                  {mileageCheck?.key === 'complete' ? 'Save anyway' : 'Complete Maintenance'}
-                </Button>
-              </DialogFooter>
-              <SaveNotice notice={notices.complete} busy={Boolean(inFlight.complete)} />
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
+      <ScheduleCompletionDialog
+        target={scheduleCompletionTarget}
+        session={dialogSession}
+        today={today}
+        busy={Boolean(inFlight.complete)}
+        notice={notices.complete}
+        mileageMessage={mileageCheck?.key === 'complete' ? mileageCheck.message : undefined}
+        onOpenChange={(open) => {
+          if (!open && !closable('complete')) return;
+          if (!open) setScheduleCompletionTarget(null);
+        }}
+        onSubmit={completeScheduledMaintenance}
+      />
 
-      <Dialog open={!!mileageTarget} onOpenChange={(open) => {
-        if (!open && !closable('mileage')) return;
-        if (!open) {
-          setMileageTarget(null);
-          setMileageCheck(null);
-        }
-      }}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Confirm mileage</DialogTitle>
-            <DialogDescription>
-              {mileageTarget
-                ? `${getScheduleCompletionName(mileageTarget)} for ${mileageTarget.vehicle.nickname}: the odometer reading now, so the next service is scheduled from it.`
-                : null}
-            </DialogDescription>
-          </DialogHeader>
-          <form
-            className="space-y-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submitMileageConfirm();
-            }}
-          >
-            <div className="space-y-2">
-              <Label htmlFor="maintenance-confirm-mileage">Odometer (miles)</Label>
-              <Input
-                id="maintenance-confirm-mileage"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                autoComplete="off"
-                value={mileageInput}
-                aria-invalid={Boolean(mileageInputError)}
-                aria-describedby={mileageInputError ? 'maintenance-confirm-mileage-error' : undefined}
-                onChange={(event) => {
-                  setMileageInput(event.target.value.replace(/[^0-9]/g, ''));
-                  setMileageInputError(null);
-                }}
-              />
-              {mileageInputError && <p id="maintenance-confirm-mileage-error" className="text-sm font-medium text-destructive">{mileageInputError}</p>}
-            </div>
-            <MileageWarning message={mileageCheck?.key === 'mileage' ? mileageCheck.message : undefined} />
-            <DialogFooter>
-              <Button type="button" variant="secondary" disabled={Boolean(inFlight.mileage)} onClick={() => { setMileageTarget(null); setMileageCheck(null); }}>Cancel</Button>
-              <Button type="submit" disabled={Boolean(inFlight.mileage)}>
-                {inFlight.mileage && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
-                {mileageCheck?.key === 'mileage' ? 'Save anyway' : 'Mark done'}
-              </Button>
-            </DialogFooter>
-          </form>
-          <SaveNotice notice={notices.mileage} busy={Boolean(inFlight.mileage)} />
-        </DialogContent>
-      </Dialog>
+      <MileageDialog
+        target={mileageTarget}
+        session={dialogSession}
+        busy={Boolean(inFlight.mileage)}
+        notice={notices.mileage}
+        mileageMessage={mileageCheck?.key === 'mileage' ? mileageCheck.message : undefined}
+        onOpenChange={(open) => {
+          if (!open && !closable('mileage')) return;
+          if (!open) {
+            setMileageTarget(null);
+            setMileageCheck(null);
+          }
+        }}
+        onSubmit={submitMileageConfirm}
+      />
 
-      <AlertDialog open={!!scheduleToRemove} onOpenChange={(open) => !open && setScheduleToRemove(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove {scheduleToRemove?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This removes the {scheduleToRemove?.targetType === 'home_asset' ? 'asset maintenance item' : 'vehicle service item'} from this edit form. Save the record to persist the change.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={confirmScheduleRemoval}>
-              Remove Item
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => !open && setAttachmentToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete attachment {attachmentToDelete?.fileName}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This permanently deletes the file and its maintenance attachment record. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={Boolean(deletingAttachmentId)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={Boolean(deletingAttachmentId)}
-              onClick={() => attachmentToDelete && void deleteAttachment(attachmentToDelete)}
-            >
-              {deletingAttachmentId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Delete Attachment
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={!!assetToDelete} onOpenChange={(open) => !open && setAssetToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete home asset {assetToDelete?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This removes the asset and its schedules. Historical logs remain as general maintenance records, and active reminders for this asset are resolved. Remove direct attachments first.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={Boolean(deletingRecord)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={Boolean(deletingRecord)}
-              onClick={() => void deleteAsset()}
-            >
-              {deletingRecord?.startsWith('home_asset:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Delete Home Asset
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={!!logToDelete} onOpenChange={(open) => !open && setLogToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete maintenance log?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete &quot;{logToDelete ? getLogTitle(logToDelete) : 'this log'}&quot;. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={Boolean(deletingRecord)}
-              onClick={deleteLog}
-            >
-              {deletingRecord?.startsWith('log:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Delete Log
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={!!vehicleToDelete} onOpenChange={(open) => !open && setVehicleToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete vehicle?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This removes &quot;{vehicleToDelete?.nickname || 'this vehicle'}&quot; and its schedules. Historical service logs remain as general maintenance records, and active reminders for this vehicle are resolved. Remove direct attachments first.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={Boolean(deletingRecord)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={Boolean(deletingRecord)}
-              onClick={deleteVehicle}
-            >
-              {deletingRecord?.startsWith('vehicle:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Delete Vehicle
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeleteDialogs
+        attachmentToDelete={attachmentToDelete}
+        setAttachmentToDelete={setAttachmentToDelete}
+        deleteAttachment={deleteAttachment}
+        deletingAttachmentId={deletingAttachmentId}
+        assetToDelete={assetToDelete}
+        setAssetToDelete={setAssetToDelete}
+        deleteAsset={deleteAsset}
+        logToDelete={logToDelete}
+        setLogToDelete={setLogToDelete}
+        deleteLog={deleteLog}
+        vehicleToDelete={vehicleToDelete}
+        setVehicleToDelete={setVehicleToDelete}
+        deleteVehicle={deleteVehicle}
+        deletingRecord={deletingRecord}
+      />
     </>
   );
 }

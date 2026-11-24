@@ -17,7 +17,7 @@ import type {
   Vehicle,
   VehicleServiceSchedule,
 } from '@/lib/types';
-import { getAssetScheduleMode, getVehicleScheduleMode } from '@/lib/maintenance/schedules';
+import { getAssetScheduleMode, getVehicleScheduleMode, type ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
 import { scheduleRef, type StoredSchedule } from '@/lib/maintenance/operations';
 
 export const assetCategories = [
@@ -147,8 +147,6 @@ export type VehicleScheduleForm = {
   snoozedUntil: string;
 };
 
-export const todayInputValue = () => format(new Date(), 'yyyy-MM-dd');
-
 export const emptyAssetForm: AssetFormValues = {
   name: '',
   category: 'Appliance',
@@ -194,26 +192,18 @@ export const emptyVehicleForm: VehicleFormValues = {
   nextDueDate: '',
 };
 
-export const emptyLogForm = (preset?: LogPreset): LogFormValues => ({
+export const emptyLogForm = (preset: LogPreset | undefined, today: string): LogFormValues => ({
   targetType: preset?.targetType || 'general',
   assetId: preset?.assetId || '',
   vehicleId: preset?.vehicleId || '',
   title: preset?.title || '',
-  date: todayInputValue(),
+  date: today,
   type: 'routine',
   notes: '',
   cost: '',
   partsUsed: '',
   serviceProvider: '',
   mileage: preset?.mileage || '',
-});
-
-export const emptyScheduleCompletionForm = (): ScheduleCompletionFormValues => ({
-  completedDate: todayInputValue(),
-  mileage: '',
-  nextDueDate: '',
-  nextDueMileage: '',
-  notes: '',
 });
 
 export const createLocalId = () => Math.random().toString(36).slice(2, 10);
@@ -364,8 +354,8 @@ export const parseLogDate = (date: string) => {
   return isValid(fallback) ? fallback : new Date();
 };
 
-export const dateInputValue = (date?: string) => {
-  if (!date) return todayInputValue();
+export const dateInputValue = (date: string | undefined, today: string) => {
+  if (!date) return today;
   return format(parseLogDate(date), 'yyyy-MM-dd');
 };
 
@@ -476,12 +466,12 @@ export const vehicleFormFromRecord = (vehicle: Vehicle): VehicleFormValues => ({
   nextDueDate: '',
 });
 
-export const logFormFromRecord = (log: MaintenanceLog): LogFormValues => ({
+export const logFormFromRecord = (log: MaintenanceLog, today: string): LogFormValues => ({
   targetType: getLogTargetType(log),
   assetId: log.assetId || '',
   vehicleId: log.vehicleId || '',
   title: getLogTitle(log),
-  date: dateInputValue(log.date),
+  date: dateInputValue(log.date, today),
   type: getLogType(log),
   notes: log.notes || '',
   cost: log.cost?.toString() || '',
@@ -491,3 +481,9 @@ export const logFormFromRecord = (log: MaintenanceLog): LogFormValues => ({
 });
 
 export type SaveNoticeState = { message: string; retry?: () => void };
+
+export const getScheduleCompletionName = (target: ScheduleCompletionTarget) => {
+  return target.targetType === 'home_asset'
+    ? target.schedule.scheduleName || 'Scheduled maintenance'
+    : target.schedule.serviceName || 'Scheduled maintenance';
+};

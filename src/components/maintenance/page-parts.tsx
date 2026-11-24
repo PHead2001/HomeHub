@@ -111,3 +111,9 @@ export const AutoResizeTextarea = React.forwardRef<
   );
 });
 AutoResizeTextarea.displayName = 'AutoResizeTextarea';
+
+/** Moves focus to the first schedule row with a problem (its name field) on submit. */
+export function focusScheduleField(kind: 'asset' | 'vehicle', scheduleId?: string) {
+  if (!scheduleId) return;
+  requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-schedule-name="${kind}-${CSS.escape(scheduleId)}"]`)?.focus());
+}
