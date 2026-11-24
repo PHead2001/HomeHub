@@ -186,6 +186,57 @@ describe('invite redemption', () => {
     await rejects(redeemInvite(third, 'MULT-IUSE-XX', NOW), /already been used/);
     await adminDb.collection('users').doc(third.email).delete();
   });
+
+  test('a code stops working once its creator may no longer invite (HO-8)', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    const members = house.collection('members');
+    const noLongerValid = /no longer valid/;
+    // Demoted: an admin made a Member (Members cannot manage invites by default).
+    await invite('DEMO-TEDX-XX', { createdByUid: admin.uid, createdByEmail: admin.email });
+    await members.doc(admin.uid).update({ role: 'member' });
+    await rejects(redeemInvite(newcomer, 'DEMO-TEDX-XX', NOW), noLongerValid);
+    // Invite permission taken away by an override.
+    await members.doc(admin.uid).update({ role: 'admin', permissions: { 'household.manageInvites': false } });
+    await invite('OVER-RIDE-XX', { createdByUid: admin.uid, createdByEmail: admin.email });
+    await rejects(redeemInvite(newcomer, 'OVER-RIDE-XX', NOW), noLongerValid);
+    // Removed (or left): no record any more.
+    await members.doc(admin.uid).delete();
+    await invite('REMO-VEDX-XX', { createdByUid: admin.uid, createdByEmail: admin.email });
+    await rejects(redeemInvite(newcomer, 'REMO-VEDX-XX', NOW), noLongerValid);
+    // Nothing was written by the refusals.
+    assert.equal((await members.doc(newcomer.uid).get()).exists, false);
+    for (const code of ['DEMO-TEDX-XX', 'OVER-RIDE-XX', 'REMO-VEDX-XX']) {
+      assert.equal((await adminDb.collection('inviteCodes').doc(code).get()).data()?.useCount, 0, code);
+    }
+    // A guest granted the invite permission by an override is a valid creator.
+    await members.doc(guest.uid).update({ permissions: { 'household.manageInvites': true } });
+    await invite('GRAN-TEDX-XX', { createdByUid: guest.uid, createdByEmail: guest.email });
+    const joined = await redeemInvite(newcomer, 'GRAN-TEDX-XX', NOW);
+    assert.equal(joined.household.id, HOUSE);
+  });
+
+  test('a malformed invite or request is refused in plain words, not as a generic failure (HO-8)', async () => {
+    const codes = adminDb.collection('inviteCodes');
+    try {
+      // No household on the invite: refused before any path is built from it.
+      await codes.doc('NOHO-USEX-XX').set({ code: 'NOHO-USEX-XX', createdByUid: owner.uid, expiresAt: '2026-08-01T12:20:00.000Z', maxUses: 1, useCount: 0 });
+      await rejects(redeemInvite(newcomer, 'NOHO-USEX-XX', NOW), /no longer valid/);
+      await codes.doc('BADH-OUSE-XX').set({ code: 'BADH-OUSE-XX', householdId: 'a/b', createdByUid: owner.uid, expiresAt: '2026-08-01T12:20:00.000Z', maxUses: 1, useCount: 0 });
+      await rejects(redeemInvite(newcomer, 'BADH-OUSE-XX', NOW), /no longer valid/);
+      // No creator (written before codes recorded one).
+      await invite('NOCR-EATO-RX', { createdByUid: null });
+      await rejects(redeemInvite(newcomer, 'NOCR-EATO-RX', NOW), /no longer valid/);
+      // Unreadable expiry and counts.
+      await invite('BADE-XPIR-YX', { expiresAt: 'not a date' });
+      await rejects(redeemInvite(newcomer, 'BADE-XPIR-YX', NOW), /expired/);
+      // A request whose code is not a string.
+      await rejects(redeemInvite(newcomer, 12345 as unknown as string, NOW), /10-character/);
+      await rejects(redeemInvite(newcomer, { code: 'ABCD-EFGH-JK' } as unknown as string, NOW), /10-character/);
+      assert.equal((await adminDb.collection('households').doc(HOUSE).collection('members').doc(newcomer.uid).get()).exists, false);
+    } finally {
+      await Promise.all(['NOHO-USEX-XX', 'BADH-OUSE-XX'].map(code => codes.doc(code).delete()));
+    }
+  });
 });
 
 describe('leaving and deleting', () => {
