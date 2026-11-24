@@ -220,6 +220,17 @@ export function sortLogs<T extends SortableLog>(logs: readonly T[]): T[] {
   });
 }
 
+/**
+ * The 1-based page (`LOG_PAGE_SIZE` per page, `sortLogs` order) that holds the
+ * log, so a `?log=` deep link opens the page it is on. Null when it is not in the list.
+ */
+export function pageOfLog<T extends SortableLog>(logs: readonly T[], logId: string | null | undefined, pageSize = LOG_PAGE_SIZE): number | null {
+  if (!logId) return null;
+  const index = sortLogs(logs).findIndex((log) => log.id === logId);
+  if (index < 0) return null;
+  return Math.floor(index / Math.max(1, Math.floor(pageSize) || LOG_PAGE_SIZE)) + 1;
+}
+
 export type LogPage<T> = { items: T[]; page: number; pageCount: number; total: number; hasPrevious: boolean; hasNext: boolean };
 
 /**

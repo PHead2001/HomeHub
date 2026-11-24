@@ -1,5 +1,39 @@
 // Small presentation rules for the Maintenance Center, kept pure for unit tests.
+import { format, isValid, parseISO } from 'date-fns';
+import { publicDisplayName } from '../member-directory';
 import type { MaintenanceAttachment } from '../types';
+
+/** What a log with no readable date shows instead of one (MA-11e); such logs sort last. */
+export const UNDATED_LOG = 'Undated';
+
+/** A log's date as "Mar 3, 2026", or "Undated" when it is missing or unreadable (never today's date). */
+export const logDateLabel = (date: unknown) => {
+  if (typeof date !== 'string' || !date.trim()) return UNDATED_LOG;
+  const parsed = parseISO(date);
+  const value = isValid(parsed) ? parsed : new Date(date);
+  return isValid(value) ? format(value, 'MMM d, yyyy') : UNDATED_LOG;
+};
+
+/**
+ * "Done by Sam" from the server-written `doneByName` (MA-20), through
+ * `publicDisplayName` so an email is never shown. Legacy logs have no name and
+ * show nothing (never a guess). Logs record no device yet, so there is no "on <tablet>".
+ */
+export const doneByLine = (log: { doneByName?: unknown }) => {
+  const name = publicDisplayName(log.doneByName, '');
+  return name ? `Done by ${name}` : null;
+};
+
+/** The legacy `receiptUrl` of an older log as a link target: only http(s) URLs, else null (MA-11e). */
+export const legacyReceiptHref = (value: unknown) => {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+  } catch {
+    return null;
+  }
+};
 
 /**
  * "Summarize with AI" only appears when there is something to summarize: notes

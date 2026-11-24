@@ -197,6 +197,37 @@ export function predictDueDate(
   };
 }
 
+/**
+ * Estimates for the vehicle reminders that have a due mileage (MA-29), keyed by
+ * reminder id: the copy ("Estimated around …") and the estimated day (for Coming
+ * up, keyed by the reminder's `scheduleKey` there). Reminders without an
+ * estimate are left out. The estimate never replaces the reminder's own trigger.
+ */
+export function reminderMileageEstimates(
+  reminders: readonly { id: string; targetType: string; targetId: string; dueMileage?: number; group: string }[],
+  vehicles: readonly { id: string; currentMileage?: number | null; mileageUpdatedAt?: string | null }[],
+  logs: readonly (LinkFields & Pick<MaintenanceLog, 'date' | 'mileage'>)[],
+  today: string,
+  timeZone: string,
+): Record<string, { text: string; date: string }> {
+  const estimates: Record<string, { text: string; date: string }> = {};
+  const readingsByVehicle = new Map<string, MileageReading[]>();
+  for (const reminder of reminders) {
+    if (reminder.targetType !== 'vehicle' || reminder.group !== 'vehicle_service' || typeof reminder.dueMileage !== 'number') continue;
+    const vehicle = vehicles.find((item) => item.id === reminder.targetId);
+    if (!vehicle) continue;
+    let readings = readingsByVehicle.get(vehicle.id);
+    if (!readings) {
+      readings = vehicleReadings(vehicle, logs, timeZone);
+      readingsByVehicle.set(vehicle.id, readings);
+    }
+    const prediction = predictDueDate(reminder.dueMileage, readings, today);
+    const text = predictionText(prediction, today);
+    if (text && !('insufficient' in prediction)) estimates[reminder.id] = { text, date: prediction.date };
+  }
+  return estimates;
+}
+
 const dayLabel = (day: string, today: string) =>
   format(new Date(`${day}T12:00:00`), day.slice(0, 4) === today.slice(0, 4) ? 'MMM d' : 'MMM d, yyyy');
 
