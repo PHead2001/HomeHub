@@ -16,7 +16,30 @@ export type HistoryLog = LinkFields &
   Partial<Pick<MaintenanceLog, 'title' | 'item' | 'createdAt'>> & {
     /** Who did the work, as written by the server on new logs. */
     doneByName?: string | null;
+    /** On a completion's log (server-written): the schedule it completed. */
+    completion?: { scheduleId?: unknown } | null;
   };
+
+/** Which schedule's history: its name (title match) and the ids it is stored under (its id or legacy key). */
+export type HistorySchedule = { name?: string | null; ids?: readonly (string | null | undefined)[] };
+
+const completionScheduleId = (log: Pick<HistoryLog, 'completion'>) =>
+  typeof log.completion?.scheduleId === 'string' && log.completion.scheduleId ? log.completion.scheduleId : null;
+
+/**
+ * True when the log belongs to the schedule. A completion's log names its
+ * schedule (`completion.scheduleId`): when the schedule's ids are known, only
+ * that id counts, whatever the title says (an edited Log service title still
+ * matches; a log titled like another schedule does not). Other logs, or no ids
+ * given, match by title (or legacy `item`), ignoring case and spacing.
+ */
+export const logMatchesSchedule = (log: Pick<HistoryLog, 'completion' | 'title' | 'item'>, schedule: HistorySchedule) => {
+  const id = completionScheduleId(log);
+  const ids = (schedule.ids ?? []).filter(Boolean);
+  if (id && ids.length > 0) return ids.includes(id);
+  const wanted = normalizeTitle(schedule.name);
+  return Boolean(wanted) && normalizeTitle(logTitle(log)) === wanted;
+};
 
 /** Lower-case, trimmed, single-spaced: how a log title is matched to a schedule name. */
 const normalizeTitle = (value: unknown) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : '');
@@ -33,20 +56,21 @@ export function relativeDayText(day: string, today: string): string {
 
 /**
  * The newest log linked to the target (dated on or before today in the household
- * zone), optionally only those for one schedule. Logs carry no schedule id;
- * completing a schedule writes a log titled with the schedule's name, so a log
- * belongs to a schedule when its title (or legacy `item`) matches the schedule
- * name ignoring case and spacing. Ties on the day go to the later `createdAt`, then the id.
+ * zone), optionally only those for one schedule (`logMatchesSchedule`: the
+ * completion's schedule id when the log has one, otherwise the title).
+ * `scheduleName` alone matches by title only. Ties on the day go to the later
+ * `createdAt`, then the id.
  */
 export function latestServiceLog<T extends HistoryLog>(
   logs: readonly T[],
   target: MaintenanceTarget,
-  options: { today: string; timeZone: string; scheduleName?: string | null },
+  options: { today: string; timeZone: string; scheduleName?: string | null; scheduleIds?: readonly (string | null | undefined)[] },
 ): { log: T; day: string } | null {
-  const wanted = normalizeTitle(options.scheduleName);
+  const perSchedule = Boolean(normalizeTitle(options.scheduleName)) || Boolean(options.scheduleIds?.some(Boolean));
+  const schedule: HistorySchedule = { name: options.scheduleName, ids: options.scheduleIds };
   let best: { log: T; day: string } | null = null;
   for (const log of linkedLogs(logs, target)) {
-    if (wanted && normalizeTitle(logTitle(log)) !== wanted) continue;
+    if (perSchedule && !logMatchesSchedule(log, schedule)) continue;
     const day = toDay(log.date, options.timeZone);
     if (!day || day > options.today) continue;
     if (
@@ -69,7 +93,7 @@ export function latestServiceLog<T extends HistoryLog>(
 export function serviceHistoryLine(
   logs: readonly HistoryLog[],
   target: MaintenanceTarget,
-  options: { today: string; timeZone: string; scheduleName?: string | null },
+  options: { today: string; timeZone: string; scheduleName?: string | null; scheduleIds?: readonly (string | null | undefined)[] },
 ): string | null {
   const latest = latestServiceLog(logs, target, options);
   if (!latest) return null;

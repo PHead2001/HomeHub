@@ -15,12 +15,17 @@ import {
   legacyScheduleKey,
   applyPatch,
   mileagePatch,
+  planMileageUpdate,
+  planUndoMileage,
   parseCycle,
   planCompletion,
   planRecordEdit,
   planSnooze,
   planUndoCompletion,
   planUndoSnooze,
+  planRenewal,
+  planUndoRenewal,
+  isRenewableDocument,
   scheduleListField,
   withScheduleIds,
   type CompletionRecord,
@@ -29,6 +34,7 @@ import {
   type KeptField,
   type MaintenanceCycle,
   type MaintenanceOwnerType,
+  type RenewableDocument,
   type StoredSchedule,
 } from '@/lib/maintenance/operations';
 
@@ -83,7 +89,20 @@ export type UndoResult =
 
 export type SaveResult = { status: 'saved'; id: string; created: boolean; replay: boolean };
 
-type OpKind = 'complete' | 'snooze' | 'save_asset' | 'save_vehicle' | 'save_log';
+type OpKind = 'complete' | 'snooze' | 'renew' | 'save_asset' | 'save_vehicle' | 'save_log' | 'update_mileage';
+
+export type RenewResult =
+  /** `undoMs`: what is left of the Undo window when the answer leaves the server (as for completions). */
+  | { status: 'renewed'; opId: string; field: RenewableDocument; expiration: string; replay: boolean; undoMs?: number }
+  | { status: 'changed' }
+  | { status: 'gone' };
+
+export type MileageResult =
+  /** `undoMs`: what is left of the Undo window when the answer leaves the server (as for completions). */
+  | { status: 'updated'; opId: string; currentMileage: number; mileageUpdatedAt: string; replay: boolean; undoMs?: number }
+  | { status: 'gone' }
+  /** A lower reading without the correction carries the mileage recorded now, for the correction copy. */
+  | { status: 'refused'; reason: 'invalid_mileage' | 'lower_needs_correction'; currentMileage?: number };
 
 /* -------------------------------------------------------------------------- */
 /* Input                                                                       */
@@ -644,6 +663,204 @@ export async function undoMaintenanceSnoozeAs(db: Firestore, householdId: string
   });
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* Update mileage (MA-19, MA-6e)                                               */
+/* -------------------------------------------------------------------------- */
+
+export type MileageInput = { opId: unknown; vehicleId: unknown; reading: unknown; correction?: unknown };
+
+/**
+ * "Update mileage": an explicit odometer reading for one vehicle (needs
+ * maintenance.edit). A reading at or above the recorded mileage becomes the
+ * current mileage, with `mileageUpdatedAt` today (household day). A lower one is
+ * written only as an explicit correction (`correction: true`, after the page's
+ * correction copy); without it the answer is `refused` and nothing changes. The
+ * ledger keeps before/after for a 10 s compare-and-revert Undo.
+ */
+export async function updateVehicleMileageAs(db: Firestore, householdId: string, input: MileageInput, ctx: OperationContext): Promise<MileageResult> {
+  const house = householdRef(db, householdId);
+  const request = recordOf(input);
+  const opId = opIdOf(request.opId);
+  const vehicleId = docIdOf(request.vehicleId);
+  if (request.correction !== undefined && typeof request.correction !== 'boolean') throw invalid();
+  if (typeof request.reading !== 'number') throw invalid();
+  const startedReal = Date.now();
+  const outcome = await db.runTransaction(async (tx): Promise<{ result: MileageResult; appliedAtMs?: number }> => {
+    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (replay) return { result: replay.summary.result as MileageResult };
+    const ref = house.collection('vehicles').doc(vehicleId);
+    const [home, member, ledger, vehicle] = await tx.getAll(house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), ref);
+    const { today } = householdDay(home, ctx.now);
+    const stored = replayOf(ledger, 'update_mileage', ctx);
+    if (stored) {
+      const result = stored as MileageResult;
+      return { result: result.status === 'updated' ? { ...result, replay: true } : result, appliedAtMs: appliedAtOf(ledger) };
+    }
+    if (!vehicle.exists) return { result: { status: 'gone' } };
+    const plan = planMileageUpdate({
+      vehicle: { currentMileage: vehicle.get('currentMileage'), mileageUpdatedAt: vehicle.get('mileageUpdatedAt') },
+      reading: request.reading,
+      correction: request.correction === true,
+      today,
+    });
+    if (plan.kind === 'refused') {
+      const recorded = vehicle.get('currentMileage');
+      return {
+        result: plan.reason === 'lower_needs_correction' && typeof recorded === 'number'
+          ? { status: 'refused', reason: plan.reason, currentMileage: recorded }
+          : { status: 'refused', reason: plan.reason },
+      };
+    }
+    if (Object.keys(plan.patch).length > 0) tx.update(ref, { ...toUpdate(plan.patch), updatedAt: ctx.now.toISOString() });
+    const result: MileageResult = { status: 'updated', opId, currentMileage: plan.currentMileage, mileageUpdatedAt: today, replay: false };
+    tx.set(ledgerRef(house, opId), {
+      kind: 'update_mileage',
+      actorUid: ctx.actor.uid,
+      actorName: actorName(member, ctx),
+      ownerType: 'vehicle',
+      ownerId: vehicleId,
+      appliedAt: Timestamp.fromDate(ctx.now),
+      undoneAt: null,
+      before: plan.before,
+      after: plan.after,
+      result,
+    });
+    ctx.hooks?.finalize(tx, { targetPath: ref.path, summary: { result } });
+    return { result, appliedAtMs: ctx.now.getTime() };
+  });
+  if (outcome.result.status !== 'updated') return outcome.result;
+  return { ...outcome.result, undoMs: undoRemainingMs(outcome.appliedAtMs, ctx.now, startedReal) };
+}
+
+/**
+ * Undoes the caller's own mileage update within the Undo window: each field goes
+ * back only while it still holds the update's value (a later, higher reading stays
+ * and is reported in `kept`). A vehicle deleted meanwhile is not recreated.
+ */
+export async function undoVehicleMileageAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult> {
+  const house = householdRef(db, householdId);
+  const opId = opIdOf(recordOf(input).opId);
+  return db.runTransaction(async tx => {
+    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (replay) return replay.summary.result as UndoResult;
+    const [home, entry] = await tx.getAll(house, ledgerRef(house, opId));
+    householdDay(home, ctx.now);
+    const answer = undoEntry(entry, 'update_mileage', ctx);
+    if (answer) return answer;
+    const ref = house.collection('vehicles').doc(docIdOf(entry.get('ownerId')));
+    const vehicle = await tx.get(ref);
+    let kept: KeptField[] = [];
+    if (vehicle.exists) {
+      const plan = planUndoMileage(
+        { currentMileage: vehicle.get('currentMileage'), mileageUpdatedAt: vehicle.get('mileageUpdatedAt') },
+        fieldValuesOf(entry.get('before')),
+        fieldValuesOf(entry.get('after')),
+      );
+      kept = plan.kept;
+      if (Object.keys(plan.patch).length > 0) tx.update(ref, { ...toUpdate(plan.patch), updatedAt: ctx.now.toISOString() });
+    }
+    const result: UndoResult = { status: 'undone', kept: plain(kept) };
+    tx.update(entry.ref, { undoneAt: Timestamp.fromDate(ctx.now), undoResult: result });
+    ctx.hooks?.finalize(tx, { targetPath: ref.path, summary: { result }, undo: 'reversed' });
+    return result;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Renewing a registration or inspection (MA-33a)                              */
+/* -------------------------------------------------------------------------- */
+
+export type RenewInput = { opId: unknown; vehicleId: unknown; field: unknown; seen: unknown };
+
+const seenExpirationOf = (value: unknown): string | null => {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' || value.length > 64) throw invalid();
+  return value;
+};
+
+/**
+ * "Renewed (+1 year)" for a vehicle's registration or inspection: only that one
+ * field is written, from the vehicle read in this transaction, to
+ * `renewedExpiration(current, today)` in the household's day. `seen` is the
+ * expiration the person saw; a different stored value answers `changed`. The
+ * ledger keeps `before`/`after` for the 10 s Undo (compare-and-revert). The
+ * old "expires soon" notification is resolved by the hourly upkeep (its state
+ * is no longer actionable).
+ */
+export async function renewVehicleDocumentAs(db: Firestore, householdId: string, input: RenewInput, ctx: OperationContext): Promise<RenewResult> {
+  const house = householdRef(db, householdId);
+  const request = recordOf(input);
+  const opId = opIdOf(request.opId);
+  const vehicleId = docIdOf(request.vehicleId);
+  if (!isRenewableDocument(request.field)) throw invalid();
+  const field = request.field;
+  const seen = seenExpirationOf(request.seen);
+
+  const startedReal = Date.now();
+  const outcome = await db.runTransaction(async (tx): Promise<{ result: RenewResult; appliedAtMs?: number }> => {
+    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (replay) return { result: replay.summary.result as RenewResult };
+    const vehicleRef = house.collection('vehicles').doc(vehicleId);
+    const [home, member, ledger, vehicle] = await tx.getAll(house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), vehicleRef);
+    const { today } = householdDay(home, ctx.now);
+    const stored = replayOf(ledger, 'renew', ctx);
+    if (stored) {
+      const result = stored as RenewResult;
+      return { result: result.status === 'renewed' ? { ...result, replay: true } : result, appliedAtMs: appliedAtOf(ledger) };
+    }
+    if (!vehicle.exists) return { result: { status: 'gone' } };
+    const plan = planRenewal({ field, current: vehicle.get(field), seen, today });
+    if (plan.kind === 'changed') return { result: { status: 'changed' } };
+    tx.update(vehicleRef, { [field]: plan.expiration, updatedAt: ctx.now.toISOString() });
+    const result: RenewResult = { status: 'renewed', opId, field, expiration: plan.expiration, replay: false };
+    tx.set(ledgerRef(house, opId), {
+      kind: 'renew',
+      actorUid: ctx.actor.uid,
+      actorName: actorName(member, ctx),
+      ownerType: 'vehicle',
+      ownerId: vehicleId,
+      field,
+      appliedAt: Timestamp.fromDate(ctx.now),
+      undoneAt: null,
+      before: plan.before,
+      after: plan.after,
+      result,
+    });
+    ctx.hooks?.finalize(tx, { targetPath: vehicleRef.path, summary: plain({ result }) });
+    return { result, appliedAtMs: ctx.now.getTime() };
+  });
+  if (outcome.result.status !== 'renewed') return outcome.result;
+  return { ...outcome.result, undoMs: undoRemainingMs(outcome.appliedAtMs, ctx.now, startedReal) };
+}
+
+/** Undoes a renewal within the Undo window: the field goes back only while it still holds the renewed date. */
+export async function undoVehicleRenewalAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult> {
+  const house = householdRef(db, householdId);
+  const opId = opIdOf(recordOf(input).opId);
+  return db.runTransaction(async tx => {
+    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (replay) return replay.summary.result as UndoResult;
+    const [home, entry] = await tx.getAll(house, ledgerRef(house, opId));
+    householdDay(home, ctx.now);
+    const answer = undoEntry(entry, 'renew', ctx);
+    if (answer) return answer;
+    const vehicleRef = house.collection('vehicles').doc(docIdOf(entry.get('ownerId')));
+    const vehicle = await tx.get(vehicleRef);
+    let kept: KeptField[] = [];
+    // A vehicle deleted meanwhile is never recreated.
+    if (vehicle.exists) {
+      const plan = planUndoRenewal(vehicle.data() ?? {}, fieldValuesOf(entry.get('before')), fieldValuesOf(entry.get('after')));
+      kept = plan.kept;
+      if (Object.keys(plan.patch).length > 0) tx.update(vehicleRef, { ...toUpdate(plan.patch), updatedAt: ctx.now.toISOString() });
+    }
+    const result: UndoResult = { status: 'undone', kept: plain(kept) };
+    tx.update(entry.ref, { undoneAt: Timestamp.fromDate(ctx.now), undoResult: result });
+    ctx.hooks?.finalize(tx, { targetPath: vehicleRef.path, summary: { result }, undo: 'reversed' });
+    return result;
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Edits                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -652,7 +869,9 @@ type FieldSpec =
   | { kind: 'text'; max: number; required?: boolean }
   | { kind: 'day' }
   | { kind: 'number'; min: number; max: number; integer?: boolean }
-  | { kind: 'enum'; values: readonly string[] };
+  | { kind: 'enum'; values: readonly string[] }
+  /** Stored only as `true`; false or absent removes it (warrantyLifetime). */
+  | { kind: 'flag' };
 
 /**
  * Normalizes one form field. Types and sizes are checked always (fail closed);
@@ -673,6 +892,9 @@ const normalize = (spec: FieldSpec, value: unknown): unknown => {
     case 'number':
       if (typeof value !== 'number' || !Number.isFinite(value)) throw invalid();
       return value;
+    case 'flag':
+      if (typeof value !== 'boolean') throw invalid();
+      return value ? true : null;
   }
 };
 
@@ -700,6 +922,7 @@ const ASSET_SPECS: Record<string, FieldSpec> = {
   purchasePrice: { kind: 'number', min: -MAX_COST, max: MAX_COST },
   warrantyExpiration: { kind: 'day' },
   warrantyProvider: { kind: 'text', max: 1000 },
+  warrantyLifetime: { kind: 'flag' },
   status: { kind: 'enum', values: ['active', 'needs_attention', 'retired'] },
   notes: { kind: 'text', max: 20000 },
 };
@@ -723,6 +946,12 @@ const VEHICLE_SPECS: Record<string, FieldSpec> = {
 };
 
 const MODE: FieldSpec = { kind: 'enum', values: ['scheduled', 'checklist'] };
+/** Calendar anchoring (MA-11g, M3): 'completion' (default) or 'calendar' with an optional month/day. */
+const ANCHOR_SPECS: Record<string, FieldSpec> = {
+  anchor: { kind: 'enum', values: ['completion', 'calendar'] },
+  anchorMonth: { kind: 'number', min: 1, max: 12, integer: true },
+  anchorDay: { kind: 'number', min: 1, max: 31, integer: true },
+};
 const ASSET_SCHEDULE_SPECS: Record<string, FieldSpec> = {
   mode: MODE,
   scheduleName: { kind: 'text', max: 1000, required: true },
@@ -732,6 +961,7 @@ const ASSET_SCHEDULE_SPECS: Record<string, FieldSpec> = {
   nextDueDate: { kind: 'day' },
   snoozedUntil: { kind: 'day' },
   snoozedFrom: { kind: 'day' },
+  ...ANCHOR_SPECS,
 };
 const VEHICLE_SCHEDULE_SPECS: Record<string, FieldSpec> = {
   mode: MODE,
@@ -744,6 +974,7 @@ const VEHICLE_SCHEDULE_SPECS: Record<string, FieldSpec> = {
   nextDueDate: { kind: 'day' },
   snoozedUntil: { kind: 'day' },
   snoozedFrom: { kind: 'day' },
+  ...ANCHOR_SPECS,
 };
 
 const LOG_SPECS: Record<string, FieldSpec> = {

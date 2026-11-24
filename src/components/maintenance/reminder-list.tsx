@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { AnimatePresence, motion, type Variants } from 'motion/react';
-import { AlarmClock, ArrowUpRight, ClipboardPen, Loader2 } from 'lucide-react';
+import { AlarmClock, ArrowUpRight, ClipboardPen, Gauge, Loader2 } from 'lucide-react';
 import type { MaintenanceReminder } from '@functions/shared/maintenance-reminders';
 import { CompletionCheck } from '@/components/chores/completion-check';
 import { useConfetti } from '@/components/chores/confetti';
@@ -26,8 +26,27 @@ const badgeVariant = (status: MaintenanceReminder['status'], snoozed?: boolean) 
   if (snoozed && (status === 'upcoming' || status === 'due_soon')) return 'outline' as const;
   if (status === 'overdue') return 'destructive' as const;
   if (status === 'due_today') return 'default' as const;
+  if (status === 'due_soon') return 'outline' as const;
   return 'secondary' as const;
 };
+
+/** "Due soon" reads as a warning, not a neutral tag (MA-24): amber border and tint. */
+const badgeClass = (status: MaintenanceReminder['status'], snoozed?: boolean) =>
+  (status === 'due_soon' && !snoozed ? 'border-warning bg-warning/15 text-foreground' : undefined);
+
+/**
+ * What Log service and Snooze do, said once above a list of reminder cards, so it is visible
+ * on touch screens too (MA-23: no hover-only text).
+ */
+export function ReminderActionsHint({ canLog, canSnooze, className }: { canLog: boolean; canSnooze: boolean; className?: string }) {
+  if (!canLog && !canSnooze) return null;
+  return (
+    <p className={cn('text-sm text-muted-foreground', className)} data-testid="reminder-actions-hint">
+      {canLog && 'Log service records the cost, provider and parts, and marks it done. '}
+      {canSnooze && `Snooze moves a due date ${SNOOZE_DAYS} days later.`}
+    </p>
+  );
+}
 
 // The StaggerItem entrance, on the list item itself: AnimatePresence needs the
 // exit on its direct child.
@@ -62,8 +81,11 @@ export function ReminderList({
   onMarkDone,
   onLogService,
   onSnooze,
+  estimates,
 }: {
   reminders: MaintenanceReminder[];
+  /** Mileage estimates by reminder id ("Estimated around Mar 12, based on 6 readings", MA-29). */
+  estimates?: Readonly<Record<string, { text: string }>>;
   today: string;
   emptyTitle: string;
   emptyDescription: string;
@@ -126,6 +148,7 @@ export function ReminderList({
             const isChecked = checked.has(reminderCycleKey(reminder));
             // MA-9: a snoozed reminder is muted and says until when; overdue work is never snoozed.
             const snoozeLine = reminderSnoozeLabel(reminder);
+            const estimate = estimates?.[reminder.id]?.text;
             return (
               <motion.li
                 key={reminder.id}
@@ -155,12 +178,18 @@ export function ReminderList({
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className={cn('font-headline text-base font-semibold transition-ui', isChecked && 'text-muted-foreground line-through')}>{reminder.title}</h3>
-                      <Badge variant={badgeVariant(reminder.status, reminder.snoozed)}>{reminderBadgeLabel(reminder)}</Badge>
+                      <h3 className={cn('min-w-0 break-words font-headline text-base font-semibold transition-ui [overflow-wrap:anywhere]', isChecked && 'text-muted-foreground line-through')}>{reminder.title}</h3>
+                      <Badge variant={badgeVariant(reminder.status, reminder.snoozed)} className={badgeClass(reminder.status, reminder.snoozed)}>{reminderBadgeLabel(reminder)}</Badge>
                       {isBusy && busy?.action === 'done' && <Loader2 role="status" aria-label="Saving" className="h-4 w-4 animate-spin text-muted-foreground" />}
                     </div>
-                    <p className="mt-1 text-sm">{reminder.relatedName}</p>
+                    <p className="mt-1 break-words text-sm [overflow-wrap:anywhere]">{reminder.relatedName}</p>
                     {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
+                    {estimate && (
+                      <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="mileage-estimate">
+                        <Gauge aria-hidden className="h-3.5 w-3.5 shrink-0" />
+                        <span>{estimate}. An estimate from past readings; the mileage above is what counts.</span>
+                      </p>
+                    )}
                     {snoozeLine && <p className="mt-1 text-xs text-muted-foreground">{snoozeLine}</p>}
                   </div>
                 </div>
@@ -172,7 +201,6 @@ export function ReminderList({
                       variant="outline"
                       disabled={Boolean(busy) || isChecked}
                       aria-label={`Log service: ${subject}`}
-                      title="Record cost, provider and parts, and mark it done"
                       onClick={() => onLogService(reminder)}
                     >
                       <ClipboardPen aria-hidden className="mr-2 h-4 w-4" />
@@ -186,7 +214,6 @@ export function ReminderList({
                       variant="ghost"
                       disabled={Boolean(busy) || isChecked}
                       aria-label={`Snooze 1 week: ${subject}`}
-                      title={`Move the due date ${SNOOZE_DAYS} days later`}
                       onClick={() => onSnooze(reminder)}
                     >
                       {isBusy && busy?.action === 'snooze'

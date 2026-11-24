@@ -21,6 +21,12 @@ export const QUALITY_STEPS = [0.86, 0.76, 0.64, 0.5] as const;
 export type DownscaleOptions = {
   maxEdge?: number;
   maxBytes?: number;
+  /**
+   * Always redraw (re-encode), even when the photo already fits: converts a format the consumer
+   * cannot take (GIF, HEIC, AVIF) to JPEG (PNG and WebP keep their format). A photo the browser
+   * cannot decode is then `unreadable` instead of passed through.
+   */
+  force?: boolean;
 };
 
 export type ImageFacts = {
@@ -86,7 +92,7 @@ export function planDownscale(image: ImageFacts, options: DownscaleOptions = {})
   const size = targetSize(image.width, image.height, maxEdge);
   if (size.width === 0) return { action: 'keep' };
   const fits = fitsLimit(image.bytes, maxBytes);
-  if (fits && (!size.scaled || image.type.toLowerCase() === 'image/gif')) return { action: 'keep' };
+  if (!options.force && fits && (!size.scaled || image.type.toLowerCase() === 'image/gif')) return { action: 'keep' };
   const type = outputType(image.type);
   return { action: 'redraw', width: size.width, height: size.height, type, qualities: qualitySteps(type) };
 }
@@ -120,6 +126,8 @@ export async function downscaleImage(file: File, options: DownscaleOptions = {})
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
+    // Forced conversion needs the pixels: an undecodable file is never passed through as it is.
+    if (options.force) return { ok: false, reason: 'unreadable' };
     return fitsLimit(file.size, maxBytes) ? { ok: true, file, resized: false } : { ok: false, reason: 'unreadable' };
   }
   try {
@@ -129,7 +137,7 @@ export async function downscaleImage(file: File, options: DownscaleOptions = {})
     canvas.width = plan.width;
     canvas.height = plan.height;
     const context = canvas.getContext('2d');
-    if (!context) return fitsLimit(file.size, maxBytes) ? { ok: true, file, resized: false } : { ok: false, reason: 'unreadable' };
+    if (!context) return !options.force && fitsLimit(file.size, maxBytes) ? { ok: true, file, resized: false } : { ok: false, reason: 'unreadable' };
     context.imageSmoothingQuality = 'high';
     context.drawImage(bitmap, 0, 0, plan.width, plan.height);
     for (const quality of plan.qualities) {

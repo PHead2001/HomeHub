@@ -63,6 +63,18 @@ export function warrantyCountdownText(countdown: WarrantyCountdown): string {
   return `Warranty: ${days} left of ${countdown.termDays.toLocaleString('en-US')}`;
 }
 
+/**
+ * The visible caption under a card's warranty ring (MA-17, MA-23): "Warranty · 198 days",
+ * "Warranty · 1 day", "Warranty ends today", "Warranty ended". Null for a lifetime
+ * warranty, whose pill already reads "Lifetime".
+ */
+export function warrantyCaption(countdown: WarrantyCountdown): string | null {
+  if (countdown.lifetime) return null;
+  if (countdown.expired) return 'Warranty ended';
+  if (countdown.daysLeft === 0) return 'Warranty ends today';
+  return `Warranty · ${countdown.daysLeft === 1 ? '1 day' : `${countdown.daysLeft.toLocaleString('en-US')} days`}`;
+}
+
 /** Short label inside the ring: days up to 999, then years; "Lifetime" for a lifetime warranty. */
 export function warrantyRingLabel(countdown: WarrantyCountdown): string {
   if (countdown.lifetime) return 'Lifetime';

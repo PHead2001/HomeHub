@@ -18,6 +18,9 @@ import {
 import {getAuth} from "firebase-admin/auth";
 import {getStorage} from "firebase-admin/storage";
 import {resumePetDeletions, type PetPhotoBucket} from "./shared/pet-delete";
+import {
+  resumeMaintenanceDeletions, type MaintenanceFileBucket,
+} from "./shared/maintenance-delete";
 import {withContactEmails} from "./shared/member-contact";
 import {
   clampText,
@@ -281,6 +284,27 @@ export const householdUpkeep = onSchedule(
     } catch (error) {
       totals.failed++;
       logger.error("Pet delete resume failed.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Finish any maintenance delete (asset, vehicle or log with its files)
+    // that stopped after its record was gone: logs kept as history, files,
+    // reminders (docs/modules/maintenance-center/README.md).
+    try {
+      const bucket = getApp().options.storageBucket ?
+        getStorage().bucket() as unknown as MaintenanceFileBucket : null;
+      const records = await resumeMaintenanceDeletions(db, bucket, now, ts,
+        FieldValue.delete(),
+        (path, error) => logger.error("Resuming a maintenance delete failed.", {
+          path, error: error instanceof Error ? error.message : String(error),
+        }));
+      if (records.found > 0) {
+        logger.info("Maintenance delete resume finished.", records);
+      }
+      if (records.failed > 0) totals.failed++;
+    } catch (error) {
+      totals.failed++;
+      logger.error("Maintenance delete resume failed.", {
         error: error instanceof Error ? error.message : String(error),
       });
     }

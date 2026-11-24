@@ -13,6 +13,8 @@ import {
   planSnooze,
   planUndoCompletion,
   planUndoSnooze,
+  planRenewal,
+  planUndoRenewal,
   sameCycle,
   sameValue,
   scheduleRef,
@@ -217,6 +219,32 @@ describe('snooze plan', () => {
     assert.deepEqual(planSnooze({ ownerType: 'vehicle', owner: { id: 'car', nickname: 'Car', currentMileage: 49800 }, schedule: service, seen: cycleOf(service), today: '2026-03-01', timeZone: TZ }), { kind: 'refused', reason: 'not_snoozable' });
     assert.equal(planSnooze({ ownerType: 'vehicle', owner: { id: 'car', nickname: 'Car', currentMileage: 40000 }, schedule: service, seen: cycleOf(service), today: '2026-03-01', timeZone: TZ }).kind, 'apply');
     assert.deepEqual(planSnooze({ ownerType: 'home_asset', owner: { id: 'hvac', name: 'HVAC' }, schedule: far, seen: { nextDueDate: '2026-03-05', nextDueMileage: null }, today: '2026-03-01', timeZone: TZ }), { kind: 'changed' });
+  });
+});
+
+describe('renewal plan (MA-33a)', () => {
+  test('one year on from a current or recently expired date; else one year from today', () => {
+    assert.deepEqual(planRenewal({ field: 'registrationExpiration', current: '2026-03-20', seen: '2026-03-20', today: '2026-03-01' }), {
+      kind: 'apply', expiration: '2027-03-20', before: { registrationExpiration: '2026-03-20' }, after: { registrationExpiration: '2027-03-20' },
+    });
+    // 30 days past: the cycle is kept. 90 days past: one year from today.
+    assert.equal((planRenewal({ field: 'inspectionExpiration', current: '2026-01-30', seen: '2026-01-30', today: '2026-03-01' }) as { expiration: string }).expiration, '2027-01-30');
+    assert.equal((planRenewal({ field: 'inspectionExpiration', current: '2025-12-01', seen: '2025-12-01', today: '2026-03-01' }) as { expiration: string }).expiration, '2027-03-01');
+    assert.equal((planRenewal({ field: 'inspectionExpiration', current: undefined, seen: null, today: '2026-03-01' }) as { expiration: string }).expiration, '2027-03-01');
+  });
+
+  test('a value other than the one the card showed is "changed" (no second year from a double press)', () => {
+    assert.deepEqual(planRenewal({ field: 'registrationExpiration', current: '2027-03-20', seen: '2026-03-20', today: '2026-03-01' }), { kind: 'changed' });
+    assert.deepEqual(planRenewal({ field: 'registrationExpiration', current: '2026-03-20', seen: null, today: '2026-03-01' }), { kind: 'changed' });
+  });
+
+  test('Undo reverts only that field, and keeps a later edit', () => {
+    const plan = planRenewal({ field: 'registrationExpiration', current: '2026-03-20', seen: '2026-03-20', today: '2026-03-01' });
+    assert.ok(plan.kind === 'apply');
+    assert.deepEqual(planUndoRenewal({ registrationExpiration: '2027-03-20', nickname: 'Car' }, plan.before, plan.after), { patch: { registrationExpiration: '2026-03-20' }, kept: [] });
+    assert.deepEqual(planUndoRenewal({ registrationExpiration: '2027-06-01' }, plan.before, plan.after), { patch: {}, kept: [{ field: 'registrationExpiration', value: '2027-06-01' }] });
+    // A forged ledger naming another field changes nothing.
+    assert.deepEqual(planUndoRenewal({ nickname: 'Car' }, { nickname: 'Old' }, { nickname: 'Car' }), { patch: {}, kept: [] });
   });
 });
 

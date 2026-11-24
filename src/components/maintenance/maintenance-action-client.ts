@@ -57,10 +57,12 @@ const KEPT_COPY: Record<string, { label: string; show: (value: unknown) => strin
   lastCompletedMileage: { label: 'The last done mileage', show: miles },
   snoozedUntil: { label: 'The snooze', show: day },
   currentMileage: { label: 'The mileage', show: miles },
+  registrationExpiration: { label: 'The registration date', show: day },
+  inspectionExpiration: { label: 'The inspection date', show: day },
 };
 
 /** "The due date was changed after you marked it done, so it stays Mar 3." */
-export const keptMessage = (kept: KeptField[], action: 'marked it done' | 'snoozed it') => kept
+export const keptMessage = (kept: KeptField[], action: 'marked it done' | 'snoozed it' | 'renewed it' | 'updated it') => kept
   .filter(entry => KEPT_COPY[entry.field])
   .map(entry => {
     const copy = KEPT_COPY[entry.field];

@@ -10,7 +10,7 @@ import type {
   MaintenanceScheduleMode, MaintenanceTargetType, Vehicle, VehicleServiceSchedule,
 } from '@/lib/types';
 import {
-  calculateNextAssetDueDate, calculateNextVehicleDueDate, calculateNextVehicleMileage, getAssetScheduleMode, getVehicleScheduleMode,
+  calculateNextVehicleMileage, getAssetScheduleMode, getVehicleScheduleMode, nextDueAfterCompletion,
   type ScheduleCompletionTarget,
 } from '@/lib/maintenance/schedules';
 import { scheduleRef, type StoredSchedule } from '@/lib/maintenance/operations';
@@ -33,8 +33,6 @@ export const logTargetTypes = ['general', 'home_asset', 'vehicle'] as const;
 export const logTypes = ['repair', 'routine', 'inspection', 'cleaning', 'replacement', 'issue', 'other'] as const;
 export const frequencyTypes = ['days', 'weeks', 'months', 'years'] as const;
 export const attachmentCategories = ['photo', 'receipt', 'manual', 'warranty_document', 'invoice', 'other'] as const;
-export const REMINDER_DUE_SOON_DAYS = 14;
-export const MILEAGE_DUE_SOON_THRESHOLD = 500;
 
 export const assetSchema = z.object({
   name: z.string().min(1, 'Asset name is required.'),
@@ -47,6 +45,8 @@ export const assetSchema = z.object({
   purchasePrice: z.string().optional(),
   warrantyExpiration: z.string().optional(),
   warrantyProvider: z.string().optional(),
+  /** Lifetime warranty (M3): no end date and no expiry reminders. */
+  warrantyLifetime: z.boolean().optional(),
   status: z.enum(assetStatuses),
   notes: z.string().optional(),
   scheduleName: z.string().optional(),
@@ -127,6 +127,15 @@ export type AssetScheduleForm = {
   /** Not editable: kept so saving unrelated edits does not cancel a snooze. */
   snoozedUntil: string;
   snoozedFrom: string;
+} & ScheduleAnchorForm;
+
+/** Calendar anchoring in the forms (MA-11g): '' keeps the stored default (completion). */
+export type ScheduleAnchorForm = {
+  anchor: '' | 'completion' | 'calendar';
+  anchorMonth: string;
+  anchorDay: string;
+  /** The form suggested nextDueDate (a preset or a calendar anchor); never sent to the server. */
+  nextDueGenerated?: boolean;
 };
 
 export type VehicleScheduleForm = {
@@ -142,7 +151,20 @@ export type VehicleScheduleForm = {
   /** Not editable: kept so saving unrelated edits does not cancel a snooze. */
   snoozedUntil: string;
   snoozedFrom: string;
-};
+} & ScheduleAnchorForm;
+
+const anchorToForm = (schedule?: { anchor?: string; anchorMonth?: number; anchorDay?: number }): ScheduleAnchorForm => ({
+  anchor: schedule?.anchor === 'calendar' || schedule?.anchor === 'completion' ? schedule.anchor : '',
+  anchorMonth: schedule?.anchorMonth?.toString() || '',
+  anchorDay: schedule?.anchorDay?.toString() || '',
+});
+
+/** The anchor fields a form sends (absent unless calendar-anchored or stored). */
+const anchorValuesOf = (schedule: ScheduleAnchorForm) => ({
+  anchor: schedule.anchor || undefined,
+  anchorMonth: schedule.anchor === 'calendar' ? toNumber(schedule.anchorMonth) : undefined,
+  anchorDay: schedule.anchor === 'calendar' ? toNumber(schedule.anchorDay) : undefined,
+});
 
 export const emptyAssetForm: AssetFormValues = {
   name: '',
@@ -155,6 +177,7 @@ export const emptyAssetForm: AssetFormValues = {
   purchasePrice: '',
   warrantyExpiration: '',
   warrantyProvider: '',
+  warrantyLifetime: false,
   status: 'active',
   notes: '',
   scheduleName: '',
@@ -217,6 +240,7 @@ export const assetScheduleToForm = (schedule?: HomeAssetSchedule, index = -1): A
   nextDueDate: schedule?.nextDueDate || '',
   snoozedUntil: schedule?.snoozedUntil || '',
   snoozedFrom: schedule?.snoozedFrom || '',
+  ...anchorToForm(schedule),
 });
 
 export const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule, index = -1): VehicleScheduleForm => ({
@@ -231,6 +255,7 @@ export const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule, index =
   nextDueDate: schedule?.nextDueDate || '',
   snoozedUntil: schedule?.snoozedUntil || '',
   snoozedFrom: schedule?.snoozedFrom || '',
+  ...anchorToForm(schedule),
 });
 
 export const toNumber = (value?: string) => {
@@ -277,6 +302,7 @@ export const assetValuesOf = (values: AssetFormValues, schedules: AssetScheduleF
   purchasePrice: toNumber(values.purchasePrice),
   warrantyExpiration: trimOptional(values.warrantyExpiration),
   warrantyProvider: trimOptional(values.warrantyProvider),
+  warrantyLifetime: values.warrantyLifetime ? true : undefined,
   status: values.status,
   notes: trimOptional(values.notes),
   schedules: schedules.filter(schedule => schedule.scheduleName.trim()).map(schedule => ({
@@ -291,6 +317,7 @@ export const assetValuesOf = (values: AssetFormValues, schedules: AssetScheduleF
     // equals nextDueDate, so editing the due date ends the snooze on its own.
     snoozedUntil: trimOptional(schedule.snoozedUntil),
     snoozedFrom: trimOptional(schedule.snoozedFrom),
+    ...anchorValuesOf(schedule),
   })),
 });
 
@@ -322,6 +349,7 @@ export const vehicleValuesOf = (values: VehicleFormValues, schedules: VehicleSch
     nextDueDate: trimOptional(schedule.nextDueDate),
     snoozedUntil: trimOptional(schedule.snoozedUntil),
     snoozedFrom: trimOptional(schedule.snoozedFrom),
+    ...anchorValuesOf(schedule),
   })),
 });
 
@@ -430,6 +458,7 @@ export const assetFormFromRecord = (asset: HomeAsset): AssetFormValues => ({
   purchasePrice: asset.purchasePrice?.toString() || '',
   warrantyExpiration: asset.warrantyExpiration || '',
   warrantyProvider: asset.warrantyProvider || '',
+  warrantyLifetime: asset.warrantyLifetime === true,
   status: asset.status,
   notes: asset.notes || '',
   scheduleName: '',
@@ -495,9 +524,8 @@ export function completionFormValues(target: ScheduleCompletionTarget, today: st
   return {
     completedDate,
     mileage: completedMileage,
-    nextDueDate: target.targetType === 'home_asset'
-      ? calculateNextAssetDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || ''
-      : calculateNextVehicleDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || '',
+    // Anchor-aware (MA-11g): a calendar schedule stays on its day.
+    nextDueDate: nextDueAfterCompletion(target.schedule, completedDate) || target.schedule.nextDueDate || '',
     nextDueMileage: target.targetType === 'vehicle'
       ? calculateNextVehicleMileage(target.schedule, toNumber(completedMileage))?.toString() || target.schedule.nextDueMileage?.toString() || ''
       : '',

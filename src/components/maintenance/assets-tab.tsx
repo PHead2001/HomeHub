@@ -2,68 +2,119 @@
 
 import * as React from 'react';
 import { Plus } from 'lucide-react';
-import { BrandLogo } from '@/components/brand/brand-logo';
 import { EmptyState } from '@/components/empty-state';
 import { Stagger, StaggerItem } from '@/components/motion/stagger';
 import type { useInPageMorph } from '@/components/shopping/use-in-page-morph';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { TabsContent } from '@/components/ui/tabs';
 import { pickAssetPhoto } from '@/lib/maintenance/display';
-import { healthKey, type HealthResult } from '@/lib/maintenance/health';
-import { getAssetScheduleMode, scheduleKeyFor, type ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
+import { healthKey } from '@/lib/maintenance/health';
 import { warrantyCountdown } from '@/lib/maintenance/warranty';
 import { morphStyle, sharedId } from '@/lib/motion';
-import type { MaintenanceAttachment, MaintenanceAttachmentCategory, MaintenanceAttachmentTargetType } from '@/lib/types';
-import { cn, stableSlugify } from '@/lib/utils';
 import { AssetCard } from './asset-card';
-import { AttachmentPanel } from './attachment-panel';
-import { DetailActions, assetFields, missingCount } from './detail-panel';
-import { HealthRing } from './health-ring';
-import { LogList } from './log-list';
-import { DetailGrid } from './page-parts';
-import { formatDate, getAttachmentsForTarget, type LogPreset } from './page-model';
-import type { HealthTargets, HomeAsset, LogListShared, MaintenanceLog } from './tab-types';
+import { AssetDetail, type AssetDetailProps } from './asset-detail';
+import { DetailSheet } from './detail-sheet';
+import type { HealthTargets, HomeAsset } from './tab-types';
+import { useWideLayout } from './use-wide-layout';
 
-type AssetsTabProps = {
+type AssetsTabProps = Omit<AssetDetailProps, 'asset' | 'health' | 'style' | 'className'> & {
+  /** Active assets that pass the filters (retired ones are listed apart). */
   assets: HomeAsset[];
-  attachments: MaintenanceAttachment[];
+  retiredAssets: HomeAsset[];
+  /** Every asset in the household, before filters (for the empty state). */
+  totalAssets: number;
   health: { targets: HealthTargets };
-  today: string;
   selectedAsset: HomeAsset | null;
-  assetLogs: MaintenanceLog[];
-  highlightedScheduleKey: string | null;
-  detailMorph: ReturnType<typeof useInPageMorph>;
-  canEdit: boolean;
-  canDelete: boolean;
-  canComplete: boolean;
-  canCreateLogs: boolean;
-  uploadingAttachmentTarget: string | null;
-  deletingAttachmentId: string | null;
-  logListProps: LogListShared;
   setSelectedAssetId: (id: string) => void;
-  openAssetDialog: (asset?: HomeAsset) => void;
-  setAssetToDelete: (asset: HomeAsset) => void;
-  uploadAttachment: (targetType: MaintenanceAttachmentTargetType, targetId: string, category: MaintenanceAttachmentCategory, file: File) => void;
-  setAttachmentToDelete: (attachment: MaintenanceAttachment) => void;
-  openScheduleCompletionDialog: (target: ScheduleCompletionTarget) => void;
-  openLogDialog: (preset?: LogPreset) => void;
+  detailMorph: ReturnType<typeof useInPageMorph>;
+  /** A record link asked for this asset (phone: open its sheet). */
+  detailRequest: { kind: 'asset' | 'vehicle'; id: string; n: number } | null;
+  /** A dialog is open over the page: Back must not close the detail sheet under it. */
+  dialogOpen: boolean;
+  filtered: boolean;
 };
 
-/** Home Assets: the photo-first card grid and the selected asset's detail panel. */
-export const AssetsTab = React.memo(function AssetsTab({
-  assets, attachments, health, today, selectedAsset, assetLogs, highlightedScheduleKey, detailMorph, canEdit, canDelete, canComplete,
-  canCreateLogs, uploadingAttachmentTarget, deletingAttachmentId, logListProps, setSelectedAssetId, openAssetDialog, setAssetToDelete,
-  uploadAttachment, setAttachmentToDelete, openScheduleCompletionDialog, openLogDialog,
-}: AssetsTabProps) {
-  const healthFor = (targetType: 'home_asset' | 'vehicle', id: string): HealthResult | undefined => health.targets[healthKey(targetType, id)];
-  const detailActions = (props: Omit<React.ComponentProps<typeof DetailActions>, 'canEdit' | 'canDelete'>) => (
-    <DetailActions canEdit={canEdit} canDelete={canDelete} {...props} />
-  );
+/** Grid classes shared with Vehicles: as many 15rem+ columns as fit (2-3 beside the detail column). */
+export const CARD_GRID = 'grid content-start gap-3 grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))]';
+/** The page grid: the cards fill the width; from lg a sticky detail column sits beside them. */
+export const PAGE_GRID = 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,420px)]';
+/**
+ * The sticky detail column, 1rem below the sticky site header (`header.tsx`: h-14, 3.5rem), scrolling
+ * on its own when taller than the window, with 1rem left below it (so its bottom is reachable at 1263x722
+ * and 1024x600).
+ */
+// The cap (100dvh - 9rem) keeps the column's bottom on screen before it sticks (it starts below the
+// header and the tab row, about 7.75rem down) and when it sticks inside a scrolling main below the
+// header, not only when it sticks to the window; a taller detail scrolls inside the column.
+export const DETAIL_COLUMN = 'min-w-0 lg:sticky lg:top-[4.5rem] lg:max-h-[calc(100dvh-9rem)] lg:self-start lg:overflow-y-auto lg:overscroll-contain';
+
+/**
+ * Home Assets (MA-17, MA-18): the photo-first card grid filling the width, retired assets in a
+ * collapsed section below (MA-11j), and the selected asset's detail: a sticky column from `lg`,
+ * a full-height sheet on a phone (tapping a card opens it; Back closes it).
+ */
+export const AssetsTab = React.memo(function AssetsTab(props: AssetsTabProps) {
+  const {
+    assets, retiredAssets, totalAssets, health, today, selectedAsset, detailMorph, canEdit, setSelectedAssetId, openAssetDialog,
+    detailRequest, dialogOpen, filtered,
+  } = props;
+  const wide = useWideLayout();
+  // The record the phone sheet was opened for: if it goes away (deleted here or elsewhere) and the
+  // selection falls back to another record, the sheet closes instead of showing that one.
+  const [sheetFor, setSheetFor] = React.useState<string | null>(null);
+  const sheetOpen = sheetFor !== null && selectedAsset?.id === sheetFor;
+  const [showRetired, setShowRetired] = React.useState(false);
+
+  // A record link (deep link, Open from a reminder) opens the sheet on a phone.
+  // Starts at 0: a link applied as the page first appears (a deep link) opens the sheet too.
+  const [handledRequest, setHandledRequest] = React.useState(0);
+  if (detailRequest && detailRequest.n !== handledRequest) {
+    setHandledRequest(detailRequest.n);
+    if (detailRequest.kind === 'asset' && !wide) setSheetFor(detailRequest.id);
+  }
+
+  const select = (asset: HomeAsset, event: React.MouseEvent<HTMLButtonElement>) => {
+    if (!wide) {
+      setSelectedAssetId(asset.id);
+      setSheetFor(asset.id);
+      return;
+    }
+    if (selectedAsset?.id === asset.id) return;
+    const morph = sharedId('asset', asset.id);
+    detailMorph.run(morph, () => setSelectedAssetId(asset.id), { sync: true, event });
+  };
+
+  const card = (asset: HomeAsset, retired = false) => {
+    const morph = sharedId('asset', asset.id);
+    const selected = selectedAsset?.id === asset.id;
+    return (
+      <StaggerItem key={asset.id} className="flex min-w-0" style={wide && !retired ? morphStyle(detailMorph.morphName === morph && !selected ? morph : null) : undefined}>
+        <AssetCard
+          asset={asset}
+          photo={pickAssetPhoto(props.attachments, asset.id)}
+          health={health.targets[healthKey('home_asset', asset.id)]}
+          warranty={warrantyCountdown(asset, today)}
+          selected={selected}
+          onSelect={(event) => select(asset, event)}
+        />
+      </StaggerItem>
+    );
+  };
+
+  const detail = selectedAsset ? (
+    <AssetDetail
+      key={selectedAsset.id}
+      {...props}
+      asset={selectedAsset}
+      health={health.targets[healthKey('home_asset', selectedAsset.id)]}
+      className={wide ? undefined : 'border-0 shadow-none'}
+      style={wide ? morphStyle(detailMorph.morphName === sharedId('asset', selectedAsset.id) ? sharedId('asset', selectedAsset.id) : null) : undefined}
+    />
+  ) : null;
 
   return (
     <TabsContent value="assets" className="space-y-4 pt-4">
-      {canEdit && assets.length > 0 && (
+      {canEdit && totalAssets > 0 && (
         <div className="flex justify-end">
           <Button onClick={() => openAssetDialog()}>
             <Plus className="mr-2 h-4 w-4" />
@@ -72,7 +123,7 @@ export const AssetsTab = React.memo(function AssetsTab({
         </div>
       )}
 
-      {assets.length === 0 ? (
+      {totalAssets === 0 ? (
         <EmptyState
           kind="assets"
           title="No home assets yet"
@@ -80,135 +131,51 @@ export const AssetsTab = React.memo(function AssetsTab({
           action={canEdit ? { label: 'Add Home Asset', icon: <Plus className="h-4 w-4" />, onClick: () => openAssetDialog() } : undefined}
         />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-          {/* content-start: cards keep their own height instead of stretching to the detail panel (B7). */}
-          <Stagger className="grid content-start gap-3 sm:grid-cols-2">
-            {assets.map((asset) => {
-              const morph = sharedId('asset', asset.id);
-              const selected = selectedAsset?.id === asset.id;
-              return (
-                <StaggerItem key={asset.id} className="flex" style={morphStyle(detailMorph.morphName === morph && !selected ? morph : null)}>
-                  <AssetCard
-                    asset={asset}
-                    photo={pickAssetPhoto(attachments, asset.id)}
-                    health={healthFor('home_asset', asset.id)}
-                    warranty={warrantyCountdown(asset, today)}
-                    selected={selected}
-                    onSelect={(event) => {
-                      if (selected) return;
-                      detailMorph.run(morph, () => setSelectedAssetId(asset.id), { sync: true, event });
-                    }}
-                  />
-                </StaggerItem>
-              );
-            })}
-          </Stagger>
+        <div className={PAGE_GRID}>
+          <div className="min-w-0 space-y-4">
+            {assets.length > 0 ? (
+              <Stagger className={CARD_GRID}>{assets.map((asset) => card(asset))}</Stagger>
+            ) : (
+              <EmptyState
+                compact
+                headingLevel={3}
+                title={filtered ? 'No assets match' : 'No active assets'}
+                description={filtered ? 'Try another room, category or search.' : 'Retired assets are kept out of the main list.'}
+              />
+            )}
 
-          {selectedAsset && (
-            <Card className="min-w-0" data-testid="asset-detail" style={morphStyle(detailMorph.morphName === sharedId('asset', selectedAsset.id) ? sharedId('asset', selectedAsset.id) : null)}>
-              <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                {/* The brand is listed as text in the details below, so the mark is decorative. */}
-                <BrandLogo brand={selectedAsset.brand} size="md" decorative className="text-primary" />
-                <div className="min-w-0 flex-1">
-                  <CardTitle className="font-headline">{selectedAsset.name}</CardTitle>
-                  <CardDescription>{selectedAsset.category}</CardDescription>
-                </div>
-                {healthFor('home_asset', selectedAsset.id) && (
-                  <HealthRing
-                    score={healthFor('home_asset', selectedAsset.id)!.score}
-                    band={healthFor('home_asset', selectedAsset.id)!.band}
-                    label={`${selectedAsset.name} health`}
-                  />
-                )}
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <DetailGrid fields={assetFields(selectedAsset)} />
-                {selectedAsset.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedAsset.notes}</p>}
-                {detailActions({
-                  name: selectedAsset.name,
-                  kind: 'home asset',
-                  missing: missingCount(assetFields(selectedAsset)),
-                  onEdit: () => openAssetDialog(selectedAsset),
-                  onDelete: () => setAssetToDelete(selectedAsset),
-                })}
-                <AttachmentPanel
-                  attachments={getAttachmentsForTarget(attachments, 'home_asset', selectedAsset.id)}
-                  targetType="home_asset"
-                  targetId={selectedAsset.id}
-                  uploading={uploadingAttachmentTarget === `home_asset:${selectedAsset.id}`}
-                  deletingId={deletingAttachmentId}
-                  canUpload={canEdit}
-                  canDelete={canDelete}
-                  onUpload={uploadAttachment}
-                  onDelete={setAttachmentToDelete}
-                />
-                {selectedAsset.schedules && selectedAsset.schedules.length > 0 && (
-                  <div className="space-y-2">
-                    <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
-                    {selectedAsset.schedules.map((schedule, index) => {
-                      const key = scheduleKeyFor(selectedAsset.id, schedule, index, 'home_asset');
-                      return (
-                        <div
-                          key={`${schedule.scheduleName}-${index}`}
-                          id={`maintenance-schedule-${stableSlugify(key)}`}
-                          data-testid={`asset-schedule-${schedule.id || index}`}
-                          className={cn('rounded-lg border p-3', highlightedScheduleKey === key && 'ring-2 ring-primary')}
-                        >
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div>
-                              <p className="text-sm font-medium">{schedule.scheduleName || 'Scheduled maintenance'}</p>
-                              {getAssetScheduleMode(schedule) === 'checklist' ? (
-                                <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
-                              ) : (
-                                <>
-                                  <p className="text-sm text-muted-foreground">
-                                    {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'Next date will be set when completed'}
-                                  </p>
-                                  {schedule.frequencyType && schedule.intervalValue && (
-                                    <p className="text-xs text-muted-foreground">
-                                      Every {schedule.intervalValue} {schedule.frequencyType}
-                                    </p>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                            {canComplete && getAssetScheduleMode(schedule) === 'scheduled' && <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => openScheduleCompletionDialog({
-                                targetType: 'home_asset',
-                                asset: selectedAsset,
-                                scheduleIndex: index,
-                                schedule,
-                              })}
-                            >
-                              Complete
-                            </Button>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                <div className="flex justify-between gap-2">
-                  <h3 className="font-headline font-semibold">Linked Logs</h3>
-                  {canCreateLogs && (
-                    <Button variant="outline" size="sm" onClick={() => openLogDialog({ targetType: 'home_asset', assetId: selectedAsset.id })}>
-                      Add Log
-                    </Button>
-                  )}
-                </div>
-                <LogList
-                  {...logListProps}
-                  logs={assetLogs}
-                  emptyTitle="No logs for this asset"
-                  emptyDescription="Repairs, service and inspections for it will show up here."
-                />
-              </CardContent>
-            </Card>
-          )}
+            {retiredAssets.length > 0 && (
+              <div className="rounded-lg border p-3" data-testid="retired-assets">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full justify-between px-2"
+                  aria-expanded={showRetired}
+                  onClick={() => setShowRetired((value) => !value)}
+                >
+                  <span>Retired ({retiredAssets.length})</span>
+                  <span className="text-xs text-muted-foreground">{showRetired ? 'Hide' : 'Show'}</span>
+                </Button>
+                {showRetired && <Stagger className={`mt-3 ${CARD_GRID}`}>{retiredAssets.map((asset) => card(asset, true))}</Stagger>}
+              </div>
+            )}
+          </div>
+
+          {wide && detail && <div className={DETAIL_COLUMN}>{detail}</div>}
         </div>
+      )}
+
+      {!wide && (
+        <DetailSheet
+          open={sheetOpen}
+          title={selectedAsset?.name ?? 'Home asset'}
+          description="Home asset details"
+          blocked={dialogOpen}
+          onClose={() => setSheetFor(null)}
+          testId="asset-detail-sheet"
+        >
+          {detail}
+        </DetailSheet>
       )}
     </TabsContent>
   );

@@ -27,6 +27,10 @@ const ROUTES: Route[] = [
   { path: '/pets', heading: 'Your Pets', ready: (page) => page.getByRole('link', { name: 'Maple', exact: true }) },
   { path: '/calendar', heading: 'Calendar', ready: (page) => page.getByRole('button', { name: 'Previous week' }) },
   { path: '/maintenance', heading: 'Maintenance Center', ready: (page) => page.getByText('Main HVAC System').first() },
+  // M4 (MA-17, MA-18): the card grid with its sticky detail column, and the one grouped reminders list.
+  { path: '/maintenance?tab=assets', heading: 'Maintenance Center', ready: (page) => page.getByTestId('asset-detail') },
+  { path: '/maintenance?tab=vehicles', heading: 'Maintenance Center', ready: (page) => page.getByTestId('vehicle-detail') },
+  { path: '/maintenance?tab=reminders', heading: 'Maintenance Center', ready: (page) => page.getByTestId('reminders-list') },
   { path: '/notifications', heading: 'Notification Center', ready: (page) => page.getByText('HVAC filter due today').first() },
   { path: '/household', heading: 'Manage Household', ready: (page) => page.getByText('The Foxy Residence E2E').first() },
   { path: '/profile', heading: 'Your Profile', ready: (page) => page.getByText('Personal Information').first() },

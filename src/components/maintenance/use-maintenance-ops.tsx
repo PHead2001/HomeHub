@@ -7,18 +7,21 @@ import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { ToastAction } from '@/components/ui/toast';
 import {
-  completeMaintenanceSchedule, undoMaintenanceCompletion, undoMaintenanceSnooze, type MaintenanceActionResult,
+  completeMaintenanceSchedule, renewVehicleDocument, undoMaintenanceCompletion, undoMaintenanceSnooze, undoVehicleRenewal,
+  type MaintenanceActionResult,
 } from '@/app/maintenance/actions';
 import {
   CHANGED_MESSAGE, UNDO_HAS_ATTACHMENTS_MESSAGE, NO_ANSWER_MESSAGE, OFFLINE_MESSAGE, alreadyDoneMessage, callMaintenanceAction, keptMessage,
   mileageWarningMessage, newOpId,
 } from './maintenance-action-client';
-import { cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type StoredSchedule } from '@/lib/maintenance/operations';
+import { cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type RenewableDocument, type StoredSchedule } from '@/lib/maintenance/operations';
+import type { Vehicle } from '@/lib/types';
 import type { ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
 import type { MarkDoneResult } from './reminder-list';
 import { formatDate, getScheduleCompletionName, trimOptional, type SaveNoticeState } from './page-model';
 import { useStableHandler } from './use-stable-handler';
 import { createPendingRequests, undoOfferMs } from '@/lib/maintenance/action-call';
+import { commitStagedReceipts, savedLogIdOf } from './receipt-staging';
 
 /** An unanswered request kept for the next press: same op id, same call, same handling. */
 type HeldRequest<T, R> = {
@@ -81,7 +84,11 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
       const outcome = await callMaintenanceAction(householdId, call);
       if (outcome.kind === 'ok') {
         pendingRef.current.settle(key);
-        return { kind: 'ok', value: await handle(outcome.data) };
+        const value = await handle(outcome.data);
+        // Receipts picked in the log form go to the log the server just saved (MA-16).
+        const logId = key === 'log' ? savedLogIdOf(outcome.data) : null;
+        if (logId) commitStagedReceipts(logId);
+        return { kind: 'ok', value };
       }
       if (outcome.kind === 'failed') {
         pendingRef.current.settle(key);
@@ -164,6 +171,62 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
       toast({ title: "Can't undo", description: 'The time to undo has passed.' });
     } else if (outcome.data.status === 'superseded') {
       toast({ title: "Can't undo", description: 'It was marked done or snoozed again since, so it stays as it is.' });
+    }
+  };
+
+  const undoRenewal = async (opId: string) => {
+    if (!householdId) return;
+    const outcome = await callMaintenanceAction(householdId, context => undoVehicleRenewal({ ...context, opId }));
+    if (outcome.kind !== 'ok') {
+      toast({ variant: 'destructive', title: "Couldn't undo", description: outcome.kind === 'failed' ? outcome.message : outcome.kind === 'offline' ? OFFLINE_MESSAGE : NO_ANSWER_MESSAGE });
+    } else if (outcome.data.status === 'undone') {
+      toast({ title: 'Renewal undone', description: keptMessage(outcome.data.kept, 'renewed it') || undefined });
+    } else if (outcome.data.status === 'expired') {
+      toast({ title: "Can't undo", description: 'The time to undo has passed.' });
+    }
+  };
+
+  // The document being renewed (one at a time), for the button's spinner.
+  const [renewing, setRenewing] = useState<{ vehicleId: string; field: RenewableDocument } | null>(null);
+
+  /**
+   * "Renewed (+1 year)" (MA-33a): the server moves that one date a year on, from the value it
+   * reads, only while it is still the date this page showed; a toast offers Undo for 10 s.
+   */
+  const renewDocument = async (vehicle: Vehicle, field: RenewableDocument) => {
+    if (renewing) return;
+    const label = field === 'registrationExpiration' ? 'Registration' : 'Inspection';
+    const renew = { opId: newOpId(), vehicleId: vehicle.id, field, seen: vehicle[field] || null };
+    setRenewing({ vehicleId: vehicle.id, field });
+    try {
+      await runOp(`renew:${vehicle.id}:${field}`, renew.opId, context => renewVehicleDocument({ ...context, renew }), (result) => {
+        if (result.status === 'renewed') {
+          const title = `${label} renewed`;
+          const description = `${vehicle.nickname}'s ${label.toLowerCase()} now expires ${formatDate(result.expiration)}.`;
+          // Undo only for what is left of the window (a replayed or slow answer offers less, or none).
+          const offer = undoOfferMs(result.undoMs);
+          if (offer === null) {
+            toast({ title, description });
+            return;
+          }
+          const handle = toast({
+            title,
+            description,
+            duration: offer,
+            action: (
+              <ToastAction altText={`Undo renewing the ${label.toLowerCase()}`} onClick={() => { handle.dismiss(); void undoRenewal(result.opId); }}>
+                Undo
+              </ToastAction>
+            ),
+          });
+        } else if (result.status === 'gone') {
+          toast({ title: 'That vehicle no longer exists.' });
+        } else {
+          toast({ title: CHANGED_MESSAGE });
+        }
+      }, 'toast');
+    } finally {
+      setRenewing(null);
     }
   };
 
@@ -257,6 +320,8 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
     mileageConfirmed: useStableHandler(mileageConfirmed),
     undoSnooze: useStableHandler(undoSnooze),
     completeSchedule: useStableHandler(completeSchedule),
+    renewing,
+    renewDocument: useStableHandler(renewDocument),
     ownerIdOf,
   };
 }

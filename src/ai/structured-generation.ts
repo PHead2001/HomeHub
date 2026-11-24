@@ -5,7 +5,17 @@ import { getOpenAiClient } from '@/ai/openai-client';
 import { toStrictOutputSchema } from '@/ai/strict-output-schema';
 import { buildUntrustedDataPrompt, HOMEHUB_AI_SYSTEM_INSTRUCTION } from '@/ai/system-instruction';
 
-export type ModelBackedFlowName = 'categorization' | 'categorization-batch' | 'recipe' | 'maintenance-summary' | 'overview' | 'command-parse';
+export type ModelBackedFlowName = 'categorization' | 'categorization-batch' | 'recipe' | 'maintenance-summary' | 'maintenance-receipt' | 'overview' | 'command-parse';
+
+/**
+ * One file sent with the request (MA-30 receipts): an image as an `image_url` data URL, a PDF as a
+ * `file` part. It is untrusted data like the JSON input; it never reaches the system message.
+ */
+export type GenerationAttachment = {
+  contentType: 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf';
+  fileName: string;
+  dataBase64: string;
+};
 export type AiReasoningEffort = 'low' | 'medium' | 'high';
 
 export type AiGenerationUsage = {
@@ -56,7 +66,7 @@ const isDeterministicMode = () => {
 
 const getScenario = (input: unknown) => {
   const serialized = JSON.stringify(input).toLowerCase();
-  const match = serialized.match(/ai-test:(success|outside-category|timeout|rate-limit|provider-error|malformed|refusal|incomplete)/);
+  const match = serialized.match(/ai-test:(success|outside-category|timeout|rate-limit|provider-error|malformed|refusal|incomplete|slow)/);
   return match?.[1] || 'success';
 };
 
@@ -155,6 +165,20 @@ const deterministicOutput = (flowName: ModelBackedFlowName, input: unknown) => {
   }
 
   if (flowName === 'command-parse') return deterministicCommandParse(input);
+
+  if (flowName === 'maintenance-receipt') {
+    // A fixed receipt; `ai-test:receipt-hostile` returns markup, a control character and an
+    // over-long part list, so tests prove the browser shows them only as bounded text.
+    if (JSON.stringify(input).includes('ai-test:receipt-hostile')) {
+      return {
+        cost: 42.5,
+        serviceProvider: `<img src=x onerror=alert(1)>Shady${String.fromCharCode(7)} Repairs`,
+        partsUsed: 'Gasket '.repeat(120),
+      };
+    }
+    if (JSON.stringify(input).includes('ai-test:receipt-empty')) return { cost: null, serviceProvider: null, partsUsed: null };
+    return { cost: 129.95, serviceProvider: 'Comfort Air Services', partsUsed: 'MERV 11 filter 16x25x1' };
+  }
 
   const summaryInput = input as { log: string };
   const cleanLog = summaryInput.log.replace(/ai-test:[a-z-]+/gi, '').trim();
@@ -256,6 +280,7 @@ export const generateStructured = async <Schema extends z.ZodType>({
   timeoutMs,
   maxOutputTokens,
   reasoningEffort,
+  attachment,
 }: {
   flowName: ModelBackedFlowName;
   input: unknown;
@@ -265,6 +290,8 @@ export const generateStructured = async <Schema extends z.ZodType>({
   timeoutMs: number;
   maxOutputTokens: number;
   reasoningEffort?: AiReasoningEffort;
+  /** A file the model reads with the input (receipts). */
+  attachment?: GenerationAttachment;
 }): Promise<StructuredGenerationResult<z.output<Schema>>> => {
   const startedAt = Date.now();
   let outcome = 'success';
@@ -281,6 +308,8 @@ export const generateStructured = async <Schema extends z.ZodType>({
         untrustedInput: input,
         reasoningEffort,
       };
+      // `ai-test:slow` answers after 3 s, so tests can change or clear a receipt meanwhile.
+      if (getScenario(input) === 'slow') await new Promise(resolve => setTimeout(resolve, 3_000));
       const output = outputSchema.parse(strictSchema.decode(deterministicOutput(flowName, input)));
       return { output, model: `deterministic/${model}` };
     }
@@ -291,7 +320,17 @@ export const generateStructured = async <Schema extends z.ZodType>({
       model,
       messages: [
         { role: 'system', content: HOMEHUB_AI_SYSTEM_INSTRUCTION },
-        { role: 'user', content: buildUntrustedDataPrompt(taskInstruction, input) },
+        {
+          role: 'user',
+          content: attachment
+            ? [
+              { type: 'text', text: buildUntrustedDataPrompt(taskInstruction, input) },
+              attachment.contentType === 'application/pdf'
+                ? { type: 'file', file: { filename: attachment.fileName, file_data: `data:application/pdf;base64,${attachment.dataBase64}` } }
+                : { type: 'image_url', image_url: { url: `data:${attachment.contentType};base64,${attachment.dataBase64}`, detail: 'high' } },
+            ]
+            : buildUntrustedDataPrompt(taskInstruction, input),
+        },
       ],
       response_format: {
         type: 'json_schema',

@@ -12,9 +12,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { MAX_MILEAGE } from '@/lib/maintenance/operations';
 import {
-  calculateNextAssetDueDate,
-  calculateNextVehicleDueDate,
   calculateNextVehicleMileage,
+  nextDueAfterCompletion,
   type ScheduleCompletionTarget,
 } from '@/lib/maintenance/schedules';
 import { AutoResizeTextarea, MileageWarning, SaveNotice } from './page-parts';
@@ -116,9 +115,7 @@ function ScheduleCompletionBody({ target, today, busy, notice, mileageMessage, o
                         field.onChange(event);
                         const completedDate = event.target.value;
                         if (!target || !completedDate) return;
-                        const nextDate = target.targetType === 'home_asset'
-                          ? calculateNextAssetDueDate(target.schedule, completedDate)
-                          : calculateNextVehicleDueDate(target.schedule, completedDate);
+                        const nextDate = nextDueAfterCompletion(target.schedule, completedDate);
                         if (nextDate) {
                           scheduleCompletionForm.setValue('nextDueDate', nextDate);
                         }

@@ -23,6 +23,10 @@ test.describe('maintenance: warranty ring and odometer (H10)', () => {
     await expect(ring).toHaveAttribute('data-term-days', '1551');
     await expect(hvac.getByRole('img', { name: 'Main HVAC System: Warranty: 9 days left of 1,551' })).toBeVisible();
     await expect(ring).toContainText('9d');
+    // MA-17/MA-23: a readable caption says what the ring is, on touch too (no hover-only title).
+    await expect(hvac.getByTestId('warranty-caption')).toHaveText('Warranty · 9 days');
+    expect(await hvac.getByTestId('warranty-caption').evaluate((el) => getComputedStyle(el).fontSize)).toBe('14px');
+    await expect(ring).not.toHaveAttribute('title', /.*/);
     // An asset without a warranty end date has no ring.
     await expect(page.getByTestId('asset-card-dishwasher').getByTestId('warranty-ring')).toHaveCount(0);
   });

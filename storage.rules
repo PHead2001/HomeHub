@@ -92,11 +92,26 @@ service firebase.storage {
         request.resource.contentType.matches('image/(png|jpeg|webp|gif|heic|heif|avif)|application/pdf|text/plain|application/msword|application/vnd[.]openxmlformats-officedocument[.](wordprocessingml[.]document|spreadsheetml[.]sheet)');
     }
 
+    // MA-16/MA-30: a member with maintenance.createLogs (without maintenance.edit) may upload a
+    // receipt or photo for a log they created through the server within the last 30 minutes
+    // (doneByUid and createdAtServer are server-owned). Mirrors ownNewLogAttachment in
+    // firestore.rules. Two Firestore documents per evaluation at most: the member and the log.
+    function ownNewLogFile(householdId, targetId) {
+      let log = firestore.get(/databases/(default)/documents/households/$(householdId)/maintenance/$(targetId)).data;
+      return log.get('doneByUid', '') == request.auth.uid &&
+        log.get('createdAtServer', null) is timestamp &&
+        request.time < log.createdAtServer + duration.value(30, 'm') &&
+        request.resource.metadata != null &&
+        request.resource.metadata.get('uploadedByUid', '') == request.auth.uid;
+    }
+
     match /households/{householdId}/maintenance/{targetType}/{targetId}/{fileName} {
       allow read: if hasPermission(householdId, 'maintenance.view') || deviceSectionForStorage(householdId, 'maintenance');
-      allow create: if hasPermission(householdId, 'maintenance.edit') &&
-        targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
-        validMaintenanceFile();
+      allow create: if targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
+        validMaintenanceFile() && (
+          hasPermission(householdId, 'maintenance.edit') ||
+          (targetType == 'maintenance_log' && hasPermission(householdId, 'maintenance.createLogs') &&
+            ownNewLogFile(householdId, targetId)));
       allow update: if false;
       allow delete: if hasPermission(householdId, 'maintenance.delete');
     }

@@ -42,7 +42,7 @@ function EntryButton({ entry, line, onOpen }: { entry: ComingUpEntry; line: stri
       )}
     >
       <Icon aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1">
+      <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
         <span className="font-medium">{reminder.title}</span>
         <span className="text-muted-foreground"> · {reminder.relatedName}</span>
         <span className="block text-xs text-muted-foreground">{line}</span>

@@ -54,9 +54,9 @@ export const VehicleCard = forwardRef<HTMLButtonElement, {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <BrandLogo brand={vehicle.make} size="sm" decorative className="text-muted-foreground" />
-              <p className="min-w-0 font-headline font-semibold">{vehicle.nickname}</p>
+              <p className="min-w-0 break-words font-headline font-semibold [overflow-wrap:anywhere]">{vehicle.nickname}</p>
             </div>
-            <p className="text-sm text-muted-foreground">{describe(vehicle)}</p>
+            <p className="break-words text-sm text-muted-foreground [overflow-wrap:anywhere]">{describe(vehicle)}</p>
           </div>
           {inactive
             ? statusLabel && <Badge variant="outline">{statusLabel}</Badge>

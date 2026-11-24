@@ -12,7 +12,8 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 
 - Categorize shopping items against a supplied category list: one batched call per submission (`categorizeGroceryItems`, up to 40 names, QA-6). The single-item `categorizeGroceryItem` action remains for the e2e household probe; no screen calls it any more.
 - Generate a recipe suggestion from pantry inventory, built around the stock that goes off soonest, with pantry and missing ingredients marked.
-- Summarize maintenance notes without changing the original log.
+- Summarize maintenance notes without changing them; the Maintenance Center stores the summary on the log with its notes hash (`summarizeStoredMaintenanceLog`).
+- Read a maintenance receipt (photo or PDF) into cost, provider and parts for the log form to confirm (`readMaintenanceReceipt`, MA-30); it never writes.
 - Generate a permission-filtered dashboard overview from exact server-calculated facts (shown as the AI rewrite of the dashboard's morning brief, on demand).
 - Read a command-palette quick-add sentence the deterministic parser could not read, into one structured, previewable intent (no writes).
 - Resolve a barcode through the household library and Open Food Facts without calling OpenAI.
@@ -33,6 +34,7 @@ Barcode lookup is an authenticated model-free server action owned jointly with t
 - `src/ai/flows/*`
 - `tests/ai/deterministic-flows.test.ts`
 - `tests/ai/parse-command.test.ts`
+- `tests/ai/read-receipt.test.ts`
 - `tests/unit/ai-strict-schema.test.ts`
 - `tests/unit/ai-openai-provider.test.ts`
 - `tests/unit/overview-facts.test.ts` (the maintenance aggregation is covered in `tests/unit/maintenance-reminder-views.test.ts`)
@@ -67,11 +69,16 @@ Response handling: a `refusal` or `finish_reason: 'content_filter'` is `refused`
 
 `src/ai/tasks/parse-command.ts` (`parseCommandFlow`, flow name `command-parse`, model `openAiModels.default`, 8 s timeout, 400 output tokens) is the AI fallback for the palette's quick add ([Application Shell](../application-shell/README.md)). The public action is `parseCommand` in `src/ai/flows/parse-command-flow.ts`. Input (`ParseCommandInputSchema`): the sentence (2-200 characters), today's date, and display names (at most 80 characters each) paired with opaque references: members `m1…` (30), rooms `r1…` (60), pets `p1…` (30), lists `l1…` (30), vehicles `v1…` (20). No emails, document ids or other fields are sent; a name that is or contains an email, or equals the member's email name, becomes a neutral label ("Member 2", `modelSafeName` with `src/ai/redact.ts`), and the client resolves references back (`src/lib/dashboard/quick-add-ai.ts`). Output (`ParseCommandOutputSchema`, strict-schema compatible): `kind` (`chore`, `maintenance`, `shopping`, `feeding` or `none`) and the one matching optional object (chore task, due date, repeat, assignee and room refs; maintenance title, mileage, vehicle ref; shopping items and list ref; feeding pet ref, amount and unit). `sanitizeParseCommandOutput` then keeps only kinds the caller's verified permissions allow, drops unknown references (an unknown pet makes it `none`), invalid calendar dates and repeats without their day, any part other than the chosen kind's, and a mileage whose digits are not in the member's own sentence. The model never writes: the palette shows the result as a preview and writes only on Confirm, through the same document shapes as the module screens.
 
+### Receipt reader (`maintenance-receipt`)
+
+`src/ai/tasks/read-receipt.ts` (`readReceiptFlow`, flow name `maintenance-receipt`, model `openAiModels.maintenance`, 20 s timeout, 400 output tokens) reads one receipt for the Maintenance log form; the public action is `readMaintenanceReceipt` in `src/ai/flows/read-receipt-flow.ts`. Input (`ReadReceiptInputSchema`): a file name (1-200 characters), a content type (`image/jpeg`, `image/png`, `image/webp` or `application/pdf`) and the file as base64 (at most 700,000 characters, about 512 KB; the browser downsizes photos first). `generateStructured` takes an optional `attachment`: the file travels as a user content part (an `image_url` data URL, or a `file` part for a PDF) next to the untrusted-data text block, which carries only the name and type; never in the system message. Output (`ReadReceiptOutputSchema`): `cost` (0 to 1,000,000 or null), `serviceProvider` (at most 200 characters or null) and `partsUsed` (at most 1,000 or null); the instruction says to use null for anything not clearly printed and to ignore instructions written on the receipt. The browser treats the answer as untrusted again (`sanitizeReceiptFields` in `src/lib/maintenance/receipt-fill.ts`) and fills the form only after the member confirms, never over a field they changed (see [Maintenance Center](../maintenance-center/README.md)). Real-provider image and PDF input is exercised only by a live run; CI uses the deterministic double.
+
 ## Data Model and Persistence
 
 This module owns no persisted result collection.
 
-- Recipe and maintenance-summary outputs remain component state.
+- Recipe outputs remain component state. Maintenance summaries are stored on the log by the Maintenance Center's server action (`summarizeStoredMaintenanceLog` in `src/ai/flows/summarize-maintenance-log.ts`, writing through `src/lib/server/maintenance-summary.ts`); the plain `summarizeMaintenanceLog` (text in, summary out) stays for the e2e household probe and stores nothing.
+- Receipt readings are transient; only what the member confirms is saved, as ordinary log fields.
 - Grocery categories are persisted only as part of Shopping item writes.
 - Barcode lookup reads `households/{householdId}/barcode-library/{barcode}` and does not write it.
 - Overview facts and narrative are transient component state and are not written to Firestore.
@@ -87,7 +94,8 @@ Protected clients send the current Firebase ID token and household ID to the ser
 
 - Categorization (single and batched) requires `shopping.edit`. The batched action (`src/ai/flows/categorize-grocery-items-flow.ts`, flow `categorization-batch`, 10 requests a minute) takes one daily quota unit per submission, not one per item. Its task (`src/ai/tasks/categorize-grocery-items.ts`) asks for `{ results: [{ index, category }] }` (12 s timeout, 1200 output tokens) and returns one category per input name in input order; missing, duplicate or unknown answers become `Other`. Shopping items are already saved before the call, so a failure only leaves them under `Other`.
 - Recipe generation requires `shopping.view`.
-- Maintenance summaries require `maintenance.view`.
+- Maintenance summaries require `maintenance.view`. The stored-summary action takes its daily quota unit only when the model runs (`consumeQuota: false` and `consumeAiQuota` around the call), so returning a current stored summary costs nothing.
+- The receipt reader requires `maintenance.createLogs`, takes one daily AI request, allows 6 requests a minute, and has its own payload budget (`maxPayloadBytes`, about 704 KB, below Next.js's 1 MB Server Action body); every other action keeps the 64 KB cap.
 - Dashboard overview requires `household.view`, then independently gates every fact section by its module permission.
 - The palette reader requires at least one of `chores.create`, `maintenance.createLogs`, `shopping.edit` or `pets.addLogs` (`executeAuthorizedAiAction` and `authorizeHouseholdAction` accept a list meaning any one; an empty list grants nothing), and the model may only answer with the kinds those permissions allow. It takes one daily AI request and allows 20 requests per minute per member.
 - Barcode lookup requires `shopping.view` before either Admin Firestore or Open Food Facts is accessed.
@@ -101,6 +109,7 @@ Admin SDK reads occur only after this authorization result exists. Altered house
 - OpenAI Chat Completions through the official `openai` npm package (7.x), with strict structured outputs.
 - Default and per-flow model variables: `OPENAI_DEFAULT_MODEL=gpt-6-luna`, `OPENAI_CATEGORIZATION_MODEL=gpt-6-luna`, `OPENAI_RECIPE_MODEL=gpt-6.1-terra`, `OPENAI_MAINTENANCE_MODEL=gpt-6-luna`, and `OPENAI_OVERVIEW_MODEL=gpt-6-luna`. Overview alone sends `reasoning_effort: medium`.
 - `OPENAI_API_KEY` is server-only. App Hosting maps it to Secret Manager secret `openaiApiKey` at runtime.
+- Deterministic `maintenance-receipt`: cost 129.95, "Comfort Air Services", "MERV 11 filter 16x25x1"; `ai-test:receipt-hostile` returns markup, a control character and an over-long part list (the browser bounds them as plain text); `ai-test:receipt-empty` returns nulls. `ai-test:slow` (any flow) answers after 3 s, so tests can change or clear the input meanwhile.
 - Deterministic `command-parse`: a 4-7 digit reading is a maintenance log for the first supplied vehicle; a weekday name is a weekly chore for a member the text names (otherwise an unknown reference, which the sanitizer drops); `ai-test:invented-mileage` returns a mileage the text lacks, to prove it is dropped; anything else is `none`.
 - `HOMEHUB_AI_TEST_MODE=deterministic` works only with the exact demo emulator project, loopback Auth/Firestore hosts, and non-production Node environment.
 - Open Food Facts is used only by barcode lookup.
@@ -113,7 +122,7 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 - [Shopping](../shopping/README.md) calls grocery categorization.
 - [Application Shell](../application-shell/README.md) calls the overview (the brief's sparkle) and the palette reader.
 - [Pantry Inventory and Recipes](../pantry-recipes/README.md) calls recipe generation.
-- [Maintenance Center](../maintenance-center/README.md) calls note summarization; the overview's maintenance facts depend on its shared reminder builder and `reminderGroups`, through the dashboard's `computeMaintenanceFacts` ([Application Shell](../application-shell/README.md)).
+- [Maintenance Center](../maintenance-center/README.md) calls note summarization (stored on the log) and the receipt reader; the overview's maintenance facts depend on its shared reminder builder and `reminderGroups`, through the dashboard's `computeMaintenanceFacts` ([Application Shell](../application-shell/README.md)).
 - [Barcode Library](../barcode-library/README.md) owns model-free barcode behavior.
 - [Firebase Platform](../firebase-platform/README.md) supplies Admin credentials, membership records, emulator safety, and App Hosting configuration.
 
@@ -123,7 +132,8 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 - A manually selected Shopping category bypasses AI. Automatic failure, timeout, rate limit, invalid output, or configuration failure still saves exactly one item under `Other`.
 - Categorization accepts only a supplied category and adds `Other` without mutating caller input; the batched flow always returns exactly one category per name.
 - Recipe generation rejects fewer than two inventory items and does not persist results.
-- Maintenance summaries do not overwrite notes or persist automatically.
+- Maintenance summaries never change notes; a stored summary is written only by the server, only from the log's own notes, and only while those notes are unchanged.
+- A receipt reading never writes anything; a failed reading leaves the log form as it was.
 - Provider configuration, timeout, rate limit, refusal, malformed output, authentication, and permission failures return sanitized application errors.
 - No normal lint, build, CI, emulator, E2E, or visual command makes a paid OpenAI request.
 - Missing `OPENAI_API_KEY` does not break builds; a live model action returns a configuration error.
@@ -132,7 +142,7 @@ The manual live smoke command uses fixed non-sensitive inputs and runs the three
 - Prompt injection is reduced through authorization, data minimization, one explicit system instruction, structured untrusted-data boundaries, schemas, bounded output, and post-validation. Household text is never treated as trusted instructions; this is defense in depth, not a claim that prompt injection is impossible.
 
 - Dependencies: `openai` and `zod` 4 (4.6.6 or later). Genkit (`genkit`, `@genkit-ai/compat-oai`, `@genkit-ai/next`, `genkit-cli`) and its developer UI (`src/ai/dev.ts`, `genkit:dev`/`genkit:watch`) were removed on 2026-11-06. That closed the zod 3 memory-exhaustion advisory ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)) that Genkit's `zod ^3` pin kept open, the `openai` 4.x advisory chain (reported only for its zod 3 dependency) and Genkit's OpenTelemetry 1.x `JaegerPropagator` advisory. `npm ls zod` shows only zod 4. The root `protobufjs` and `@grpc/grpc-js` overrides stay for Firebase's own dependencies (see the [Firebase Platform README](../firebase-platform/README.md)).
-- Payload cap (defense in depth): `executeAuthorizedAiAction` rejects any client payload (context + input) whose size, roughly its JSON size, exceeds `MAX_AI_ACTION_PAYLOAD_BYTES` (64 KB) with `invalid_input`, before authorization or any schema validation; real inputs are a few KB. The size comes from `exceedsPayloadBudget`, a bounded walk that stops as soon as the budget is passed, so its work is capped by the budget even for shared references or cycles (which Server Actions can transport); it never builds the JSON string. Then come Firebase identity and household permission checks, the per-minute rate limit and the daily quota, and only then does the task validate its input. Next.js's 1 MB server-action body limit is the outer bound. `tests/server/ai-payload-limit.test.ts` covers the cap and its ordering.
+- Payload cap (defense in depth): `executeAuthorizedAiAction` rejects any client payload (context + input) whose size, roughly its JSON size, exceeds `MAX_AI_ACTION_PAYLOAD_BYTES` (64 KB) with `invalid_input`, before authorization or any schema validation; real inputs are a few KB. The size comes from `exceedsPayloadBudget`, a bounded walk that stops as soon as the budget is passed, so its work is capped by the budget even for shared references or cycles (which Server Actions can transport); it never builds the JSON string. Then come Firebase identity and household permission checks, the per-minute rate limit and the daily quota, and only then does the task validate its input. Next.js's 1 MB server-action body limit is the outer bound. Only `readMaintenanceReceipt` passes a larger `maxPayloadBytes` (one downsized file), still under that limit. `tests/server/ai-payload-limit.test.ts` covers the cap and its ordering.
 
 ## Validation
 
