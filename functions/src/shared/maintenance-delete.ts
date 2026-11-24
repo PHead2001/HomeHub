@@ -206,12 +206,17 @@ export type MaintenanceDeleteHooks = {
     precheck(tx: Transaction): Promise<{replay?: unknown}>;
     finalize(tx: Transaction, existed: boolean, name: string | null): void;
   };
+  /**
+   * Runs after the history query read the linked logs and before they are
+   * converted. Tests move a log to another record here.
+   */
+  beforeRepoint?: () => Promise<void>;
 };
 
 const repointLogs = async (
   db: Firestore, household: DocumentReference,
   targetType: "home_asset" | "vehicle", targetId: string, name: string,
-  now: Date, fieldDelete: unknown,
+  now: Date, fieldDelete: unknown, hooks: MaintenanceDeleteHooks = {},
 ): Promise<number> => {
   const field = targetType === "home_asset" ? "assetId" : "vehicleId";
   let count = 0;
@@ -223,21 +228,31 @@ const repointLogs = async (
     if (pass > MAINTENANCE_DELETE_MAX_PASSES) {
       throw new Error(`Keeping ${linked.length} log(s) as history failed`);
     }
+    if (pass === 1) await hooks.beforeRepoint?.();
     for (let start = 0; start < linked.length;
       start += MAINTENANCE_DELETE_PAGE_SIZE) {
-      const batch = db.batch();
-      for (const log of linked.slice(start,
-        start + MAINTENANCE_DELETE_PAGE_SIZE)) {
-        batch.update(log.ref, {
-          targetType: "general",
-          [field]: fieldDelete,
-          formerTargetType: targetType,
-          formerTargetName: name,
-          updatedAt: now.toISOString(),
-        });
-      }
-      await batch.commit();
-      count += Math.min(MAINTENANCE_DELETE_PAGE_SIZE, linked.length - start);
+      const refs = linked.slice(start, start + MAINTENANCE_DELETE_PAGE_SIZE)
+        .map((log) => log.ref);
+      // Each log is read again in the transaction and converted only while
+      // it still belongs to the deleted record: one someone moved to another
+      // asset or vehicle meanwhile keeps its new target.
+      count += await db.runTransaction(async (tx) => {
+        const fresh = await tx.getAll(...refs);
+        let converted = 0;
+        for (const log of fresh) {
+          if (!log.exists ||
+            !logBelongsTo(log.data() ?? {}, targetType, targetId)) continue;
+          tx.update(log.ref, {
+            targetType: "general",
+            [field]: fieldDelete,
+            formerTargetType: targetType,
+            formerTargetName: name,
+            updatedAt: now.toISOString(),
+          });
+          converted += 1;
+        }
+        return converted;
+      });
     }
   }
 };
@@ -368,7 +383,7 @@ export async function deleteMaintenanceCascade(
   const registry = input.targetType === "maintenance_log" ?
     null : input.targetType;
   const logs = registry ? await repointLogs(db, household, registry,
-    input.targetId, started.name, input.now, input.fieldDelete) : 0;
+    input.targetId, started.name, input.now, input.fieldDelete, hooks) : 0;
   // 3. The record's own files.
   const {attachments, files} = await deleteFiles(bucket, household, input);
   // 4. Reminders.

@@ -104,7 +104,8 @@ export type MileageResult =
   /** `undoMs`: what is left of the Undo window when the answer leaves the server (as for completions). */
   | { status: 'updated'; opId: string; currentMileage: number; mileageUpdatedAt: string; replay: boolean; undoMs?: number }
   | { status: 'gone' }
-  | { status: 'refused'; reason: 'invalid_mileage' | 'lower_needs_correction' };
+  /** A lower reading without the correction carries the mileage recorded now, for the correction copy. */
+  | { status: 'refused'; reason: 'invalid_mileage' | 'lower_needs_correction'; currentMileage?: number };
 
 /**
  * A device Undo (M8a, src/lib/server/device-maintenance.ts): the gate's authority, so the
@@ -751,7 +752,14 @@ export async function updateVehicleMileageAs(db: Firestore, householdId: string,
       correction: request.correction === true,
       today,
     });
-    if (plan.kind === 'refused') return { result: { status: 'refused', reason: plan.reason } };
+    if (plan.kind === 'refused') {
+      const recorded = vehicle.get('currentMileage');
+      return {
+        result: plan.reason === 'lower_needs_correction' && typeof recorded === 'number'
+          ? { status: 'refused', reason: plan.reason, currentMileage: recorded }
+          : { status: 'refused', reason: plan.reason },
+      };
+    }
     if (Object.keys(plan.patch).length > 0) tx.update(ref, { ...toUpdate(plan.patch), updatedAt: ctx.now.toISOString() });
     const result: MileageResult = { status: 'updated', opId, currentMileage: plan.currentMileage, mileageUpdatedAt: today, replay: false };
     tx.set(ledgerRef(house, opId), {

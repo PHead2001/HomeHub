@@ -15,13 +15,12 @@ import { useAuth } from '@/hooks/use-auth';
 import { useBackCloses } from '@/hooks/use-back-closes';
 import { useToast } from '@/hooks/use-toast';
 import { mileageFreshness } from '@/lib/maintenance/mileage-freshness';
-import { parseMileageInput } from '@/lib/maintenance/mileage-freshness';
-import { mileageWarning } from '@/lib/maintenance/operations';
+import { correctionAfterRefusal, parseMileageInput, planMileageSave, type MileageConfirmation } from '@/lib/maintenance/mileage-freshness';
 import { undoOfferMs } from '@/lib/maintenance/action-call';
 import { cn } from '@/lib/utils';
 import type { Vehicle } from '@/lib/types';
 import {
-  NO_ANSWER_MESSAGE, OFFLINE_MESSAGE, callMaintenanceAction, keptMessage, mileageWarningMessage, newOpId,
+  NO_ANSWER_MESSAGE, OFFLINE_MESSAGE, callMaintenanceAction, keptMessage, newOpId,
 } from './maintenance-action-client';
 
 const mi = (value: number) => `${value.toLocaleString('en-US')} mi`;
@@ -111,11 +110,12 @@ function UpdateMileageBody({ vehicle, today, busyRef, close, onOpenChange }: {
 }) {
   const { currentUser } = useAuth();
   const { toast } = useToast();
-  // The recorded mileage when the dialog opened (a snapshot arriving meanwhile does not reset it).
-  const [current] = useState(() => (typeof vehicle.currentMileage === 'number' ? vehicle.currentMileage : undefined));
+  // The recorded mileage when the dialog opened (a snapshot arriving meanwhile does not reset it);
+  // the server's latest value replaces it when it refuses a reading as lower (see below).
+  const [current, setCurrent] = useState(() => (typeof vehicle.currentMileage === 'number' ? vehicle.currentMileage : undefined));
   const [input, setInput] = useState(() => (current !== undefined ? String(current) : ''));
   const [error, setError] = useState('');
-  const [warning, setWarning] = useState<{ reading: number; kind: 'lower' | 'jump'; message: string } | null>(null);
+  const [warning, setWarning] = useState<MileageConfirmation | null>(null);
   const [busy, setBusyState] = useState(false);
   const setBusy = (value: boolean) => { busyRef.current = value; setBusyState(value); };
   const held = useRef<Held | null>(null);
@@ -143,12 +143,12 @@ function UpdateMileageBody({ vehicle, today, busyRef, close, onOpenChange }: {
       return;
     }
     setError('');
-    const kind = mileageWarning(reading, current);
-    if (kind && current !== undefined && warning?.reading !== reading) {
-      setWarning({ reading, kind, message: mileageWarningMessage(kind, current, reading, 'correction') });
+    const step = planMileageSave(reading, current, warning);
+    if (step.kind === 'ask') {
+      setWarning(step.confirmation);
       return;
     }
-    const correction = kind === 'lower';
+    const { correction } = step;
     const request: Held = held.current && held.current.reading === reading && held.current.correction === correction
       ? held.current
       : { opId: newOpId(), reading, correction };
@@ -166,9 +166,14 @@ function UpdateMileageBody({ vehicle, today, busyRef, close, onOpenChange }: {
       const result = outcome.data;
       if (result.status === 'gone') { setError('This vehicle no longer exists.'); return; }
       if (result.status === 'refused') {
-        setError(result.reason === 'lower_needs_correction'
-          ? 'That is lower than the recorded mileage. Confirm the correction to save it.'
-          : 'Enter the odometer reading as a whole number.');
+        if (result.reason === 'lower_needs_correction') {
+          // Someone raised the mileage meanwhile: ask for the correction against the latest value;
+          // the next Save sends it as a correction (or the person changes the reading).
+          if (typeof result.currentMileage === 'number') setCurrent(result.currentMileage);
+          setWarning(correctionAfterRefusal(request.reading, result.currentMileage));
+          return;
+        }
+        setError('Enter the odometer reading as a whole number.');
         return;
       }
       onOpenChange(false);
