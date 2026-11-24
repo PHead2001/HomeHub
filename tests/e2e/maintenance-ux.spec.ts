@@ -241,12 +241,11 @@ test.describe('maintenance center UX', () => {
   test('MA-1: the day rolls over at the household midnight on an open page', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     // One minute before midnight on Aug 1 in the household's zone (the seed household has none,
-    // so the server default, America/Chicago: midnight is 05:00 UTC). The clock is installed, not
-    // fixed, so the page's timer to the next household midnight runs.
-    // Reduced motion: a leaving card is removed at once instead of animating out on the
-    // installed clock (the animation is not what this test checks).
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.clock.install({ time: new Date('2026-08-02T04:59:00.000Z') });
+    // so the server default, America/Chicago: midnight is 05:00 UTC). The time is fixed, not
+    // installed, so the page's own timers and animations keep running in real time. The timer
+    // to the next household midnight is covered by tests/unit/household-day.test.ts; here the
+    // page is shown again after midnight (visibilitychange), the other way "today" is re-read.
+    await page.clock.setFixedTime(new Date('2026-08-02T04:59:00.000Z'));
     await page.goto('/maintenance?tab=reminders');
     await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
     // The HVAC unit's own filter: other specs in the same shard can add another
@@ -257,10 +256,8 @@ test.describe('maintenance center UX', () => {
     await expect(filterIn('reminders-due-soon')).toHaveCount(1);
     await expect(filterIn('reminders-overdue')).toHaveCount(0);
 
-    await page.clock.fastForward('02:00');
-    // Let time flow again, so timers the rollover started (the leaving card's fade-out)
-    // finish instead of waiting on the installed clock.
-    await page.clock.resume();
+    await page.clock.setFixedTime(new Date('2026-08-02T05:01:00.000Z'));
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     // Aug 2 in the household: overdue, without a reload or any data change.
     await expect(filterIn('reminders-overdue')).toHaveCount(1);
     await expect(filterIn('reminders-due-soon')).toHaveCount(0);
