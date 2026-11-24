@@ -27,7 +27,7 @@ import {
 // authoritative records, patches by stable schedule id and records who did it from
 // the verified ID token. Logic: src/lib/server/maintenance-operations.ts.
 
-export type MaintenanceFailureCode = 'unauthenticated' | 'forbidden' | 'invalid' | 'not_found' | 'conflict' | 'failed';
+export type MaintenanceFailureCode = 'unauthenticated' | 'forbidden' | 'invalid' | 'not_found' | 'conflict' | 'too_many_schedules' | 'failed';
 export type MaintenanceActionResult<T> =
   | { ok: true; data: T }
   | { ok: false; code: MaintenanceFailureCode; message: string };
@@ -40,6 +40,7 @@ const MESSAGES: Record<MaintenanceFailureCode, string> = {
   invalid: "That wasn't saved: some values aren't valid.",
   not_found: 'That item no longer exists.',
   conflict: 'That request was already used for something else. Try again.',
+  too_many_schedules: "That wasn't saved: a record can have at most 100 maintenance items, counting ones someone else added meanwhile. Remove one and save again.",
   failed: "Couldn't save. Try again.",
 };
 

@@ -3,6 +3,10 @@ import { describe, it } from 'node:test';
 import { initialLiveState, liveReducer, liveView, MAINTENANCE_COLLECTIONS, type LiveEvent } from '../../src/lib/maintenance/live-data';
 import { recentLogSummary } from '../../src/lib/maintenance/recent';
 import { deepLinkPlan } from '../../src/lib/maintenance/deep-link';
+import { completionFormValues, emptyLogForm, logFormFromRecord } from '../../src/components/maintenance/page-model';
+import { householdToday } from '../../src/lib/household-day';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const answerAll = (key: string, docs: Record<string, unknown[]> = {}) => MAINTENANCE_COLLECTIONS.reduce(
   (state, collection) => liveReducer(state, { type: 'answer', key, session: 1, collection, docs: docs[collection] ?? [], fromCache: false }),
@@ -129,5 +133,31 @@ describe('maintenance deep links', () => {
     assert.equal(deepLinkPlan('?tab=reminders', records).tab, 'reminders');
     assert.equal(deepLinkPlan('?tab=nope', records).tab, null);
     assert.equal(deepLinkPlan('', records).tab, null);
+  });
+});
+
+describe('date defaults use the household day (Codex review of PR #210)', () => {
+  // 00:30 UTC on Mar 2: London's (and UTC's) Mar 2, still Mar 1 in a Chicago household.
+  const instant = new Date('2026-03-02T00:30:00Z');
+  const today = householdToday('America/Chicago', instant);
+  const asset = { id: 'hvac', name: 'HVAC', category: 'HVAC', status: 'active' } as never;
+  const schedule = { id: 'filter', mode: 'scheduled', scheduleName: 'Filter', frequencyType: 'months', intervalValue: 3, nextDueDate: '2026-03-01' } as never;
+
+  it('fills the completion dialog and Log service with the household day, not the device day', () => {
+    assert.equal(today, '2026-03-01');
+    const values = completionFormValues({ targetType: 'home_asset', asset, scheduleIndex: 0, schedule }, today);
+    assert.equal(values.completedDate, '2026-03-01');
+    assert.equal(values.nextDueDate, '2026-06-01');
+    assert.equal(emptyLogForm({ targetType: 'home_asset', assetId: 'hvac', title: 'Filter' }, today).date, '2026-03-01');
+    assert.equal(logFormFromRecord({ id: 'l', title: 'x' } as never, today).date, '2026-03-01');
+  });
+
+  it('has no device-date default left in the maintenance page code', () => {
+    const dir = resolve(process.cwd(), 'src/components/maintenance');
+    const files = [...readdirSync(dir).map((file) => resolve(dir, file)), resolve(process.cwd(), 'src/components/maintenance-log-client.tsx')];
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      assert.doesNotMatch(source, /todayInputValue|format\(new Date\(\)/, file);
+    }
   });
 });

@@ -43,7 +43,7 @@ import {
  * `households/{h}/maintenance-ops/{opId}` makes a retry replay the stored result.
  */
 
-export type MaintenanceErrorCode = 'invalid' | 'not_found' | 'conflict' | 'forbidden';
+export type MaintenanceErrorCode = 'invalid' | 'not_found' | 'conflict' | 'forbidden' | 'too_many_schedules';
 
 export class MaintenanceOperationError extends Error {
   constructor(readonly code: MaintenanceErrorCode) {
@@ -817,6 +817,12 @@ async function saveRecordAs(db: Firestore, householdId: string, input: SaveInput
       });
       if (plan.changed) {
         const patch = { ...plan.patch };
+        // Schedules someone added meanwhile are kept by the merge, so the merged list can exceed
+        // what either request carried: checked here, after the merge, before anything is written
+        // (the Admin SDK bypasses the rules' list limit, and a longer list could not be edited again).
+        if (Array.isArray(patch[listField]) && (patch[listField] as StoredSchedule[]).length > MAX_SCHEDULES) {
+          throw new MaintenanceOperationError('too_many_schedules');
+        }
         if (Array.isArray(patch[listField])) patch[listField] = (patch[listField] as StoredSchedule[]).map(schedule => compact(schedule));
         if (spec.ownerType === 'vehicle' && 'currentMileage' in patch) patch.mileageUpdatedAt = patch.currentMileage === null ? null : today;
         tx.update(ref, { ...toUpdate(patch), updatedAt: nowIso });
@@ -887,7 +893,22 @@ export async function saveMaintenanceLogAs(db: Firestore, householdId: string, i
     if (!existingId && current.exists) throw new MaintenanceOperationError('conflict');
     // Never resurrects a log deleted meanwhile.
     if (existingId && !current.exists) throw new MaintenanceOperationError('not_found');
-    const plan = existingId ? planRecordEdit({ stored: current.data() ?? {}, base: base!, values, fields: Object.keys(LOG_SPECS) }) : null;
+    const edit = existingId ? planRecordEdit({ stored: current.data() ?? {}, base: base!, values, fields: Object.keys(LOG_SPECS) }) : null;
+    // The target type and its linked id are one choice: when this save changes any part of it,
+    // all of it is written from this form (never mixed field by field with a concurrent change
+    // of target, which could keep someone else's type with this form's id).
+    const plan = edit && ['targetType', 'assetId', 'vehicleId'].some(field => field in edit.patch)
+      ? {
+        ...edit,
+        patch: {
+          ...edit.patch,
+          targetType: values.targetType,
+          assetId: values.assetId ?? null,
+          vehicleId: values.vehicleId ?? null,
+          ...(values.targetType !== 'vehicle' ? { mileage: null } : {}),
+        },
+      }
+      : edit;
     // The log as it will be stored: an edit's patch applied to the freshly read document, so
     // a target someone else changed meanwhile (moved to another vehicle) is the one that counts.
     const merged: Record<string, unknown> = plan ? applyPatch({ ...(current.data() ?? {}) }, plan.patch) : values;

@@ -19,7 +19,7 @@ import {
 } from '@/lib/maintenance/schedules';
 import { AutoResizeTextarea, MileageWarning, SaveNotice } from './page-parts';
 import {
-  getScheduleCompletionName, scheduleCompletionSchema, toNumber,
+  completionFormValues, getScheduleCompletionName, scheduleCompletionSchema, toNumber,
   type SaveNoticeState, type ScheduleCompletionFormValues,
 } from './page-model';
 
@@ -31,25 +31,6 @@ function useLastValue<T>(value: T | null): T | null {
 }
 
 export type CompletionFormHandle = { setError: (field: keyof ScheduleCompletionFormValues, message: string) => void };
-
-/** The completion form's first values: done today (the household's), next due advanced by the interval. */
-export function completionFormValues(target: ScheduleCompletionTarget, today: string): ScheduleCompletionFormValues {
-  const completedDate = today;
-  const completedMileage = target.targetType === 'vehicle'
-    ? target.vehicle.currentMileage?.toString() || target.schedule.lastCompletedMileage?.toString() || ''
-    : '';
-  return {
-    completedDate,
-    mileage: completedMileage,
-    nextDueDate: target.targetType === 'home_asset'
-      ? calculateNextAssetDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || ''
-      : calculateNextVehicleDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || '',
-    nextDueMileage: target.targetType === 'vehicle'
-      ? calculateNextVehicleMileage(target.schedule, toNumber(completedMileage))?.toString() || target.schedule.nextDueMileage?.toString() || ''
-      : '',
-    notes: '',
-  };
-}
 
 /** Complete Scheduled Maintenance: record the work and set when it is next due. */
 export const ScheduleCompletionDialog = React.memo(function ScheduleCompletionDialog({

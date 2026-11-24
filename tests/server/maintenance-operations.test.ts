@@ -350,6 +350,40 @@ describe('review of PR #210', () => {
     await house().collection('maintenance-attachments').doc('receipt').update({ targetId: 'other-log' });
     assert.equal((await undoMaintenanceCompletionAs(adminDb, HOUSE, { opId: done.opId }, ctx(SAM))).status, 'undone');
   });
+
+  test("a log's target type and linked id are merged as one choice", async () => {
+    await vehicles().doc('van').set({ householdId: HOUSE, nickname: 'Van', status: 'active', currentMileage: 10000, serviceSchedules: [] });
+    const created = await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-03-01', type: 'repair' } }, ctx(SAM));
+    const base = { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-03-01', type: 'repair' };
+    // Both forms show the car. Alex moves the log to the HVAC; then Sam picks the van and saves.
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, targetType: 'home_asset', assetId: 'hvac', vehicleId: undefined } }, ctx(ALEX));
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, vehicleId: 'van' } }, ctx(SAM));
+    const log = (await logs().doc(created.id).get()).data()!;
+    assert.deepEqual({ targetType: log.targetType, vehicleId: log.vehicleId, assetId: log.assetId }, { targetType: 'vehicle', vehicleId: 'van', assetId: undefined },
+      "Sam's choice is the log's target, never the HVAC's type with the van's id");
+    // An edit that does not touch the target keeps someone else's move.
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base: { ...base, vehicleId: 'van' }, values: { ...base, vehicleId: 'van' } }, ctx(ALEX));
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, title: 'Wiper blades' } }, ctx(SAM));
+    const kept = (await logs().doc(created.id).get()).data()!;
+    assert.deepEqual({ vehicleId: kept.vehicleId, title: kept.title }, { vehicleId: 'van', title: 'Wiper blades' });
+  });
+
+  test('concurrent schedule additions cannot take a record past 100 schedules', async () => {
+    const many = Array.from({ length: 99 }, (_, i) => ({ id: `s${i}`, mode: 'checklist', scheduleName: `Item ${i}` }));
+    await assets().doc('hvac').update({ schedules: many });
+    const base = { ...(await asset()), schedules: many };
+    const add = (name: string) => ({ ...base, schedules: [...many, { id: name, mode: 'checklist', scheduleName: name }] });
+    await saveHomeAssetAs(adminDb, HOUSE, { opId: randomUUID(), id: 'hvac', base, values: add('first') }, ctx(SAM));
+    await assert.rejects(
+      saveHomeAssetAs(adminDb, HOUSE, { opId: randomUUID(), id: 'hvac', base, values: add('second') }, ctx(ALEX)),
+      (error: unknown) => error instanceof MaintenanceOperationError && error.code === 'too_many_schedules',
+    );
+    const stored = await asset();
+    assert.equal(stored.schedules.length, 100, 'nothing written by the refused save');
+    // The record stays editable: a save from the stored list goes through.
+    await saveHomeAssetAs(adminDb, HOUSE, { opId: randomUUID(), id: 'hvac', base: stored, values: { ...stored, name: 'Main HVAC' } }, ctx(ALEX));
+    assert.equal((await asset()).name, 'Main HVAC');
+  });
 });
 
 describe('server actions', () => {

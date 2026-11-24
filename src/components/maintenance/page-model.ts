@@ -9,7 +9,10 @@ import type {
   HomeAsset, HomeAssetSchedule, MaintenanceAttachment, MaintenanceAttachmentTargetType, MaintenanceLog, MaintenanceLogType,
   MaintenanceScheduleMode, MaintenanceTargetType, Vehicle, VehicleServiceSchedule,
 } from '@/lib/types';
-import { getAssetScheduleMode, getVehicleScheduleMode, type ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
+import {
+  calculateNextAssetDueDate, calculateNextVehicleDueDate, calculateNextVehicleMileage, getAssetScheduleMode, getVehicleScheduleMode,
+  type ScheduleCompletionTarget,
+} from '@/lib/maintenance/schedules';
 import { scheduleRef, type StoredSchedule } from '@/lib/maintenance/operations';
 
 export const assetCategories = [
@@ -476,3 +479,22 @@ export const getScheduleCompletionName = (target: ScheduleCompletionTarget) => {
     ? target.schedule.scheduleName || 'Scheduled maintenance'
     : target.schedule.serviceName || 'Scheduled maintenance';
 };
+
+/** The completion form's first values: done today (the household's), next due advanced by the interval. */
+export function completionFormValues(target: ScheduleCompletionTarget, today: string): ScheduleCompletionFormValues {
+  const completedDate = today;
+  const completedMileage = target.targetType === 'vehicle'
+    ? target.vehicle.currentMileage?.toString() || target.schedule.lastCompletedMileage?.toString() || ''
+    : '';
+  return {
+    completedDate,
+    mileage: completedMileage,
+    nextDueDate: target.targetType === 'home_asset'
+      ? calculateNextAssetDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || ''
+      : calculateNextVehicleDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || '',
+    nextDueMileage: target.targetType === 'vehicle'
+      ? calculateNextVehicleMileage(target.schedule, toNumber(completedMileage))?.toString() || target.schedule.nextDueMileage?.toString() || ''
+      : '',
+    notes: '',
+  };
+}
