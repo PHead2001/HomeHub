@@ -17,12 +17,30 @@ const SOON_DAYS = 30;
  * Warranty countdown ring (H10): the share of the warranty term still left, with
  * the days left inside. It sweeps down from full on mount (550 ms, value only);
  * reduced motion shows the end state at once. Fixed size, so nothing shifts.
+ * A lifetime warranty has no countdown: a 40 px tall pill reads "Lifetime" in
+ * place of the ring (same height, so the card row does not shift).
  */
 export function WarrantyRing({ countdown, name, className }: { countdown: WarrantyCountdown; name: string; className?: string }) {
   const reduced = useReducedMotion();
   const offset = CIRCUMFERENCE * (1 - countdown.fraction);
   const tone = countdown.expired ? 'text-muted-foreground' : countdown.daysLeft <= SOON_DAYS ? 'text-warning' : 'text-primary';
   const text = warrantyCountdownText(countdown);
+
+  if (countdown.lifetime) {
+    return (
+      <div
+        role="img"
+        aria-label={`${name}: ${text}`}
+        title={text}
+        className={cn('inline-flex shrink-0 items-center rounded-full border-4 border-success px-2 font-headline text-[10px] font-semibold text-foreground', className)}
+        style={{ height: BOX }}
+        data-testid="warranty-ring"
+        data-lifetime="true"
+      >
+        <span aria-hidden>{warrantyRingLabel(countdown)}</span>
+      </div>
+    );
+  }
 
   return (
     <div

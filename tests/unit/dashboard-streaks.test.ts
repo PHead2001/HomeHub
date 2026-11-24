@@ -92,12 +92,15 @@ describe('assemble: streaks and home health', () => {
       id: 'hvac', name: 'Main HVAC', category: 'HVAC', status: 'active',
       schedules: [{ id: 'filter', mode: 'scheduled', scheduleName: 'Replace air filter', nextDueDate: '2026-05-01' }],
     }];
-    const raw: DashboardRaw = { assets: assets as never, vehicles: [], logs: [] };
+    const raw: DashboardRaw = { assets: assets as never, vehicles: [] };
     const health = assembleDashboardFacts(raw, new Set(), access, context).facts.health;
     assert.ok(health && health.score < 100 && health.deductions.length > 0);
-    assert.equal(assembleDashboardFacts({ assets: [], vehicles: [], logs: [] }, new Set(), access, context).facts.health, null);
+    assert.equal(assembleDashboardFacts({ assets: [], vehicles: [] }, new Set(), access, context).facts.health, null);
+    // MA-10: active items but nothing tracked: no score (not a meaningless 100).
+    const untracked = [{ id: 'tv', name: 'TV', category: 'Other', status: 'active', warrantyExpiration: '2026-01-01' }];
+    assert.equal(assembleDashboardFacts({ assets: untracked as never, vehicles: [] }, new Set(), access, context).facts.health, null);
     assert.equal(assembleDashboardFacts(raw, new Set([HEALTH_FAILURE]), access, context).facts.health, undefined);
-    assert.equal(assembleDashboardFacts({ assets: raw.assets, vehicles: [] }, new Set(), access, context).facts.health, undefined, 'waits for logs');
+    assert.equal(assembleDashboardFacts({ assets: raw.assets }, new Set(), access, context).facts.health, undefined, 'waits for vehicles');
   });
 });
 

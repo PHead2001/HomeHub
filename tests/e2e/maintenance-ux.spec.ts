@@ -44,7 +44,7 @@ const HVAC_NOTIFICATION = getDeterministicNotificationId({
  * Puts the maintenance records this spec reads back to the seed exactly: schedules, mileage, the HVAC
  * reminder notification, no extra photo, and no logs linked to seeded assets/vehicles except the
  * seeded ones. Runs before each test too, because other specs (verification-findings' completion
- * test) leave a completion log behind, and the health score counts recent logs. It also removes
+ * test) leave a completion log behind (a completion also moves a schedule). It also removes
  * leftover "Test … E2E" assets and vehicles (and their attachments) that another spec created and
  * could not delete after a failure: their schedules would change the home health score.
  */
@@ -108,25 +108,20 @@ test.describe('maintenance center UX', () => {
   test('H10: overview shows the home health score with its reasons, linked to the items', async ({ page }) => {
     await open(page, '/maintenance');
     const panel = page.getByTestId('maintenance-health');
-    // Seed: HVAC flagged (−10), filter due today (−5), warranty ending (−2); dishwasher filter due soon (−2);
-    // SUV tire rotation, registration and inspection due soon (−2 each); two logs in 90 days (+4) = 79.
-    const dial = panel.getByRole('img', { name: 'Home health 79 out of 100, needs some care.' });
+    // MA-10: the average of the three tracked items. HVAC: flagged (−10) and filter due today (−5) = 85;
+    // dishwasher (filter due soon) and SUV (service, registration and inspection due soon) cost nothing = 100.
+    // Warranties and recent logs do not count. (85 + 100 + 100) / 3 = 95.
+    const dial = panel.getByRole('img', { name: 'Home health 95 out of 100, in good shape.' });
     await expect(dial).toBeVisible();
-    await expect(dial).toContainText('79');
-    await expect(panel.getByText('Needs some care', { exact: true })).toBeVisible();
+    await expect(dial).toContainText('95');
+    await expect(panel.getByText('In good shape', { exact: true })).toBeVisible();
+    await expect(panel.getByText(/The average of 3 tracked items/)).toBeVisible();
     const reasons = panel.getByRole('list', { name: 'Score deductions' }).getByRole('listitem');
     await expect(reasons).toHaveText([
       /^−10Main HVAC System: flagged as needing attention/,
       /^−5Main HVAC System: Replace air filter is due today/,
-      /^−2Family SUV: Inspection expires in 4 days/,
-      /^−2Family SUV: Registration expires in 11 days/,
-      /^−2Family SUV: Tire rotation is due in 2 weeks/,
     ]);
-    await panel.getByRole('button', { name: 'Show 2 more' }).click();
-    await expect(reasons).toHaveCount(7);
-    await expect(reasons.filter({ hasText: 'Kitchen Dishwasher: Clean filter is due in 7 days' })).toHaveCount(1);
-    await expect(reasons.filter({ hasText: 'Main HVAC System: warranty ends in 9 days' })).toHaveCount(1);
-    await expect(panel.getByText('2 logs in the last 90 days')).toBeVisible();
+    await expect(panel.getByRole('button', { name: /^Show \d+ more$/ })).toHaveCount(0);
     const deduction = panel.getByRole('button', { name: /Main HVAC System: flagged as needing attention/ });
     await expect(deduction).toContainText('−10');
     await deduction.click();

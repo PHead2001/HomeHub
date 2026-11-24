@@ -5,7 +5,8 @@
 import type { HomeOverviewFacts } from '@/ai/overview-types';
 import { redactEmails } from '@/ai/redact';
 import { householdToday, isUsedUpPantryDoc } from '@/lib/shopping/pantry-batches';
-import { diffDays, localDay, safeTimeZone, toDay } from '@functions/shared/calendar';
+import { addDays, diffDays, localDay, safeTimeZone, toDay } from '@functions/shared/calendar';
+import { computeMaintenanceFacts, SECTION_LIMITS, type RawDoc } from '@/lib/dashboard/facts';
 
 export const DAY_MS = 86_400_000;
 
@@ -47,6 +48,39 @@ const pantryExpiryDay = (value: unknown, timeZone: string): string | null => {
  * zone; the app default when unset or invalid), so a batch that expired
  * yesterday in Tokyo counts as expired even while it is still that day in UTC.
  */
+/**
+ * Maintenance facts for the AI overview, from the same computation as the
+ * dashboard and the Maintenance page (`computeMaintenanceFacts`: the shared
+ * reminder builder in the household zone, 14-day / 500-mile and 30-day expiry
+ * windows, `reminderGroups` order and counts). Retired and sold items, expired
+ * and lifetime warranties are left out, and a snoozed reminder is not due.
+ */
+export function summarizeOverviewMaintenance(
+  assets: RawDoc[],
+  vehicles: RawDoc[],
+  now: Date,
+  timeZone?: string | null,
+): NonNullable<HomeOverviewFacts['maintenance']> {
+  const zone = safeTimeZone(timeZone);
+  const today = localDay(now, zone);
+  const facts = computeMaintenanceFacts(assets, vehicles, now, zone, SECTION_LIMITS);
+  const active = [
+    ...assets.filter((asset) => asset.status !== 'retired').flatMap((asset) => (Array.isArray(asset.schedules) ? asset.schedules : [])),
+    ...vehicles.filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold')
+      .flatMap((vehicle) => (Array.isArray(vehicle.serviceSchedules) ? vehicle.serviceSchedules : [])),
+  ] as Array<{ mode?: unknown } | null>;
+  return {
+    assetsNeedingAttention: facts.needsAttention,
+    overdue: facts.overdue,
+    dueSoon: facts.dueSoon,
+    checklistItems: active.filter((schedule) => schedule?.mode === 'checklist').length,
+    urgent: facts.items
+      .filter((item) => item.overdue || item.dueSoon)
+      .slice(0, 6)
+      .map((item) => ({ label: label(item.label, 'Maintenance'), ...(item.days !== null ? { due: addDays(today, item.days) } : {}) })),
+  };
+}
+
 export function summarizeOverviewPantry(
   docs: ReadonlyArray<Record<string, unknown>>,
   now: Date,

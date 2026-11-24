@@ -278,7 +278,8 @@ export function rescheduleFields(day: string): { dueDate: string; originalDueDat
  * Every dated maintenance item, for any range. Scheduled asset and vehicle
  * services come from the shared reminder builder (all statuses). Warranty,
  * registration and inspection expirations are read straight from their fields,
- * because the builder only reports them inside its 14-day reminder window.
+ * because the builder only reports them inside its 30-day warning window. A
+ * lifetime warranty never expires and is left out.
  * Retired assets and retired or sold vehicles are left out, as in Maintenance.
  */
 export function maintenanceCalendarItems(
@@ -307,7 +308,7 @@ export function maintenanceCalendarItems(
   };
 
   const expirations = [
-    ...assets.filter(a => a.status !== 'retired').flatMap(asset =>
+    ...assets.filter(a => a.status !== 'retired' && a.warrantyLifetime !== true).flatMap(asset =>
       expiry(`asset-warranty-${asset.id}`, 'Warranty', asset.name, asset.warrantyExpiration, `/maintenance?asset=${encodeURIComponent(asset.id)}`, true)),
     ...vehicles.filter(v => v.status !== 'retired' && v.status !== 'sold').flatMap(vehicle => [
       ...expiry(`vehicle-registration-${vehicle.id}`, 'Registration', vehicle.nickname, vehicle.registrationExpiration, `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`, false),

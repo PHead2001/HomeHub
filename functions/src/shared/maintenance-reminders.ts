@@ -5,6 +5,12 @@ import {stableSlugify} from "./ids";
 
 export const REMINDER_DUE_SOON_DAYS = 14;
 export const MILEAGE_DUE_SOON_THRESHOLD = 500;
+/**
+ * Warning window for things that expire (warranties, registrations and
+ * inspections): renewing takes longer than doing a chore, so they turn
+ * "expires soon" 30 days out instead of 14.
+ */
+export const EXPIRY_WARNING_DAYS = 30;
 
 export type ReminderStatus = "upcoming" | "due_soon" | "due_today" | "overdue";
 export type ReminderGroup =
@@ -28,6 +34,26 @@ type Schedule = {
    * nextDueDate, so a stale value never applies.
    */
   snoozedUntil?: string;
+  /** The due day the snooze moved away from; never part of a reminder. */
+  snoozedFrom?: string;
+  /**
+   * "completion" (default) or "calendar": only changes how completion
+   * advances the due date (functions/src/shared/maintenance-schedule.ts),
+   * never the reminder or its notification identity.
+   */
+  anchor?: "completion" | "calendar";
+  anchorMonth?: number;
+  anchorDay?: number;
+};
+
+export type BuildReminderOptions = {
+  /**
+   * Also report warranties, registrations and inspections that expire within
+   * this many days but outside the warning window, as "upcoming" (for Coming
+   * up). Default 0: none, so lists and the dashboard are unchanged. Upcoming
+   * reminders are never notified.
+   */
+  expiryLookaheadDays?: number;
 };
 
 export type AssetInput = {
@@ -36,6 +62,8 @@ export type AssetInput = {
   status?: string;
   schedules?: Schedule[];
   warrantyExpiration?: string;
+  /** A lifetime warranty never expires: no warranty reminders. */
+  warrantyLifetime?: boolean;
 };
 
 export type VehicleInput = {
@@ -66,6 +94,8 @@ export type MaintenanceReminder = {
   currentMileage?: number;
   /** Snoozed by a member until its due date: shown, but not notified. */
   snoozed?: boolean;
+  /** The day the snooze lasts until (set only while snoozed). */
+  snoozedUntil?: string;
   message: string;
   deepLink: string;
 };
@@ -82,13 +112,35 @@ export const dateStatus = (
   date: string | undefined,
   today: string,
   timeZone: string,
+  soonDays: number = REMINDER_DUE_SOON_DAYS,
 ): ReminderStatus | null => {
   const due = toDay(date, timeZone);
   if (!due) return null;
   const days = diffDays(due, today);
   if (days < 0) return "overdue";
   if (days === 0) return "due_today";
-  return days <= REMINDER_DUE_SOON_DAYS ? "due_soon" : "upcoming";
+  return days <= soonDays ? "due_soon" : "upcoming";
+};
+
+/**
+ * Expiry status, or null when there is nothing to report: an upcoming
+ * expiry is reported only within the lookahead.
+ * @param {string | undefined} date Expiration.
+ * @param {string} today Household day.
+ * @param {string} timeZone Household timezone.
+ * @param {number} lookahead Days of "upcoming" to report.
+ * @return {ReminderStatus | null} Status.
+ */
+const expiryStatus = (
+  date: string | undefined,
+  today: string,
+  timeZone: string,
+  lookahead: number,
+): ReminderStatus | null => {
+  const status = dateStatus(date, today, timeZone, EXPIRY_WARNING_DAYS);
+  if (status !== "upcoming") return status;
+  const due = toDay(date, timeZone);
+  return due && diffDays(due, today) <= lookahead ? status : null;
 };
 
 export const mileageStatus = (
@@ -130,6 +182,7 @@ const isSnoozed = (schedule: Schedule, status: ReminderStatus): boolean =>
  * @param {VehicleInput[]} vehicles Vehicles.
  * @param {string} today Today in the household timezone.
  * @param {string} timeZone Household timezone.
+ * @param {BuildReminderOptions} options Optional lookahead for expiries.
  * @return {MaintenanceReminder[]} Reminders.
  */
 export const buildMaintenanceReminders = (
@@ -137,8 +190,12 @@ export const buildMaintenanceReminders = (
   vehicles: VehicleInput[],
   today: string,
   timeZone: string,
+  options: BuildReminderOptions = {},
 ): MaintenanceReminder[] => {
   const reminders: MaintenanceReminder[] = [];
+  const lookahead = Math.max(0, options.expiryLookaheadDays ?? 0);
+  const snoozeFields = (snoozed: boolean, schedule: Schedule) =>
+    snoozed ? {snoozed, snoozedUntil: schedule.snoozedUntil} : {snoozed};
 
   assets.filter((a) => a.status !== "retired").forEach((asset) => {
     (asset.schedules || []).forEach((schedule, index) => {
@@ -162,15 +219,16 @@ export const buildMaintenanceReminders = (
         scheduleKey: sourceId,
         legacySourceId: `${asset.id}-${index}`,
         dueDate: schedule.nextDueDate,
-        snoozed: isSnoozed(schedule, status),
+        ...snoozeFields(isSnoozed(schedule, status), schedule),
         message: `${title} for ${asset.name} ${phrase[status]}.`,
         deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}` +
           `&schedule=${encodeURIComponent(sourceId)}`,
       });
     });
 
-    const warranty = dateStatus(asset.warrantyExpiration, today, timeZone);
-    if (warranty && warranty !== "upcoming") {
+    const warranty = asset.warrantyLifetime === true ? null :
+      expiryStatus(asset.warrantyExpiration, today, timeZone, lookahead);
+    if (warranty) {
       reminders.push({
         id: `asset-warranty-${asset.id}-${warranty}`,
         group: "warranty",
@@ -222,8 +280,8 @@ export const buildMaintenanceReminders = (
           dueDate: schedule.nextDueDate,
           dueMileage: schedule.nextDueMileage,
           // A snooze only quiets the date; a mileage trigger still notifies.
-          snoozed: (byMiles === null || byMiles === "upcoming") &&
-            isSnoozed(schedule, status),
+          ...snoozeFields((byMiles === null || byMiles === "upcoming") &&
+            isSnoozed(schedule, status), schedule),
           currentMileage: vehicle.currentMileage,
           message: `${title} for ${vehicle.nickname} ${phrase[status]}.`,
           deepLink:
@@ -239,8 +297,8 @@ export const buildMaintenanceReminders = (
           "maintenance_vehicle_inspection"],
       ];
       documents.forEach(([title, due, sourceType]) => {
-        const status = dateStatus(due, today, timeZone);
-        if (!status || status === "upcoming") return;
+        const status = expiryStatus(due, today, timeZone, lookahead);
+        if (!status) return;
         reminders.push({
           id: `${sourceType}-${vehicle.id}-${status}`,
           group: "vehicle_document",
