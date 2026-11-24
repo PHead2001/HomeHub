@@ -13,7 +13,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { downscaleImage } from '@/lib/images/downscale';
 import { RECEIPT_ACCEPT, checkMaintenanceFile, isHeicType } from '@/lib/maintenance/attachments';
 import {
-  RECEIPT_FIELD_LABELS, RECEIPT_READ_MAX_BYTES, RECEIPT_READ_TIMEOUT, withReceiptReadDeadline, RECEIPT_READ_MAX_EDGE, createReceiptReadGuard, receiptFieldsKept,
+  RECEIPT_FIELD_LABELS, RECEIPT_READ_MAX_BYTES, receiptImagePreparation, RECEIPT_READ_TIMEOUT, withReceiptReadDeadline, RECEIPT_READ_MAX_EDGE, createReceiptReadGuard, receiptFieldsKept,
   sanitizeReceiptFields, type ReceiptFields,
 } from '@/lib/maintenance/receipt-fill';
 import { OFFLINE_MESSAGE } from './maintenance-action-client';
@@ -32,7 +32,6 @@ const toBase64 = async (file: Blob) => {
   return btoa(binary);
 };
 
-const READABLE_AS_IS = ['image/jpeg', 'image/png', 'image/webp'];
 
 type ReadState =
   | { kind: 'idle' }
@@ -127,19 +126,22 @@ export function ReceiptPicker({
       const check = checkMaintenanceFile(entry.file);
       let payload: Blob = entry.file;
       let contentType = check.ok ? check.contentType : '';
-      // A photo already small enough is sent as it is (no decode); only larger or HEIC photos are
-      // redrawn, which needs the browser to decode them.
-      if (check.ok && check.image && !(READABLE_AS_IS.includes(contentType) && entry.file.size <= RECEIPT_READ_MAX_BYTES)) {
-        const smaller = await downscaleImage(entry.file, { maxEdge: RECEIPT_READ_MAX_EDGE, maxBytes: RECEIPT_READ_MAX_BYTES });
-        if (!smaller.ok || (isHeicType(contentType) && !smaller.resized)) {
-          throw new Error(isHeicType(contentType) ? 'heic' : 'too_large');
+      // A JPEG, PNG or WebP already small enough is sent as it is (no decode); a larger one is
+      // shrunk; any other image (GIF, HEIC, AVIF) is always re-encoded to JPEG, which needs the
+      // browser to decode it ("can't read" only when it cannot).
+      const preparation = check.ok && check.image ? receiptImagePreparation(contentType, entry.file.size) : 'as_is';
+      if (preparation !== 'as_is') {
+        const smaller = await downscaleImage(entry.file, {
+          maxEdge: RECEIPT_READ_MAX_EDGE, maxBytes: RECEIPT_READ_MAX_BYTES, force: preparation === 'convert',
+        });
+        if (!smaller.ok) {
+          throw new Error(smaller.reason === 'too-large' ? 'too_large' : isHeicType(contentType) ? 'heic' : 'unreadable');
         }
         payload = smaller.file;
         contentType = smaller.file.type || 'image/jpeg';
       }
-      if (payload.size > RECEIPT_READ_MAX_BYTES || !['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(contentType)) {
-        throw new Error(isHeicType(contentType) ? 'heic' : 'too_large');
-      }
+      if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(contentType)) throw new Error('unreadable');
+      if (payload.size > RECEIPT_READ_MAX_BYTES) throw new Error('too_large');
       const data = await toBase64(payload);
       return unwrapAiActionResult(await readMaintenanceReceipt(
         { fileName: entry.file.name.slice(0, 200) || 'receipt', contentType: contentType as 'image/jpeg', dataBase64: data },
@@ -160,7 +162,9 @@ export function ReceiptPicker({
         ? "No answer from the receipt reader. Fill in the details yourself; the receipt stays attached."
         : reason === 'heic'
         ? "This browser can't read HEIC photos. Fill in the details yourself; the photo stays attached."
-        : reason === 'too_large'
+        : reason === 'unreadable'
+          ? "This browser can't read this image format. Fill in the details yourself; it stays attached."
+          : reason === 'too_large'
           ? 'This file is too large to read. Fill in the details yourself; it stays attached.'
           : readError instanceof AiClientError
             ? `${readError.message} The receipt stays attached.`
