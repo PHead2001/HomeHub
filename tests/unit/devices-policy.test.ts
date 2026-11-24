@@ -6,6 +6,7 @@ import {
   DEVICE_CAPABILITIES,
   UNDO_PROVEN,
   backdatedCapability,
+  policyPermits,
   deviceRefusalResponse,
   UNDO_OF,
   isDeviceCapability,
@@ -104,9 +105,9 @@ describe('policy table', () => {
     }
   });
 
-  it('shopping, maintenance, AI, household admin and automation are not on tablets; personal things never', () => {
+  it('shopping, AI, household admin and automation are not on tablets; personal things never', () => {
     for (const capability of DEVICE_CAPABILITIES) {
-      if (/^(shopping|maintenance|ai|household|automation)\./.test(capability)) assert.equal(policy(capability).levelClass, 'not_on_tablets', capability);
+      if (/^(shopping|ai|household|automation)\./.test(capability)) assert.equal(policy(capability).levelClass, 'not_on_tablets', capability);
     }
     for (const capability of ['profile.edit', 'push.register', 'notifications.targeted', 'reminders.personal'] as const) {
       assert.equal(policy(capability).levelClass, 'never');
@@ -128,9 +129,10 @@ describe('policy table', () => {
     assert.equal(isDeviceCapability(undefined), false);
   });
 
-  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care, F4b-2 doses, notes and weights)', () => {
+  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care, F4b-2 doses, notes and weights, M8a maintenance Done, Log service and Snooze)', () => {
     assert.deepEqual([...UNDO_PROVEN].sort(), [
       'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
+      'maintenance.complete', 'maintenance.complete.undo', 'maintenance.log', 'maintenance.log.undo', 'maintenance.snooze', 'maintenance.snooze.undo',
       'pets.care.add', 'pets.care.undo', 'pets.dose.give', 'pets.dose.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
       'pets.note.add', 'pets.note.undo', 'pets.weight.add', 'pets.weight.undo',
     ]);
@@ -176,6 +178,9 @@ describe('Undo targets (Codex P2: explicit map, no prefix matching)', () => {
     'chores.complete.undo': ['chores.complete'],
     'chores.take.undo': ['chores.take'],
     'notifications.dismiss.undo': ['notifications.dismiss'],
+    'maintenance.complete.undo': ['maintenance.complete'],
+    'maintenance.log.undo': ['maintenance.log'],
+    'maintenance.snooze.undo': ['maintenance.snooze'],
   };
 
   it('every Undo capability has an explicit list of the actions it reverses, and nothing else is a key', () => {
@@ -641,5 +646,89 @@ describe('activity attribution (WT-18b)', () => {
     assert.equal(describeAuditActor({ actorName: 'Alex', via: 'device', deviceName: 'Kitchen tablet', level: 'pin' }), 'as Alex (PIN) on Kitchen tablet');
     assert.equal(describeAuditActor({ actorName: 'Alex', via: 'device', deviceName: 'Kitchen tablet', level: 'face' }), 'as Alex (face) on Kitchen tablet');
     assert.equal(describeAuditActor({ actorName: 'Olive', via: 'devices-list', deviceName: 'Kitchen tablet' }), 'Olive');
+  });
+});
+
+describe('maintenance on tablets (M8a; supersedes D-T8)', () => {
+  const face = { pointsPin: 'off' as const, actorRole: 'member' as const };
+  it('Done, Log service and Snooze and their Undo are face*, queueable, never points; schedules and deletions PIN; the AI summary stays off', () => {
+    const expected: Record<string, string> = {
+      'maintenance.complete': 'face', 'maintenance.complete.undo': 'face', 'maintenance.log': 'face', 'maintenance.log.undo': 'face',
+      'maintenance.snooze': 'face', 'maintenance.snooze.undo': 'face', 'maintenance.editSchedules': 'pin',
+      'maintenance.record.delete': 'pin', 'maintenance.log.delete': 'pin', 'maintenance.attachment.delete': 'pin',
+    };
+    for (const [capability, levelClass] of Object.entries(expected)) {
+      const entry = policy(capability as DeviceCapability);
+      assert.equal(entry.levelClass, levelClass, capability);
+      assert.equal(entry.section, 'maintenance', capability);
+      assert.ok(!entry.points, `${capability} never asks for the points PIN`);
+      if (levelClass === 'face') {
+        assert.equal(entry.faceNeedsUndoProof, true, capability);
+        assert.equal(entry.queueable, true, capability);
+        assert.equal(requiredLevel(capability as DeviceCapability, face), 'face', capability);
+        // The points PIN set to Everyone (or Kids only for a child) never raises maintenance.
+        assert.equal(requiredLevel(capability as DeviceCapability, { pointsPin: 'everyone', actorRole: 'member' }), 'face', capability);
+        assert.equal(requiredLevel(capability as DeviceCapability, { pointsPin: 'kids', actorRole: 'child' }), 'face', capability);
+      } else {
+        assert.ok(!entry.queueable, capability);
+        assert.equal(requiredLevel(capability as DeviceCapability, face), 'pin', capability);
+      }
+    }
+    assert.equal(policy('ai.maintenanceSummary').levelClass, 'not_on_tablets');
+    // No mileage-update operation exists on this base: the capability is not classified.
+    assert.equal(isDeviceCapability('maintenance.mileage'), false);
+    assert.equal(isDeviceCapability('maintenance.mileage.undo'), false);
+    assert.deepEqual(policy('maintenance.log').permissions, ['maintenance.createLogs']);
+    assert.deepEqual(policy('maintenance.snooze').permissions, ['maintenance.edit']);
+    assert.deepEqual(policy('maintenance.editSchedules').permissions, ['maintenance.edit']);
+    for (const capability of ['maintenance.record.delete', 'maintenance.log.delete', 'maintenance.attachment.delete'] as const) {
+      assert.deepEqual(policy(capability).permissions, ['maintenance.delete'], capability);
+    }
+  });
+
+  it('each Undo reverses only its own action and only for the original person', () => {
+    for (const [undo, forward] of [['maintenance.complete.undo', 'maintenance.complete'], ['maintenance.log.undo', 'maintenance.log'], ['maintenance.snooze.undo', 'maintenance.snooze']] as const) {
+      assert.equal(isUndoCapability(undo), true);
+      assert.deepEqual([...UNDO_OF[undo]], [forward]);
+      assert.equal(undoAccepts(undo, forward), true);
+      assert.equal(policy(undo).actorRule, 'original-actor', undo);
+      assert.deepEqual(policy(undo).permissions, policy(forward).permissions, undo);
+      assert.deepEqual(policy(undo).permissionsAll, policy(forward).permissionsAll, undo);
+    }
+    assert.equal(undoAccepts('maintenance.log.undo', 'maintenance.complete'), false);
+    assert.equal(undoAccepts('maintenance.complete.undo', 'maintenance.log.delete'), false);
+  });
+});
+
+describe('all-of permissions (permissionsAll, M8a)', () => {
+  const holder = (...permissions: string[]) => (permission: string) => permissions.includes(permission);
+  it('Done needs both maintenance.edit and maintenance.createLogs; either one alone is refused', () => {
+    for (const capability of ['maintenance.complete', 'maintenance.complete.undo'] as const) {
+      assert.deepEqual([...(policy(capability).permissionsAll ?? [])], ['maintenance.edit', 'maintenance.createLogs']);
+      assert.equal(policyPermits(policy(capability), holder('maintenance.edit', 'maintenance.createLogs')), true);
+      assert.equal(policyPermits(policy(capability), holder('maintenance.edit')), false);
+      assert.equal(policyPermits(policy(capability), holder('maintenance.createLogs')), false);
+      assert.equal(policyPermits(policy(capability), holder()), false);
+    }
+  });
+
+  it('only the maintenance Done pair uses it, never with an empty list; every other capability keeps one-of', () => {
+    const all = Object.keys(DEVICE_ACTION_POLICY) as DeviceCapability[];
+    assert.deepEqual(all.filter((capability) => policy(capability).permissionsAll !== undefined).sort(), ['maintenance.complete', 'maintenance.complete.undo']);
+    for (const capability of all) {
+      const entry = policy(capability);
+      if (entry.permissionsAll) assert.ok(entry.permissionsAll.length > 0, capability);
+      if (entry.permissionsAll || !entry.permissions) continue;
+      // One-of, exactly as before: each listed permission alone is enough, none is refused.
+      for (const permission of entry.permissions) assert.equal(policyPermits(entry, holder(permission)), true, `${capability}: ${permission}`);
+      assert.equal(policyPermits(entry, holder()), false, capability);
+    }
+    // No permission list (device, admin-pin): no permission check.
+    assert.equal(policyPermits(policy('device.settings'), holder()), true);
+  });
+
+  it('the gate and the tablet decide with the same helper', () => {
+    assert.match(readFileSync('src/lib/server/device-gate.ts', 'utf8'), /policyPermits\(policy, permission => actor\.permissions\[permission\] === true\)/);
+    assert.match(readFileSync('src/lib/devices/roster.ts', 'utf8'), /policyPermits\(policy,/);
   });
 });

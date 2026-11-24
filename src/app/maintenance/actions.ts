@@ -14,7 +14,9 @@ import {
   snoozeMaintenanceScheduleAs,
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
+  undoMaintenanceLogAs,
   type CompleteInput,
+  type LogUndoResult,
   type CompleteResult,
   type SaveInput,
   type SaveResult,
@@ -118,6 +120,11 @@ export async function saveMaintenanceLog(input: Context & { save: SaveInput }): 
     save => ((save as SaveInput).id ? EDIT : ['maintenance.createLogs']),
     user => saveMaintenanceLogAs(adminDb, user.householdId, input.save, contextOf(user)),
   );
+}
+
+/** Undoes the caller's own new log within the Undo window (maintenance.createLogs, as creating it). */
+export async function undoMaintenanceLog(input: Context & { opId: string }): Promise<MaintenanceActionResult<LogUndoResult>> {
+  return run(input, { opId: input?.opId }, () => ['maintenance.createLogs'], user => undoMaintenanceLogAs(adminDb, user.householdId, { opId: input.opId }, contextOf(user)));
 }
 
 /** Creates or edits a home asset (maintenance.edit). */

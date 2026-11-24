@@ -7,6 +7,7 @@
 
 import { effectivePermissions } from '@/lib/household-policy';
 import type { HouseholdPermission, PermissionOverrides } from '@/lib/types';
+import { policyPermits, type DeviceCapabilityPolicy } from '@/lib/devices/action-policy';
 
 export type RosterPerson = {
   uid: string;
@@ -25,6 +26,10 @@ export type RosterPerson = {
 /** Whether this person may use a capability (one of its permissions), as far as the tablet knows. */
 export const personMay = (person: RosterPerson, permissions: readonly HouseholdPermission[] | null): boolean =>
   !permissions || !person.permissions || permissions.some((permission) => person.permissions![permission]);
+
+/** Whether this person may use a capability under its policy (one-of and all-of permissions, `policyPermits`), as far as the tablet knows. */
+export const personMayUse = (person: RosterPerson, policy: Pick<DeviceCapabilityPolicy, 'permissions' | 'permissionsAll'>): boolean =>
+  !person.permissions || policyPermits(policy, (permission) => person.permissions![permission] === true);
 
 const ELIGIBLE = new Set(['owner', 'admin', 'member', 'child']);
 

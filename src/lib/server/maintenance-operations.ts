@@ -1,12 +1,14 @@
 import 'server-only';
 
-import { FieldValue, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, type DocumentReference, type DocumentSnapshot, type Firestore, type Transaction } from 'firebase-admin/firestore';
 import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import { stableSlugify } from '@functions/shared/ids';
 import { isDocId } from '@functions/shared/push-media';
 import { actionableReminders, buildMaintenanceReminders, type AssetInput, type VehicleInput } from '@functions/shared/maintenance-reminders';
 import { publicDisplayName } from '@/lib/member-directory';
 import type { OperationContext } from '@/lib/server/operation-context';
+import { assertActorRule, type DeviceAuthority, type DevicePrecheck } from '@/lib/server/device-gate';
+import { assertUndoable } from '@/lib/server/device-ops';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import {
   ASSET_SCHEDULE_FIELDS,
@@ -14,6 +16,7 @@ import {
   isRealDay,
   legacyScheduleKey,
   applyPatch,
+  compareAndRevert,
   mileagePatch,
   parseCycle,
   planCompletion,
@@ -82,7 +85,18 @@ export type UndoResult =
 
 export type SaveResult = { status: 'saved'; id: string; created: boolean; replay: boolean };
 
-type OpKind = 'complete' | 'snooze' | 'save_asset' | 'save_vehicle' | 'save_log';
+type OpKind = 'complete' | 'snooze' | 'save_asset' | 'save_vehicle' | 'save_log' | 'delete_log';
+
+/**
+ * A device Undo (M8a, src/lib/server/device-maintenance.ts): the gate's authority, so the
+ * device op ledger decides first (an Undo that arrives before its action leaves a
+ * tombstone, `not_applied`; the same tablet and credential generation, the original person
+ * and the window, with the queued-Undo allowance of R1).
+ */
+export type MaintenanceUndoContext = OperationContext & { authority?: DeviceAuthority };
+
+/** Device Undo answers beyond the personal ones: the action never applied (a tombstone now holds the opId). */
+export type DeviceUndoAnswer = { status: 'not_applied' };
 
 /* -------------------------------------------------------------------------- */
 /* Input                                                                       */
@@ -439,14 +453,40 @@ export async function completeMaintenanceScheduleAs(
 const windowOpen = (appliedAt: unknown, now: Date) =>
   appliedAt instanceof Timestamp && now.getTime() <= appliedAt.toMillis() + UNDO_WINDOW_MS + MAINTENANCE_UNDO_GRACE_MS;
 
-/** Reads the ledger entry an Undo names and checks who and when; returns it or an answer. */
-const undoEntry = (entry: DocumentSnapshot, kind: OpKind, ctx: OperationContext): UndoResult | null => {
+/**
+ * Reads the ledger entry an Undo names and checks who and when; returns it or an answer.
+ * A device Undo's window was checked by the device ledger (`assertUndoable`, which also
+ * allows a queued Undo of a queued action, R1), so it is not checked again here.
+ */
+const undoEntry = (entry: DocumentSnapshot, kind: OpKind, ctx: MaintenanceUndoContext): UndoResult | null => {
   if (!entry.exists) throw new MaintenanceOperationError('not_found');
   if (entry.get('kind') !== kind) throw new MaintenanceOperationError('conflict');
   // Only the person who made the change can take it back (a device passes that person).
   if (entry.get('actorUid') !== ctx.actor.uid) throw new MaintenanceOperationError('forbidden');
   if (entry.get('undoneAt')) return { status: 'already_undone' };
-  if (!windowOpen(entry.get('appliedAt'), ctx.now)) return { status: 'expired' };
+  if (!ctx.authority && !windowOpen(entry.get('appliedAt'), ctx.now)) return { status: 'expired' };
+  return null;
+};
+
+/**
+ * The device op ledger's verdict on an Undo (M8a, as chores and pets): already undone
+ * (no write); never applied (a tombstone, so the action arriving later is refused); or
+ * applied: the original person (`original-actor`), this tablet at the same credential
+ * generation, inside the window. Null for a personal Undo or one that may go ahead.
+ */
+const deviceUndo = (tx: Transaction, plan: DevicePrecheck, ctx: MaintenanceUndoContext): UndoResult | DeviceUndoAnswer | null => {
+  const authority = ctx.authority;
+  if (!authority || !ctx.hooks) return null;
+  if (plan.undo === 'already') return { status: 'already_undone' };
+  if (plan.undo !== 'applied' || !plan.original) {
+    ctx.hooks.finalize(tx, { targetPath: '', summary: {}, undo: 'tombstone' });
+    return { status: 'not_applied' };
+  }
+  assertActorRule(authority, plan.original.actorUid);
+  assertUndoable(plan.original, {
+    generation: authority.generation, actorUid: authority.actor!.uid, now: authority.now, actorRuleAllows: false,
+    queuedUndo: authority.queued, queuedUndoCreatedAt: authority.queuedCreatedAt,
+  });
   return null;
 };
 
@@ -460,12 +500,16 @@ const fieldValuesOf = (value: unknown): FieldValues => (value && typeof value ==
  * `kept`. A schedule completed again since is `superseded` (nothing changes, the
  * log stays). A schedule or record deleted since is not brought back.
  */
-export async function undoMaintenanceCompletionAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult> {
+export function undoMaintenanceCompletionAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: MaintenanceUndoContext & { authority: DeviceAuthority }): Promise<UndoResult | DeviceUndoAnswer>;
+export function undoMaintenanceCompletionAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult>;
+export async function undoMaintenanceCompletionAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: MaintenanceUndoContext): Promise<UndoResult | DeviceUndoAnswer> {
   const house = householdRef(db, householdId);
   const opId = opIdOf(recordOf(input).opId);
-  return db.runTransaction(async tx => {
-    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return replay.summary.result as UndoResult;
+  return db.runTransaction(async (tx): Promise<UndoResult | DeviceUndoAnswer> => {
+    const pre = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (pre.replay) return pre.replay.summary.result as UndoResult;
+    const device = deviceUndo(tx, pre, ctx);
+    if (device) return device;
     const [home, entry] = await tx.getAll(house, ledgerRef(house, opId));
     householdDay(home, ctx.now);
     const answer = undoEntry(entry, 'complete', ctx);
@@ -582,12 +626,16 @@ export async function snoozeMaintenanceScheduleAs(
 }
 
 /** Undoes a snooze (compare-and-revert of nextDueDate, snoozedUntil and snoozedFrom). */
-export async function undoMaintenanceSnoozeAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult> {
+export function undoMaintenanceSnoozeAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: MaintenanceUndoContext & { authority: DeviceAuthority }): Promise<UndoResult | DeviceUndoAnswer>;
+export function undoMaintenanceSnoozeAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult>;
+export async function undoMaintenanceSnoozeAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: MaintenanceUndoContext): Promise<UndoResult | DeviceUndoAnswer> {
   const house = householdRef(db, householdId);
   const opId = opIdOf(recordOf(input).opId);
-  return db.runTransaction(async tx => {
-    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return replay.summary.result as UndoResult;
+  return db.runTransaction(async (tx): Promise<UndoResult | DeviceUndoAnswer> => {
+    const pre = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (pre.replay) return pre.replay.summary.result as UndoResult;
+    const device = deviceUndo(tx, pre, ctx);
+    if (device) return device;
     const [home, entry] = await tx.getAll(house, ledgerRef(house, opId));
     householdDay(home, ctx.now);
     const answer = undoEntry(entry, 'snooze', ctx);
@@ -949,9 +997,18 @@ export async function saveMaintenanceLogAs(db: Firestore, householdId: string, i
     // The reading counts for the merged log's own vehicle (max rule), when this save set the
     // reading or pointed the log at a vehicle.
     const readingSaved = !plan || 'mileage' in plan.patch || targetChanged;
+    // A new log's contribution to the vehicle (before and after), so its Undo can take it back
+    // by compare-and-revert (undoMaintenanceLogAs, M8a).
+    let vehicleChange: { id: string; before: FieldValues; after: FieldValues } | null = null;
     if (readingSaved && mergedType === 'vehicle' && typeof merged.mileage === 'number' && target?.exists) {
       const patch = mileagePatch({ currentMileage: target.get('currentMileage') }, merged.mileage, today);
-      if (Object.keys(patch).length > 0) tx.update(target.ref, patch as { [field: string]: number | string });
+      if (Object.keys(patch).length > 0) {
+        tx.update(target.ref, patch as { [field: string]: number | string });
+        if (!plan) {
+          const before = { currentMileage: target.get('currentMileage') ?? null, mileageUpdatedAt: target.get('mileageUpdatedAt') ?? null };
+          vehicleChange = { id: target.id, before, after: { ...before, ...patch } };
+        }
+      }
     }
     const result: SaveResult = { status: 'saved', id, created, replay: false };
     tx.set(ledgerRef(house, opId), {
@@ -963,9 +1020,122 @@ export async function saveMaintenanceLogAs(db: Firestore, householdId: string, i
       logId: id,
       appliedAt: Timestamp.fromDate(ctx.now),
       result,
+      ...(created ? { undoneAt: null, vehicle: vehicleChange } : {}),
     });
     ctx.hooks?.finalize(tx, { targetPath: ref.path, summary: { result } });
     return result;
   });
 }
 
+/* -------------------------------------------------------------------------- */
+/* Undo of a new log, and deleting a log (M8a)                                 */
+/* -------------------------------------------------------------------------- */
+
+export type LogUndoResult =
+  | { status: 'undone'; kept: KeptField[] }
+  | { status: 'already_undone' }
+  | { status: 'expired' }
+  /** The log has attached files: nothing changes (remove them first, or keep it). */
+  | { status: 'has_attachments' }
+  /** The log was edited or deleted since it was created: nothing changes. */
+  | { status: 'changed' };
+
+/**
+ * Undoes a log created by `saveMaintenanceLogAs` (a plain Log service, not a completion),
+ * within the Undo window, by the person who created it: the log is deleted only while it
+ * is still the one that op created and unchanged since (no edit by anyone: its update time
+ * is its create time), with no attached files; the vehicle mileage it raised goes back by
+ * compare-and-revert (a later, higher reading stays and is reported in `kept`). An edited
+ * or deleted log is `changed`, a log with files `has_attachments`; nothing is written then.
+ * A save that edited a log is not undoable here (`conflict`). Used by the personal action
+ * and by the tablet (`maintenance.log.undo`, with the device ledger deciding first).
+ */
+export function undoMaintenanceLogAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: MaintenanceUndoContext & { authority: DeviceAuthority }): Promise<LogUndoResult | DeviceUndoAnswer>;
+export function undoMaintenanceLogAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<LogUndoResult>;
+export async function undoMaintenanceLogAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: MaintenanceUndoContext): Promise<LogUndoResult | DeviceUndoAnswer> {
+  const house = householdRef(db, householdId);
+  const opId = opIdOf(recordOf(input).opId);
+  return db.runTransaction(async (tx): Promise<LogUndoResult | DeviceUndoAnswer> => {
+    const pre = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (pre.replay) return pre.replay.summary.result as LogUndoResult;
+    const device = deviceUndo(tx, pre, ctx);
+    if (device) return device as LogUndoResult | DeviceUndoAnswer;
+    const [home, entry] = await tx.getAll(house, ledgerRef(house, opId));
+    householdDay(home, ctx.now);
+    const answer = undoEntry(entry, 'save_log', ctx);
+    if (answer) return answer as LogUndoResult;
+    // Only a save that created the log (an edit is never taken back by deleting).
+    if ((entry.get('result') as SaveResult | undefined)?.created !== true) throw new MaintenanceOperationError('conflict');
+    const logRef = house.collection('maintenance').doc(docIdOf(entry.get('logId')));
+    const change = entry.get('vehicle') as { id?: unknown; before?: unknown; after?: unknown } | null | undefined;
+    const vehicleRef = change && isDocId(change.id) ? house.collection('vehicles').doc(change.id as string) : null;
+    const [log, vehicle] = await Promise.all([tx.get(logRef), vehicleRef ? tx.get(vehicleRef) : Promise.resolve(null)]);
+    const unchanged = log.exists && log.createTime && log.updateTime && log.updateTime.isEqual(log.createTime)
+      && log.get('opId') === opId && log.get('doneByUid') === entry.get('actorUid')
+      // A device's log is the one this tablet wrote (never one recreated under the same id).
+      && (!ctx.authority || log.get('deviceAttribution')?.deviceId === ctx.authority.deviceId);
+    if (!unchanged) return { status: 'changed' };
+    // Undo deletes the log; files attached to it would be orphaned (as the completion's Undo).
+    const files = await tx.get(house.collection('maintenance-attachments')
+      .where('targetType', '==', 'maintenance_log').where('targetId', '==', logRef.id).limit(1));
+    if (!files.empty) return { status: 'has_attachments' };
+    let kept: KeptField[] = [];
+    if (vehicle?.exists && change) {
+      const reverted = compareAndRevert(vehicle.data() ?? {}, fieldValuesOf(change.before), fieldValuesOf(change.after));
+      const patch = reverted.patch;
+      // A later, higher reading stays; its date follows it.
+      if (reverted.kept.some(field => field.field === 'currentMileage')) delete patch.mileageUpdatedAt;
+      kept = reverted.kept.filter(field => field.field !== 'mileageUpdatedAt');
+      if (Object.keys(patch).length > 0) tx.update(vehicle.ref, toUpdate(patch));
+    }
+    tx.delete(logRef);
+    const result: LogUndoResult = { status: 'undone', kept: plain(kept) };
+    tx.update(entry.ref, { undoneAt: Timestamp.fromDate(ctx.now), undoResult: result });
+    ctx.hooks?.finalize(tx, { targetPath: logRef.path, summary: { result }, undo: 'reversed', targetName: typeof log.get('title') === 'string' ? log.get('title') : null });
+    return result;
+  });
+}
+
+export type DeleteLogResult = { status: 'deleted'; replay: boolean } | { status: 'gone' } | { status: 'has_attachments' };
+
+/**
+ * Deletes a maintenance log permanently (M8a: the tablet's PIN-level `maintenance.log.delete`;
+ * the page deletes with a client write under the same rule, `maintenance.delete`). Files
+ * attached to it are never orphaned: `has_attachments` and nothing changes (the page asks
+ * to remove them first). A log already gone is `gone`. A schedule's `lastCompletion` that
+ * points at a completion's log is left as it is, as the page's delete does.
+ */
+export async function deleteMaintenanceLogAs(db: Firestore, householdId: string, input: { opId: unknown; logId: unknown }, ctx: OperationContext): Promise<DeleteLogResult> {
+  const house = householdRef(db, householdId);
+  const request = recordOf(input);
+  const opId = opIdOf(request.opId);
+  const logRef = house.collection('maintenance').doc(docIdOf(request.logId));
+  return db.runTransaction(async (tx): Promise<DeleteLogResult> => {
+    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (replay) return replay.summary.result as DeleteLogResult;
+    const [home, member, ledger, log] = await tx.getAll(house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), logRef);
+    householdDay(home, ctx.now);
+    const stored = replayOf(ledger, 'delete_log', ctx);
+    if (stored) {
+      if (ledger.get('logId') !== logRef.id) throw new MaintenanceOperationError('conflict');
+      return { ...(stored as DeleteLogResult), ...((stored as DeleteLogResult).status === 'deleted' ? { replay: true } : {}) } as DeleteLogResult;
+    }
+    if (!log.exists) return { status: 'gone' };
+    const files = await tx.get(house.collection('maintenance-attachments')
+      .where('targetType', '==', 'maintenance_log').where('targetId', '==', logRef.id).limit(1));
+    if (!files.empty) return { status: 'has_attachments' };
+    tx.delete(logRef);
+    const result: DeleteLogResult = { status: 'deleted', replay: false };
+    const title = typeof log.get('title') === 'string' ? log.get('title') as string : typeof log.get('item') === 'string' ? log.get('item') as string : null;
+    tx.set(ledgerRef(house, opId), {
+      kind: 'delete_log',
+      actorUid: ctx.actor.uid,
+      actorName: actorName(member, ctx),
+      logId: logRef.id,
+      appliedAt: Timestamp.fromDate(ctx.now),
+      result,
+    });
+    ctx.hooks?.finalize(tx, { targetPath: logRef.path, summary: { result }, targetName: title });
+    return result;
+  });
+}
