@@ -48,6 +48,11 @@ const filterOf = async (id: string) => ((await asset(id).get()).get('schedules')
 const forget = async (page: Page) => { await page.getByTestId('tablet-done').click().catch(() => undefined); };
 
 const openMaintenance = async (page: Page) => {
+  // The tablet page is shared by the tests: when an earlier test left it on Maintenance, stay there
+  // (start over on Home first so each test begins from the default room view).
+  if (await page.getByTestId('tablet-view-maintenance').isVisible().catch(() => false)) {
+    await page.getByRole('button', { name: 'Home', exact: true }).click();
+  }
   await page.getByTestId('tablet-rail-more').click();
   await page.getByTestId('tablet-more-maintenance').click();
   await expect(page.getByTestId('tablet-view-maintenance')).toBeVisible();
