@@ -242,8 +242,9 @@ test.describe('maintenance center UX', () => {
     await check.click();
     const dialog = page.getByRole('dialog', { name: 'Confirm mileage' });
     await expect(dialog).toBeVisible();
-    // Not drawn as done before the reading is confirmed.
-    await expect(check).toHaveAttribute('aria-checked', 'false');
+    // Not drawn as done before the reading is confirmed. The open dialog hides the
+    // page behind it from role queries, so the check is found by its label.
+    await expect(tires.locator('[role="checkbox"][aria-label="Mark done: Tire rotation for Family SUV"]')).toHaveAttribute('aria-checked', 'false');
     const odometer = dialog.getByLabel('Odometer (miles)');
     await expect(odometer).toHaveValue('48750');
     await expect(odometer).toHaveAttribute('inputmode', 'numeric');
