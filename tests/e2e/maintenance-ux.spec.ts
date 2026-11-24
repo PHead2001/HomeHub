@@ -252,6 +252,9 @@ test.describe('maintenance center UX', () => {
     await expect(filterIn('reminders-overdue')).toHaveCount(0);
 
     await page.clock.fastForward('02:00');
+    // Let time flow again, so timers the rollover started (the leaving card's fade-out)
+    // finish instead of waiting on the installed clock.
+    await page.clock.resume();
     // Aug 2 in the household: overdue, without a reload or any data change.
     await expect(filterIn('reminders-overdue')).toHaveCount(1);
     await expect(filterIn('reminders-due-soon')).toHaveCount(0);
