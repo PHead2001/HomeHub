@@ -14,7 +14,11 @@ import {
   snoozeMaintenanceScheduleAs,
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
+  renewVehicleDocumentAs,
+  undoVehicleRenewalAs,
   type CompleteInput,
+  type RenewInput,
+  type RenewResult,
   type CompleteResult,
   type SaveInput,
   type SaveResult,
@@ -108,6 +112,16 @@ export async function snoozeMaintenanceSchedule(input: Context & { snooze: Snooz
 /** Undoes the caller's own snooze within the Undo window. */
 export async function undoMaintenanceSnooze(input: Context & { opId: string }): Promise<MaintenanceActionResult<UndoResult>> {
   return run(input, { opId: input?.opId }, () => EDIT, user => undoMaintenanceSnoozeAs(adminDb, user.householdId, { opId: input.opId }, contextOf(user)));
+}
+
+/** "Renewed (+1 year)" for a vehicle's registration or inspection (needs maintenance.edit). */
+export async function renewVehicleDocument(input: Context & { renew: RenewInput }): Promise<MaintenanceActionResult<RenewResult>> {
+  return run(input, input?.renew, () => EDIT, user => renewVehicleDocumentAs(adminDb, user.householdId, input.renew, contextOf(user)));
+}
+
+/** Undoes the caller's own renewal within the Undo window. */
+export async function undoVehicleRenewal(input: Context & { opId: string }): Promise<MaintenanceActionResult<UndoResult>> {
+  return run(input, { opId: input?.opId }, () => EDIT, user => undoVehicleRenewalAs(adminDb, user.householdId, { opId: input.opId }, contextOf(user)));
 }
 
 /** Creates (maintenance.createLogs) or edits (maintenance.edit) a maintenance log. */

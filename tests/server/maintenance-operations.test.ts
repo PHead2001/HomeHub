@@ -13,8 +13,10 @@ import {
   snoozeMaintenanceScheduleAs,
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
+  renewVehicleDocumentAs,
+  undoVehicleRenewalAs,
 } from '../../src/lib/server/maintenance-operations';
-import { completeMaintenanceSchedule, snoozeMaintenanceSchedule } from '../../src/app/maintenance/actions';
+import { completeMaintenanceSchedule, renewVehicleDocument, snoozeMaintenanceSchedule } from '../../src/app/maintenance/actions';
 
 // M1: the maintenance completion contract through the Admin SDK, against the
 // Firestore and Auth emulators (audit 17.3: MA-3 to MA-8, MA-20).
@@ -404,6 +406,76 @@ describe('review of PR #210', () => {
   });
 });
 
+describe('renewing a registration or inspection (MA-33a)', () => {
+  const car = async () => (await vehicles().doc('car').get()).data()!;
+  const renew = (extra: Record<string, unknown> = {}) => ({ opId: randomUUID(), vehicleId: 'car', field: 'registrationExpiration', seen: '2026-03-20', ...extra });
+
+  test('moves only that field one year on; a stale card is "changed"; a retry replays; Undo reverts', async () => {
+    await vehicles().doc('car').update({ registrationExpiration: '2026-03-20', inspectionExpiration: '2026-04-02' });
+    const input = renew();
+    const result = await renewVehicleDocumentAs(adminDb, HOUSE, input, ctx(SAM));
+    assert.deepEqual(result, { status: 'renewed', opId: input.opId, field: 'registrationExpiration', expiration: '2027-03-20', replay: false });
+    const renewed = await car();
+    assert.equal(renewed.registrationExpiration, '2027-03-20');
+    assert.equal(renewed.inspectionExpiration, '2026-04-02', 'the other document is untouched');
+    assert.equal(renewed.nickname, 'Car');
+    assert.equal(renewed.serviceSchedules.length, 1);
+    const ledger = (await house().collection('maintenance-ops').doc(input.opId).get()).data()!;
+    assert.equal(ledger.kind, 'renew');
+    assert.equal(ledger.actorUid, SAM);
+    assert.deepEqual(ledger.before, { registrationExpiration: '2026-03-20' });
+    assert.deepEqual(ledger.after, { registrationExpiration: '2027-03-20' });
+    // The same op id replays; another press on the same (stale) card adds nothing.
+    const again = await renewVehicleDocumentAs(adminDb, HOUSE, input, ctx(SAM));
+    assert.ok(again.status === 'renewed' && again.replay);
+    assert.deepEqual(await renewVehicleDocumentAs(adminDb, HOUSE, renew(), ctx(SAM)), { status: 'changed' });
+    assert.equal((await car()).registrationExpiration, '2027-03-20');
+    // The op id cannot be reused for another kind of action.
+    await assert.rejects(snoozeMaintenanceScheduleAs(adminDb, HOUSE, { opId: input.opId, ownerType: 'vehicle', ownerId: 'car', scheduleId: 'oil', seen: { nextDueDate: '2026-06-01', nextDueMileage: 50000 } }, ctx(SAM)), /conflict/);
+    assert.deepEqual(await undoVehicleRenewalAs(adminDb, HOUSE, { opId: input.opId }, ctx(SAM)), { status: 'undone', kept: [] });
+    assert.equal((await car()).registrationExpiration, '2026-03-20');
+    assert.deepEqual(await undoVehicleRenewalAs(adminDb, HOUSE, { opId: input.opId }, ctx(SAM)), { status: 'already_undone' });
+  });
+
+  test('long expired or missing: one year from the household day', async () => {
+    await vehicles().doc('car').update({ registrationExpiration: '2025-06-01' });
+    const late = await renewVehicleDocumentAs(adminDb, HOUSE, renew({ seen: '2025-06-01' }), ctx(SAM));
+    assert.ok(late.status === 'renewed');
+    assert.equal(late.expiration, '2027-03-01');
+    // No inspection date at all: the card saw none (null).
+    const none = await renewVehicleDocumentAs(adminDb, HOUSE, renew({ field: 'inspectionExpiration', seen: null }), ctx(SAM));
+    assert.ok(none.status === 'renewed');
+    assert.equal(none.expiration, '2027-03-01');
+    // Undo of a renewal from nothing removes the field again.
+    assert.equal((await undoVehicleRenewalAs(adminDb, HOUSE, { opId: none.opId }, ctx(SAM))).status, 'undone');
+    assert.equal('inspectionExpiration' in (await car()), false);
+  });
+
+  test('Undo keeps a date someone changed since, and is only for the actor within the window', async () => {
+    await vehicles().doc('car').update({ registrationExpiration: '2026-03-20' });
+    const done = await renewVehicleDocumentAs(adminDb, HOUSE, renew(), ctx(SAM));
+    assert.ok(done.status === 'renewed');
+    await assert.rejects(undoVehicleRenewalAs(adminDb, HOUSE, { opId: done.opId }, ctx(ALEX)), /forbidden/);
+    assert.deepEqual(await undoVehicleRenewalAs(adminDb, HOUSE, { opId: done.opId }, ctx(SAM, new Date(NOW.getTime() + 16_000))), { status: 'expired' });
+    await vehicles().doc('car').update({ registrationExpiration: '2027-05-05' });
+    const undo = await undoVehicleRenewalAs(adminDb, HOUSE, { opId: done.opId }, ctx(SAM, new Date(NOW.getTime() + 5_000)));
+    assert.deepEqual(undo, { status: 'undone', kept: [{ field: 'registrationExpiration', value: '2027-05-05' }] });
+    assert.equal((await car()).registrationExpiration, '2027-05-05');
+  });
+
+  test('a deleted vehicle is "gone" and never recreated; unknown fields are refused', async () => {
+    assert.deepEqual(await renewVehicleDocumentAs(adminDb, HOUSE, renew({ vehicleId: 'nope' }), ctx(SAM)), { status: 'gone' });
+    assert.equal((await vehicles().doc('nope').get()).exists, false);
+    await assert.rejects(renewVehicleDocumentAs(adminDb, HOUSE, renew({ field: 'nickname' }), ctx(SAM)), /invalid/);
+    await vehicles().doc('car').update({ registrationExpiration: '2026-03-20' });
+    const done = await renewVehicleDocumentAs(adminDb, HOUSE, renew(), ctx(SAM));
+    assert.ok(done.status === 'renewed');
+    await vehicles().doc('car').delete();
+    assert.equal((await undoVehicleRenewalAs(adminDb, HOUSE, { opId: done.opId }, ctx(SAM))).status, 'undone');
+    assert.equal((await vehicles().doc('car').get()).exists, false);
+  });
+});
+
 describe('server actions', () => {
   const USERS = {
     editor: { uid: 'mo-editor', email: 'mo.editor@example.test' },
@@ -461,6 +533,10 @@ describe('server actions', () => {
     assert.deepEqual(viewer.ok ? null : viewer.code, 'forbidden');
     const snooze = await snoozeMaintenanceSchedule({ idToken: tokens.get(USERS.viewer.uid)!, householdId: HOUSE, snooze: { opId: randomUUID(), ownerType: 'home_asset', ownerId: 'hvac', scheduleId: 'filter', seen: { nextDueDate: '2026-08-01', nextDueMileage: null } } });
     assert.equal(snooze.ok ? null : snooze.code, 'forbidden');
+    const renewal = await renewVehicleDocument({ idToken: tokens.get(USERS.viewer.uid)!, householdId: HOUSE, renew: { opId: randomUUID(), vehicleId: 'car', field: 'registrationExpiration', seen: null } });
+    assert.equal(renewal.ok ? null : renewal.code, 'forbidden');
+    const editorRenewal = await renewVehicleDocument({ idToken: tokens.get(USERS.editor.uid)!, householdId: HOUSE, renew: { opId: randomUUID(), vehicleId: 'car', field: 'registrationExpiration', seen: null } });
+    assert.ok(editorRenewal.ok && editorRenewal.data.status === 'renewed' && editorRenewal.data.expiration === '2027-08-01', JSON.stringify(editorRenewal));
     const outsider = await completeMaintenanceSchedule({ idToken: tokens.get(USERS.outsider.uid)!, householdId: HOUSE, completion: completion() });
     assert.equal(outsider.ok ? null : outsider.code, 'forbidden');
     // Their own household has no such asset: nothing leaks across households.

@@ -21,6 +21,9 @@ import {
   planSnooze,
   planUndoCompletion,
   planUndoSnooze,
+  planRenewal,
+  planUndoRenewal,
+  isRenewableDocument,
   scheduleListField,
   withScheduleIds,
   type CompletionRecord,
@@ -29,6 +32,7 @@ import {
   type KeptField,
   type MaintenanceCycle,
   type MaintenanceOwnerType,
+  type RenewableDocument,
   type StoredSchedule,
 } from '@/lib/maintenance/operations';
 
@@ -82,7 +86,12 @@ export type UndoResult =
 
 export type SaveResult = { status: 'saved'; id: string; created: boolean; replay: boolean };
 
-type OpKind = 'complete' | 'snooze' | 'save_asset' | 'save_vehicle' | 'save_log';
+type OpKind = 'complete' | 'snooze' | 'renew' | 'save_asset' | 'save_vehicle' | 'save_log';
+
+export type RenewResult =
+  | { status: 'renewed'; opId: string; field: RenewableDocument; expiration: string; replay: boolean }
+  | { status: 'changed' }
+  | { status: 'gone' };
 
 /* -------------------------------------------------------------------------- */
 /* Input                                                                       */
@@ -610,6 +619,97 @@ export async function undoMaintenanceSnoozeAs(db: Firestore, householdId: string
     const result: UndoResult = { status: 'undone', kept: plain(kept) };
     tx.update(entry.ref, { undoneAt: Timestamp.fromDate(ctx.now), undoResult: result });
     ctx.hooks?.finalize(tx, { targetPath: ownerRef.path, summary: { result }, undo: 'reversed' });
+    return result;
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Renewing a registration or inspection (MA-33a)                              */
+/* -------------------------------------------------------------------------- */
+
+export type RenewInput = { opId: unknown; vehicleId: unknown; field: unknown; seen: unknown };
+
+const seenExpirationOf = (value: unknown): string | null => {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' || value.length > 64) throw invalid();
+  return value;
+};
+
+/**
+ * "Renewed (+1 year)" for a vehicle's registration or inspection: only that one
+ * field is written, from the vehicle read in this transaction, to
+ * `renewedExpiration(current, today)` in the household's day. `seen` is the
+ * expiration the person saw; a different stored value answers `changed`. The
+ * ledger keeps `before`/`after` for the 10 s Undo (compare-and-revert). The
+ * old "expires soon" notification is resolved by the hourly upkeep (its state
+ * is no longer actionable).
+ */
+export async function renewVehicleDocumentAs(db: Firestore, householdId: string, input: RenewInput, ctx: OperationContext): Promise<RenewResult> {
+  const house = householdRef(db, householdId);
+  const request = recordOf(input);
+  const opId = opIdOf(request.opId);
+  const vehicleId = docIdOf(request.vehicleId);
+  if (!isRenewableDocument(request.field)) throw invalid();
+  const field = request.field;
+  const seen = seenExpirationOf(request.seen);
+
+  return db.runTransaction(async (tx): Promise<RenewResult> => {
+    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (replay) return replay.summary.result as RenewResult;
+    const vehicleRef = house.collection('vehicles').doc(vehicleId);
+    const [home, member, ledger, vehicle] = await tx.getAll(house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), vehicleRef);
+    const { today } = householdDay(home, ctx.now);
+    const stored = replayOf(ledger, 'renew', ctx);
+    if (stored) {
+      const result = stored as RenewResult;
+      return result.status === 'renewed' ? { ...result, replay: true } : result;
+    }
+    if (!vehicle.exists) return { status: 'gone' };
+    const plan = planRenewal({ field, current: vehicle.get(field), seen, today });
+    if (plan.kind === 'changed') return { status: 'changed' };
+    tx.update(vehicleRef, { [field]: plan.expiration, updatedAt: ctx.now.toISOString() });
+    const result: RenewResult = { status: 'renewed', opId, field, expiration: plan.expiration, replay: false };
+    tx.set(ledgerRef(house, opId), {
+      kind: 'renew',
+      actorUid: ctx.actor.uid,
+      actorName: actorName(member, ctx),
+      ownerType: 'vehicle',
+      ownerId: vehicleId,
+      field,
+      appliedAt: Timestamp.fromDate(ctx.now),
+      undoneAt: null,
+      before: plan.before,
+      after: plan.after,
+      result,
+    });
+    ctx.hooks?.finalize(tx, { targetPath: vehicleRef.path, summary: plain({ result }) });
+    return result;
+  });
+}
+
+/** Undoes a renewal within the Undo window: the field goes back only while it still holds the renewed date. */
+export async function undoVehicleRenewalAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult> {
+  const house = householdRef(db, householdId);
+  const opId = opIdOf(recordOf(input).opId);
+  return db.runTransaction(async tx => {
+    const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
+    if (replay) return replay.summary.result as UndoResult;
+    const [home, entry] = await tx.getAll(house, ledgerRef(house, opId));
+    householdDay(home, ctx.now);
+    const answer = undoEntry(entry, 'renew', ctx);
+    if (answer) return answer;
+    const vehicleRef = house.collection('vehicles').doc(docIdOf(entry.get('ownerId')));
+    const vehicle = await tx.get(vehicleRef);
+    let kept: KeptField[] = [];
+    // A vehicle deleted meanwhile is never recreated.
+    if (vehicle.exists) {
+      const plan = planUndoRenewal(vehicle.data() ?? {}, fieldValuesOf(entry.get('before')), fieldValuesOf(entry.get('after')));
+      kept = plan.kept;
+      if (Object.keys(plan.patch).length > 0) tx.update(vehicleRef, { ...toUpdate(plan.patch), updatedAt: ctx.now.toISOString() });
+    }
+    const result: UndoResult = { status: 'undone', kept: plain(kept) };
+    tx.update(entry.ref, { undoneAt: Timestamp.fromDate(ctx.now), undoResult: result });
+    ctx.hooks?.finalize(tx, { targetPath: vehicleRef.path, summary: { result }, undo: 'reversed' });
     return result;
   });
 }
