@@ -69,10 +69,14 @@ export function ReceiptPicker({
     return [entry.key, { url: image ? URL.createObjectURL(entry.file) : null, heic: check.ok && check.heic, pdf: check.ok && check.contentType === 'application/pdf' }];
   })), [staged]);
   useEffect(() => () => { for (const preview of previews.values()) if (preview.url) URL.revokeObjectURL(preview.url); }, [previews]);
-  // Opening the form starts over; closing it makes any answer still on its way stale.
+  // Opening the form starts over; closing it makes any answer still on its way stale. Each mount
+  // gets a fresh guard: a closed guard never reopens, and React runs mount, cleanup and mount
+  // again in development (Strict Mode), which would otherwise leave every reading "stale" and the
+  // form stuck on "Reading receipt…".
   useEffect(() => {
     receiptStaging.clear();
-    const current = guard.current;
+    const current = createReceiptReadGuard();
+    guard.current = current;
     return () => current.close();
   }, []);
 
