@@ -14,7 +14,11 @@ import {
   snoozeMaintenanceScheduleAs,
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
+  undoVehicleMileageAs,
+  updateVehicleMileageAs,
   type CompleteInput,
+  type MileageInput,
+  type MileageResult,
   type CompleteResult,
   type SaveInput,
   type SaveResult,
@@ -128,4 +132,14 @@ export async function saveHomeAsset(input: Context & { save: SaveInput }): Promi
 /** Creates or edits a vehicle (maintenance.edit). */
 export async function saveVehicle(input: Context & { save: SaveInput }): Promise<MaintenanceActionResult<SaveResult>> {
   return run(input, input?.save, () => EDIT, user => saveVehicleAs(adminDb, user.householdId, input.save, contextOf(user)));
+}
+
+/** "Update mileage": an explicit odometer reading (maintenance.edit; a lower one only as a correction). */
+export async function updateVehicleMileage(input: Context & { mileage: MileageInput }): Promise<MaintenanceActionResult<MileageResult>> {
+  return run(input, input?.mileage, () => EDIT, user => updateVehicleMileageAs(adminDb, user.householdId, input.mileage, contextOf(user)));
+}
+
+/** Undoes the caller's own mileage update within the Undo window. */
+export async function undoVehicleMileage(input: Context & { opId: string }): Promise<MaintenanceActionResult<UndoResult>> {
+  return run(input, { opId: input?.opId }, () => EDIT, user => undoVehicleMileageAs(adminDb, user.householdId, { opId: input.opId }, contextOf(user)));
 }

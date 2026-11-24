@@ -10,7 +10,7 @@ import type {
   MaintenanceScheduleMode, MaintenanceTargetType, Vehicle, VehicleServiceSchedule,
 } from '@/lib/types';
 import {
-  calculateNextAssetDueDate, calculateNextVehicleDueDate, calculateNextVehicleMileage, getAssetScheduleMode, getVehicleScheduleMode,
+  calculateNextVehicleMileage, getAssetScheduleMode, getVehicleScheduleMode, nextDueAfterCompletion,
   type ScheduleCompletionTarget,
 } from '@/lib/maintenance/schedules';
 import { scheduleRef, type StoredSchedule } from '@/lib/maintenance/operations';
@@ -495,9 +495,8 @@ export function completionFormValues(target: ScheduleCompletionTarget, today: st
   return {
     completedDate,
     mileage: completedMileage,
-    nextDueDate: target.targetType === 'home_asset'
-      ? calculateNextAssetDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || ''
-      : calculateNextVehicleDueDate(target.schedule, completedDate) || target.schedule.nextDueDate || '',
+    // Anchor-aware (MA-11g): a calendar schedule stays on its day.
+    nextDueDate: nextDueAfterCompletion(target.schedule, completedDate) || target.schedule.nextDueDate || '',
     nextDueMileage: target.targetType === 'vehicle'
       ? calculateNextVehicleMileage(target.schedule, toNumber(completedMileage))?.toString() || target.schedule.nextDueMileage?.toString() || ''
       : '',

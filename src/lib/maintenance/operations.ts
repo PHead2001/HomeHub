@@ -15,10 +15,9 @@ import {
   type VehicleInput,
 } from '../../../functions/src/shared/maintenance-reminders';
 import {
-  calculateNextAssetDueDate,
-  calculateNextVehicleDueDate,
   calculateNextVehicleMileage,
   canSnoozeReminder,
+  nextDueAfterCompletion,
   snoozedDueDate,
 } from './schedules';
 import type { HomeAssetSchedule, VehicleServiceSchedule } from '../types';
@@ -273,13 +272,15 @@ export const planCompletion = (input: {
 
   let next: MaintenanceCycle;
   if (ownerType === 'home_asset') {
-    const date = (givenDate as string | undefined) || calculateNextAssetDueDate(schedule as HomeAssetSchedule, completedDate);
+    // The schedule as stored, snooze included: a calendar-anchored schedule stays on its day and a
+    // snoozed one steps from the cycle it was snoozed from (MA-11g; snoozedUntil/From are removed below).
+    const date = (givenDate as string | undefined) || nextDueAfterCompletion(schedule as HomeAssetSchedule, completedDate);
     next = { nextDueDate: date ?? null, nextDueMileage: null };
   } else {
     const service = schedule as VehicleServiceSchedule;
     const mileageDriven = Boolean(service.intervalMiles) || typeof service.nextDueMileage === 'number';
     if (mileageDriven && mileage === undefined) return { kind: 'refused', reason: 'mileage_required' };
-    const date = (givenDate as string | undefined) || calculateNextVehicleDueDate(service, completedDate);
+    const date = (givenDate as string | undefined) || nextDueAfterCompletion(service, completedDate);
     const dueMileage = (givenMileage as number | undefined) ?? calculateNextVehicleMileage(service, mileage as number | undefined);
     next = { nextDueDate: date ?? null, nextDueMileage: typeof dueMileage === 'number' ? dueMileage : null };
     if (next.nextDueMileage !== null && mileage !== undefined && next.nextDueMileage <= (mileage as number)) {
@@ -515,10 +516,11 @@ export const planRecordEdit = (input: {
 /** Editable schedule fields. */
 export const ASSET_SCHEDULE_FIELDS = [
   'mode', 'scheduleName', 'frequencyType', 'intervalValue', 'lastCompletedDate', 'nextDueDate', 'snoozedUntil', 'snoozedFrom',
+  'anchor', 'anchorMonth', 'anchorDay',
 ] as const;
 export const VEHICLE_SCHEDULE_FIELDS = [
   'mode', 'serviceName', 'intervalMiles', 'intervalMonths', 'lastCompletedMileage', 'lastCompletedDate',
-  'nextDueMileage', 'nextDueDate', 'snoozedUntil', 'snoozedFrom',
+  'nextDueMileage', 'nextDueDate', 'snoozedUntil', 'snoozedFrom', 'anchor', 'anchorMonth', 'anchorDay',
 ] as const;
 
 /** A short mileage warning for the UI, or null (MA-6d). */
@@ -527,4 +529,46 @@ export const mileageWarning = (reading: number | undefined, current: number | un
   if (reading < current) return 'lower';
   if (reading - current > MILEAGE_JUMP_WARNING) return 'jump';
   return null;
+};
+
+
+/* -------------------------------------------------------------------------- */
+/* Update mileage (MA-19, MA-6e)                                               */
+/* -------------------------------------------------------------------------- */
+
+/** Vehicle fields an "Update mileage" changes (and its Undo reverts). */
+export const MILEAGE_UPDATE_FIELDS = ['currentMileage', 'mileageUpdatedAt'] as const;
+
+export type MileageUpdatePlan =
+  | { kind: 'refused'; reason: 'invalid_mileage' | 'lower_needs_correction' }
+  | { kind: 'apply'; patch: FieldValues; before: FieldValues; after: FieldValues; currentMileage: number };
+
+/**
+ * An explicit odometer reading from "Update mileage". A reading at or above the
+ * recorded one becomes the current mileage (and `mileageUpdatedAt` today). A lower
+ * reading is accepted only as an explicit correction (the person confirmed the
+ * correction copy); otherwise it is refused and nothing changes.
+ */
+export const planMileageUpdate = (input: {
+  vehicle: { currentMileage?: unknown; mileageUpdatedAt?: unknown };
+  reading: unknown;
+  correction: boolean;
+  today: string;
+}): MileageUpdatePlan => {
+  const { vehicle, reading, correction, today } = input;
+  if (!isMileage(reading)) return { kind: 'refused', reason: 'invalid_mileage' };
+  const current = typeof vehicle.currentMileage === 'number' ? vehicle.currentMileage : null;
+  if (current !== null && reading < current && !correction) return { kind: 'refused', reason: 'lower_needs_correction' };
+  const patch: FieldValues = { currentMileage: reading, mileageUpdatedAt: today };
+  const diff = changes(vehicle, applyPatch({ ...vehicle }, patch), MILEAGE_UPDATE_FIELDS);
+  return { kind: 'apply', patch: Object.fromEntries(Object.keys(diff.after).map(field => [field, patch[field]])), before: diff.before, after: diff.after, currentMileage: reading };
+};
+
+/** Undo of a mileage update: compare-and-revert of currentMileage and mileageUpdatedAt. */
+export const planUndoMileage = (vehicle: Record<string, unknown>, before: FieldValues, after: FieldValues) => {
+  const result = compareAndRevert(vehicle, pick(before, MILEAGE_UPDATE_FIELDS), pick(after, MILEAGE_UPDATE_FIELDS));
+  const patch = { ...result.patch };
+  // A later reading raised the mileage: it stays, and so does its date.
+  if (result.kept.some(entry => entry.field === 'currentMileage')) delete patch.mileageUpdatedAt;
+  return { patch, kept: result.kept.filter(entry => entry.field !== 'mileageUpdatedAt') };
 };
