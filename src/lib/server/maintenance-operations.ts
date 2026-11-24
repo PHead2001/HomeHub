@@ -60,14 +60,15 @@ export const MAINTENANCE_UNDO_GRACE_MS = 5_000;
 export type CleanupState = 'done' | 'pending';
 
 export type CompleteResult =
-  | { status: 'completed'; opId: string; logId: string; next: MaintenanceCycle; replay: boolean; cleanup: CleanupState }
+  /** `undoMs`: what is left of the Undo window when the answer leaves the server (a replay of an older completion gets less, or 0). */
+  | { status: 'completed'; opId: string; logId: string; next: MaintenanceCycle; replay: boolean; cleanup: CleanupState; undoMs?: number }
   | { status: 'already_done'; byName: string; completedDate: string; at: string }
   | { status: 'changed' }
   | { status: 'gone' }
   | { status: 'refused'; reason: CompletionRefusal };
 
 export type SnoozeResult =
-  | { status: 'snoozed'; opId: string; nextDueDate: string; replay: boolean; cleanup: CleanupState }
+  | { status: 'snoozed'; opId: string; nextDueDate: string; replay: boolean; cleanup: CleanupState; undoMs?: number }
   | { status: 'changed' }
   | { status: 'gone' }
   | { status: 'refused'; reason: 'not_snoozable' };
@@ -241,6 +242,26 @@ export async function resolveScheduleNotifications(
 export type MaintenanceOperationOptions = {
   /** The cleanup step (tests replace it to simulate a failure). */
   cleanup?: typeof resolveScheduleNotifications;
+  /**
+   * Whether a log's reading may raise its vehicle's `currentMileage` (log saves only). Updating
+   * the vehicle is a vehicle edit, so callers pass true only when the person holds
+   * `maintenance.edit`; a member who may only create logs keeps the reading on the log alone.
+   * Defaults to false.
+   */
+  applyVehicleReading?: boolean;
+};
+
+/**
+ * What is left of the Undo window (`UNDO_WINDOW_MS`, without the server's grace) when the answer
+ * leaves: measured from the operation's `appliedAt` with the operation's clock plus the real time
+ * spent since it started (a slow cleanup or a replay of an older operation leaves less).
+ */
+const undoRemainingMs = (appliedAtMs: number | undefined, now: Date, startedReal: number) =>
+  appliedAtMs === undefined ? undefined : Math.max(0, Math.round(appliedAtMs + UNDO_WINDOW_MS - (now.getTime() + (Date.now() - startedReal))));
+
+const appliedAtOf = (ledger: { get(field: string): unknown }) => {
+  const value = ledger.get('appliedAt');
+  return value instanceof Timestamp ? value.toMillis() : undefined;
 };
 
 const runCleanup = async (
@@ -328,7 +349,8 @@ export async function completeMaintenanceScheduleAs(
   }
   if (request.nextDueDate !== undefined && request.nextDueDate !== null && (typeof request.nextDueDate !== 'string' || request.nextDueDate.length > 40)) throw invalid();
 
-  const outcome = await db.runTransaction(async (tx): Promise<{ result: CompleteResult; cleanup: CleanupTarget | null; name?: string }> => {
+  const startedReal = Date.now();
+  const outcome = await db.runTransaction(async (tx): Promise<{ result: CompleteResult; cleanup: CleanupTarget | null; name?: string; appliedAtMs?: number }> => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
     if (replay) {
       const stored = replay.summary.result as CompleteResult;
@@ -344,6 +366,7 @@ export async function completeMaintenanceScheduleAs(
         result: result.status === 'completed' ? { ...result, replay: true } : result,
         cleanup: cleanupOf(ledger.get('cleanup')),
         name: typeof ledger.get('actorName') === 'string' ? ledger.get('actorName') : undefined,
+        appliedAtMs: appliedAtOf(ledger),
       };
     }
     if (!owner.exists) return { result: { status: 'gone' }, cleanup: null };
@@ -425,11 +448,12 @@ export async function completeMaintenanceScheduleAs(
       result,
     });
     ctx.hooks?.finalize(tx, { targetPath: logRef.path, summary: plain({ result, cleanup }), targetName: title });
-    return { result, cleanup, name };
+    return { result, cleanup, name, appliedAtMs: ctx.now.getTime() };
   });
 
   if (outcome.result.status !== 'completed') return outcome.result;
-  return { ...outcome.result, cleanup: await runCleanup(db, householdId, outcome.cleanup, ctx, options, outcome.name ?? publicDisplayName(ctx.actor.name)) };
+  const cleanupState = await runCleanup(db, householdId, outcome.cleanup, ctx, options, outcome.name ?? publicDisplayName(ctx.actor.name));
+  return { ...outcome.result, cleanup: cleanupState, undoMs: undoRemainingMs(outcome.appliedAtMs, ctx.now, startedReal) };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -526,7 +550,8 @@ export async function snoozeMaintenanceScheduleAs(
   const scheduleKey = scheduleIdOf(request.scheduleId);
   const seen = cycleIn(request.seen);
 
-  const outcome = await db.runTransaction(async (tx): Promise<{ result: SnoozeResult; cleanup: CleanupTarget | null; name?: string }> => {
+  const startedReal = Date.now();
+  const outcome = await db.runTransaction(async (tx): Promise<{ result: SnoozeResult; cleanup: CleanupTarget | null; name?: string; appliedAtMs?: number }> => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
     if (replay) return { result: replay.summary.result as SnoozeResult, cleanup: cleanupOf(replay.summary.cleanup) };
     const ownerRef = house.collection(ownerCollection(ownerType)).doc(ownerId);
@@ -539,6 +564,7 @@ export async function snoozeMaintenanceScheduleAs(
         result: result.status === 'snoozed' ? { ...result, replay: true } : result,
         cleanup: cleanupOf(ledger.get('cleanup')),
         name: typeof ledger.get('actorName') === 'string' ? ledger.get('actorName') : undefined,
+        appliedAtMs: appliedAtOf(ledger),
       };
     }
     if (!owner.exists) return { result: { status: 'gone' }, cleanup: null };
@@ -574,11 +600,12 @@ export async function snoozeMaintenanceScheduleAs(
       result,
     });
     ctx.hooks?.finalize(tx, { targetPath: ownerRef.path, summary: plain({ result, cleanup }) });
-    return { result, cleanup, name };
+    return { result, cleanup, name, appliedAtMs: ctx.now.getTime() };
   });
 
   if (outcome.result.status !== 'snoozed') return outcome.result;
-  return { ...outcome.result, cleanup: await runCleanup(db, householdId, outcome.cleanup, ctx, options, outcome.name ?? publicDisplayName(ctx.actor.name)) };
+  const cleanupState = await runCleanup(db, householdId, outcome.cleanup, ctx, options, outcome.name ?? publicDisplayName(ctx.actor.name));
+  return { ...outcome.result, cleanup: cleanupState, undoMs: undoRemainingMs(outcome.appliedAtMs, ctx.now, startedReal) };
 }
 
 /** Undoes a snooze (compare-and-revert of nextDueDate, snoozedUntil and snoozedFrom). */
@@ -864,7 +891,9 @@ export const saveVehicleAs = (db: Firestore, householdId: string, input: SaveInp
  * form changed and can never change those, nor a completion's record. A vehicle
  * log's mileage raises the vehicle's current mileage (max rule).
  */
-export async function saveMaintenanceLogAs(db: Firestore, householdId: string, input: SaveInput, ctx: OperationContext): Promise<SaveResult> {
+export async function saveMaintenanceLogAs(
+  db: Firestore, householdId: string, input: SaveInput, ctx: OperationContext, options: MaintenanceOperationOptions = {},
+): Promise<SaveResult> {
   const house = householdRef(db, householdId);
   const request = recordOf(input);
   const opId = opIdOf(request.opId);
@@ -949,7 +978,7 @@ export async function saveMaintenanceLogAs(db: Firestore, householdId: string, i
     // The reading counts for the merged log's own vehicle (max rule), when this save set the
     // reading or pointed the log at a vehicle.
     const readingSaved = !plan || 'mileage' in plan.patch || targetChanged;
-    if (readingSaved && mergedType === 'vehicle' && typeof merged.mileage === 'number' && target?.exists) {
+    if (options.applyVehicleReading && readingSaved && mergedType === 'vehicle' && typeof merged.mileage === 'number' && target?.exists) {
       const patch = mileagePatch({ currentMileage: target.get('currentMileage') }, merged.mileage, today);
       if (Object.keys(patch).length > 0) tx.update(target.ref, patch as { [field: string]: number | string });
     }

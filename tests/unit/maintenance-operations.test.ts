@@ -20,7 +20,7 @@ import {
   type MaintenanceCycle,
   type StoredSchedule,
 } from '../../src/lib/maintenance/operations';
-import { callWithDeadline, createPendingRequests, mileageWarningMessage } from '../../src/lib/maintenance/action-call';
+import { callWithDeadline, createPendingRequests, mileageWarningMessage, undoOfferMs, MIN_UNDO_OFFER_MS } from '../../src/lib/maintenance/action-call';
 
 // M1: the maintenance completion contract, as pure plans (the server applies them
 // in one transaction: src/lib/server/maintenance-operations.ts).
@@ -494,5 +494,20 @@ describe('an explicit new due date starts a new occurrence (PR #210 review)', ()
     const [edited] = mergeSchedules([first.schedule], [first.schedule], values, ASSET_SCHEDULE_FIELDS);
     assert.deepEqual(edited.lastCompletion, first.schedule.lastCompletion);
     assert.equal(edited.scheduleName, 'Replace HVAC filter');
+  });
+});
+
+describe('the Undo offer follows the server window (PR #210 review)', () => {
+  test('a fresh answer offers the window less the trip back; never more than 10 s', () => {
+    assert.equal(undoOfferMs(9800), 9300);
+    assert.equal(undoOfferMs(20_000), 10_000);
+  });
+  test('a replayed or slow answer offers what is left, or no Undo at all', () => {
+    assert.equal(undoOfferMs(3000), 2500);
+    assert.equal(undoOfferMs(MIN_UNDO_OFFER_MS + 499), null);
+    assert.equal(undoOfferMs(0), null);
+  });
+  test('an answer without undoMs (an older server) keeps the whole window', () => {
+    assert.equal(undoOfferMs(undefined), 10_000);
   });
 });

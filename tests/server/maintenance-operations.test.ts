@@ -14,7 +14,7 @@ import {
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
 } from '../../src/lib/server/maintenance-operations';
-import { completeMaintenanceSchedule, snoozeMaintenanceSchedule } from '../../src/app/maintenance/actions';
+import { completeMaintenanceSchedule, saveMaintenanceLog, snoozeMaintenanceSchedule } from '../../src/app/maintenance/actions';
 
 // M1: the maintenance completion contract through the Admin SDK, against the
 // Firestore and Auth emulators (audit 17.3: MA-3 to MA-8, MA-20).
@@ -145,11 +145,11 @@ describe('completing a schedule', () => {
     let car = (await vehicles().doc('car').get()).data()!;
     assert.equal(car.currentMileage, 49500);
     assert.equal(car.mileageUpdatedAt, '2026-03-01');
-    const lower = await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-02-01', type: 'repair', mileage: 47000 } }, ctx(SAM));
+    const lower = await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-02-01', type: 'repair', mileage: 47000 } }, ctx(SAM), { applyVehicleReading: true });
     car = (await vehicles().doc('car').get()).data()!;
     assert.equal(car.currentMileage, 49500, 'a backdated lower reading never rolls it back');
     assert.equal((await logs().doc(lower.id).get()).get('mileage'), 47000, 'the log keeps its own reading');
-    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Tires', date: '2026-03-01', type: 'repair', mileage: 52000 } }, ctx(SAM));
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Tires', date: '2026-03-01', type: 'repair', mileage: 52000 } }, ctx(SAM), { applyVehicleReading: true });
     assert.equal((await vehicles().doc('car').get()).get('currentMileage'), 52000);
   });
 });
@@ -339,13 +339,25 @@ describe('edits', () => {
 });
 
 describe('review of PR #210', () => {
+  test('a result carries what is left of the Undo window; a late replay carries none', async () => {
+    const opId = randomUUID();
+    const request = { opId, ownerType: 'home_asset', ownerId: 'hvac', scheduleId: 'filter', seen: { nextDueDate: '2026-03-01', nextDueMileage: null }, completedDate: '2026-03-01' };
+    const fresh = await completeMaintenanceScheduleAs(adminDb, HOUSE, request, ctx(SAM));
+    assert.ok(fresh.status === 'completed');
+    assert.ok(typeof fresh.undoMs === 'number' && fresh.undoMs > 8000 && fresh.undoMs <= 10_000, `fresh undoMs ${fresh.status === 'completed' ? fresh.undoMs : ''}`);
+    // The same press retried 12 s later (the first answer was lost): the stored result, no Undo left.
+    const late = await completeMaintenanceScheduleAs(adminDb, HOUSE, request, ctx(SAM, new Date(NOW.getTime() + 12_000)));
+    assert.ok(late.status === 'completed' && late.replay);
+    assert.equal(late.status === 'completed' ? late.undoMs : -1, 0);
+  });
+
   test('a mileage edit counts for the vehicle the log points at now, not the one the form showed', async () => {
     await vehicles().doc('van').set({ householdId: HOUSE, nickname: 'Van', status: 'active', currentMileage: 10000, serviceSchedules: [] });
-    const created = await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-03-01', type: 'repair', mileage: 48000 } }, ctx(SAM));
+    const created = await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-03-01', type: 'repair', mileage: 48000 } }, ctx(SAM), { applyVehicleReading: true });
     const base = { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-03-01', type: 'repair', mileage: 48000 };
     // Alex moves the log to the van; Sam, whose form still shows the car, corrects the reading.
-    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, vehicleId: 'van' } }, ctx(ALEX));
-    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, mileage: 60000 } }, ctx(SAM));
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, vehicleId: 'van' } }, ctx(ALEX), { applyVehicleReading: true });
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, mileage: 60000 } }, ctx(SAM), { applyVehicleReading: true });
     const log = (await logs().doc(created.id).get()).data()!;
     assert.deepEqual({ vehicleId: log.vehicleId, mileage: log.mileage }, { vehicleId: 'van', mileage: 60000 });
     assert.equal((await vehicles().doc('car').get()).get('currentMileage'), 49000, "the car's odometer is untouched");
@@ -409,6 +421,7 @@ describe('server actions', () => {
     editor: { uid: 'mo-editor', email: 'mo.editor@example.test' },
     viewer: { uid: 'mo-viewer', email: 'mo.viewer@example.test' },
     outsider: { uid: 'mo-outsider', email: 'mo.outsider@example.test' },
+    logger: { uid: 'mo-logger', email: 'mo.logger@example.test' },
   } as const;
   const tokens = new Map<string, string>();
   const idTokenFor = async (uid: string, email: string) => {
@@ -432,6 +445,9 @@ describe('server actions', () => {
     await house().collection('members').doc(USERS.viewer.uid).set({
       uid: USERS.viewer.uid, role: 'member', status: 'active', displayName: 'Vic', permissions: { 'maintenance.edit': false },
     });
+    await house().collection('members').doc(USERS.logger.uid).set({
+      uid: USERS.logger.uid, role: 'member', status: 'active', displayName: 'Lou', permissions: { 'maintenance.edit': false, 'maintenance.createLogs': true },
+    });
     await adminDb.collection('households').doc(OTHER).set({ name: 'Other', ownerUid: USERS.outsider.uid, timeZone: 'America/Chicago' });
     await adminDb.collection('households').doc(OTHER).collection('members').doc(USERS.outsider.uid).set({ uid: USERS.outsider.uid, role: 'owner', status: 'active', displayName: 'Out' });
     await assets().doc('hvac').update({ schedules: [{ ...FILTER, nextDueDate: '2026-08-01' }] });
@@ -442,6 +458,21 @@ describe('server actions', () => {
     });
   };
   const completion = () => ({ opId: randomUUID(), ownerType: 'home_asset', ownerId: 'hvac', scheduleId: 'filter', seen: { nextDueDate: '2026-08-01', nextDueMileage: null }, completedDate: '2026-08-01' });
+
+  test('a log reading raises the odometer only for members who may edit vehicles (PR #210 review)', async () => {
+    await seedMembers();
+    const car = vehicles().doc('car');
+    const before = (await car.get()).get('currentMileage') as number;
+    const reading = before + 1000;
+    const values = { targetType: 'vehicle', vehicleId: 'car', title: 'Washer fluid', date: '2026-08-01', type: 'routine', mileage: reading };
+    const logged = await saveMaintenanceLog({ idToken: tokens.get(USERS.logger.uid)!, householdId: HOUSE, save: { opId: randomUUID(), values } });
+    assert.ok(logged.ok, 'a member who may create logs still logs the service');
+    assert.equal((await car.get()).get('currentMileage'), before, "a createLogs-only member never changes the vehicle's odometer");
+    if (logged.ok) assert.equal((await logs().doc(logged.data.id).get()).get('mileage'), reading, 'the log keeps its reading');
+    const edited = await saveMaintenanceLog({ idToken: tokens.get(USERS.editor.uid)!, householdId: HOUSE, save: { opId: randomUUID(), values: { ...values, title: 'Wiper fluid' } } });
+    assert.ok(edited.ok);
+    assert.equal((await car.get()).get('currentMileage'), reading, 'a member with maintenance.edit raises it');
+  });
 
   test('a member with edit and createLogs but no notifications.view completes, and the reminder resolves', async () => {
     await seedMembers();

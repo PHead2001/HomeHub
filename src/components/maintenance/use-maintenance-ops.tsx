@@ -6,7 +6,6 @@ import type { MaintenanceLog } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { ToastAction } from '@/components/ui/toast';
-import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import {
   completeMaintenanceSchedule, undoMaintenanceCompletion, undoMaintenanceSnooze, type MaintenanceActionResult,
 } from '@/app/maintenance/actions';
@@ -19,7 +18,7 @@ import type { ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
 import type { MarkDoneResult } from './reminder-list';
 import { formatDate, getScheduleCompletionName, trimOptional, type SaveNoticeState } from './page-model';
 import { useStableHandler } from './use-stable-handler';
-import { createPendingRequests } from '@/lib/maintenance/action-call';
+import { createPendingRequests, undoOfferMs } from '@/lib/maintenance/action-call';
 
 /** An unanswered request kept for the next press: same op id, same call, same handling. */
 type HeldRequest<T, R> = {
@@ -166,12 +165,20 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
     }
   };
 
-  /** The "done" toast with a 10 s Undo (the shared window). */
-  const completedToast = (title: string, description: string, opId: string, undoLabel: string) => {
+  /**
+   * The "done" toast with Undo for what is left of the shared 10 s window (`undoMs` from the
+   * server: a replayed or slow answer offers less, or no Undo at all).
+   */
+  const completedToast = (title: string, description: string, opId: string, undoLabel: string, undoMs?: number) => {
+    const offer = undoOfferMs(undoMs);
+    if (offer === null) {
+      toast({ title, description });
+      return;
+    }
     const handle = toast({
       title,
       description,
-      duration: UNDO_WINDOW_MS,
+      duration: offer,
       action: (
         <ToastAction altText={`Undo marking ${undoLabel} done`} onClick={() => { handle.dismiss(); void undoCompletion(opId, undoLabel); }}>
           Undo
@@ -224,7 +231,7 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
       if (result.status === 'completed') {
         playFeedback('complete');
         const next = result.next.nextDueDate ? ` Next due ${formatDate(result.next.nextDueDate)}.` : '';
-        completedToast(options.toastTitle, `${name} for ${ownerNameOf(target)} is logged.${next}`, result.opId, name);
+        completedToast(options.toastTitle, `${name} for ${ownerNameOf(target)} is logged.${next}`, result.opId, name, result.undoMs);
         if (result.cleanup === 'pending') console.info('Reminder cleanup is pending; the hourly upkeep finishes it.');
       } else if (result.status === 'already_done') {
         toast({ title: alreadyDoneMessage(result) });

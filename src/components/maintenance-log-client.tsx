@@ -18,7 +18,7 @@ import {
   findReminderSchedule, quickCompletionValues, reminderCycleKey, serviceCompletionValues, type ScheduleCompletionTarget,
 } from '@/lib/maintenance/schedules';
 import { ToastAction } from '@/components/ui/toast';
-import { UNDO_WINDOW_MS } from '@/lib/undo-window';
+import { undoOfferMs } from '@/lib/maintenance/action-call';
 import { saveHomeAsset, saveMaintenanceLog, saveVehicle as saveVehicleAction, snoozeMaintenanceSchedule } from '@/app/maintenance/actions';
 import { CHANGED_MESSAGE, newOpId, refusalField, refusalMessage } from '@/components/maintenance/maintenance-action-client';
 import { cycleOf, scheduleRef, type StoredSchedule } from '@/lib/maintenance/operations';
@@ -446,10 +446,18 @@ export function MaintenanceLogClient() {
     try {
       await runOp(`snooze:${reminderCycleKey(reminder)}`, opId, context => snoozeMaintenanceSchedule({ ...context, snooze }), async (result) => {
         if (result.status === 'snoozed') {
+          const title = 'Snoozed for a week';
+          const description = `${reminder.title} for ${reminder.relatedName} is now due ${formatDate(result.nextDueDate)}.`;
+          // Undo only for what is left of the window (a replayed or slow answer has less).
+          const offer = undoOfferMs(result.undoMs);
+          if (offer === null) {
+            toast({ title, description });
+            return;
+          }
           const handle = toast({
-            title: 'Snoozed for a week',
-            description: `${reminder.title} for ${reminder.relatedName} is now due ${formatDate(result.nextDueDate)}.`,
-            duration: UNDO_WINDOW_MS,
+            title,
+            description,
+            duration: offer,
             action: (
               <ToastAction altText={`Undo snoozing ${reminder.title}`} onClick={() => { handle.dismiss(); void undoSnooze(result.opId); }}>
                 Undo

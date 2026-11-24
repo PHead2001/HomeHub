@@ -116,7 +116,8 @@ export async function saveMaintenanceLog(input: Context & { save: SaveInput }): 
     input,
     input?.save,
     save => ((save as SaveInput).id ? EDIT : ['maintenance.createLogs']),
-    user => saveMaintenanceLogAs(adminDb, user.householdId, input.save, contextOf(user)),
+    // The reading raises the vehicle's odometer only for members who may edit vehicles.
+    user => saveMaintenanceLogAs(adminDb, user.householdId, input.save, contextOf(user), { applyVehicleReading: Boolean(user.permissions['maintenance.edit']) }),
   );
 }
 

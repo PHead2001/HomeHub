@@ -1,3 +1,4 @@
+import { UNDO_WINDOW_MS } from '../undo-window';
 // Pure pieces of how the Maintenance Center calls its server actions (M1), kept free of
 // Firebase imports so tests/unit/maintenance-operations.test.ts covers them.
 
@@ -73,4 +74,20 @@ export const mileageWarningMessage = (warning: 'lower' | 'jump', current: number
   return warning === 'lower'
     ? `That is lower than the recorded ${mi(current)}. The vehicle keeps the higher reading; this entry keeps ${mi(reading)}. Save anyway?`
     : `That is more than 20,000 mi above the recorded ${mi(current)}. Save anyway?`;
+};
+
+
+/** Below this much time left, the Undo button is not offered (it could not be pressed in time). */
+export const MIN_UNDO_OFFER_MS = 1500;
+
+/**
+ * How long a result's Undo may be offered: what the server says is left of the window
+ * (`undoMs`; a replayed or slow answer has less), less half a second for the trip back, at most
+ * the shared window. Null when too little is left to press it; an answer from an older
+ * server without `undoMs` gets the whole window.
+ */
+export const undoOfferMs = (undoMs: number | undefined): number | null => {
+  if (typeof undoMs !== 'number' || !Number.isFinite(undoMs)) return UNDO_WINDOW_MS;
+  const offer = Math.min(UNDO_WINDOW_MS, undoMs - 500);
+  return offer >= MIN_UNDO_OFFER_MS ? offer : null;
 };
