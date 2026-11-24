@@ -43,7 +43,10 @@ export const PAGE_GRID = 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,42
  * on its own when taller than the window, with 1rem left below it (so its bottom is reachable at 1263x722
  * and 1024x600).
  */
-export const DETAIL_COLUMN = 'min-w-0 lg:sticky lg:top-[4.5rem] lg:max-h-[calc(100dvh-5.5rem)] lg:self-start lg:overflow-y-auto lg:overscroll-contain';
+// The cap (100dvh - 9rem) keeps the column's bottom on screen before it sticks (it starts below the
+// header and the tab row, about 7.75rem down) and when it sticks inside a scrolling main below the
+// header, not only when it sticks to the window; a taller detail scrolls inside the column.
+export const DETAIL_COLUMN = 'min-w-0 lg:sticky lg:top-[4.5rem] lg:max-h-[calc(100dvh-9rem)] lg:self-start lg:overflow-y-auto lg:overscroll-contain';
 
 /**
  * Home Assets (MA-17, MA-18): the photo-first card grid filling the width, retired assets in a
