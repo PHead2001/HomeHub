@@ -145,6 +145,7 @@ export const executeAuthorizedAiAction = async <T>({
   flowName,
   maxRequestsPerMinute,
   consumeQuota = true,
+  maxPayloadBytes = MAX_AI_ACTION_PAYLOAD_BYTES,
   task,
 }: {
   context: AiActionContext;
@@ -160,10 +161,15 @@ export const executeAuthorizedAiAction = async <T>({
    * overview's exact facts) pass false and call consumeAiQuota around the model call.
    */
   consumeQuota?: boolean;
+  /**
+   * The payload budget of this action. Only the receipt reader raises it (a downsized photo or
+   * small PDF, under Next's 1 MB Server Action body limit); every other action keeps the default.
+   */
+  maxPayloadBytes?: number;
   task: (user: AuthorizedHouseholdUser) => Promise<T>;
 }): Promise<AiActionResult<T>> => {
   try {
-    if (exceedsPayloadBudget({ context, input }, MAX_AI_ACTION_PAYLOAD_BYTES)) {
+    if (exceedsPayloadBudget({ context, input }, maxPayloadBytes)) {
       throw new HomeHubAiError('invalid_input');
     }
     const user = await authorizeHouseholdAction(context, permission);

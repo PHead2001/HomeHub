@@ -62,7 +62,7 @@ const KEPT_COPY: Record<string, { label: string; show: (value: unknown) => strin
 };
 
 /** "The due date was changed after you marked it done, so it stays Mar 3." */
-export const keptMessage = (kept: KeptField[], action: 'marked it done' | 'snoozed it' | 'renewed it') => kept
+export const keptMessage = (kept: KeptField[], action: 'marked it done' | 'snoozed it' | 'renewed it' | 'updated it') => kept
   .filter(entry => KEPT_COPY[entry.field])
   .map(entry => {
     const copy = KEPT_COPY[entry.field];

@@ -205,6 +205,9 @@ test.describe('maintenance center UX', () => {
       await page.goto('/maintenance?asset=dishwasher');
       await page.getByRole('tabpanel', { name: 'Home Assets' }).getByRole('button', { name: 'Edit home asset Kitchen Dishwasher' }).click();
       const editDialog = page.getByRole('dialog', { name: 'Edit Home Asset' });
+      // MA-15: empty details sit behind "Add details (N empty)".
+      const details = editDialog.getByRole('button', { name: /^Add details \(\d+ empty\)$/ });
+      if (await details.isVisible()) await details.click();
       await editDialog.getByLabel('Notes').fill('E2E unrelated edit');
       await editDialog.getByRole('button', { name: 'Save Asset' }).click();
       await expect.poll(async () => (await dishwasherDoc.get()).get('notes')).toBe('E2E unrelated edit');
@@ -394,6 +397,7 @@ test.describe('maintenance center UX', () => {
     await expect(dialog.getByLabel('Title')).toHaveValue('Replace air filter');
     await expect(dialog.getByLabel('Date')).toHaveValue('2026-08-01');
     await dialog.getByLabel('Cost').fill('42.5');
+    await dialog.getByRole('button', { name: 'More details' }).click();
     await dialog.getByLabel('Service Provider').fill('E2E Heating');
     await dialog.getByRole('button', { name: 'Save Log' }).click();
     await expect(dialog).toHaveCount(0);

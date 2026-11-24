@@ -159,13 +159,14 @@ export const serviceCompletionValues = (
   completedDate: string,
   mileage?: number,
 ): QuickCompletion | null => {
+  // The anchor-aware next due (MA-11g), from the schedule as it is (a snooze included).
   if (target.targetType === 'home_asset') {
-    const nextDueDate = calculateNextAssetDueDate(target.schedule, completedDate);
+    const nextDueDate = nextDueAfterCompletion(target.schedule, completedDate);
     return nextDueDate ? { completedDate, nextDueDate } : null;
   }
   const { schedule } = target;
   if (schedule.intervalMiles && typeof mileage !== 'number') return null;
-  const nextDueDate = calculateNextVehicleDueDate(schedule, completedDate);
+  const nextDueDate = nextDueAfterCompletion(schedule, completedDate);
   const nextDueMileage = calculateNextVehicleMileage(schedule, mileage);
   if (!nextDueDate && typeof nextDueMileage !== 'number') return null;
   return { completedDate, mileage, nextDueDate, nextDueMileage };
@@ -198,7 +199,7 @@ export const completedAssetSchedule = (
 ): HomeAssetSchedule => ({
   ...withoutSnooze(schedule),
   lastCompletedDate: values.completedDate,
-  nextDueDate: values.nextDueDate || calculateNextAssetDueDate(schedule, values.completedDate),
+  nextDueDate: values.nextDueDate || nextDueAfterCompletion(schedule, values.completedDate),
 });
 
 export const completedVehicleSchedule = (
@@ -209,7 +210,7 @@ export const completedVehicleSchedule = (
   lastCompletedMileage: values.mileage,
   lastCompletedDate: values.completedDate,
   nextDueMileage: values.nextDueMileage || calculateNextVehicleMileage(schedule, values.mileage),
-  nextDueDate: values.nextDueDate || calculateNextVehicleDueDate(schedule, values.completedDate),
+  nextDueDate: values.nextDueDate || nextDueAfterCompletion(schedule, values.completedDate),
 });
 
 /**

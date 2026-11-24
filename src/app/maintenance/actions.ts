@@ -4,7 +4,16 @@ import type { HouseholdPermission } from '@/lib/types';
 import { authorizeHouseholdAction, exceedsPayloadBudget, type AuthorizedHouseholdUser } from '@/ai/action-auth';
 import { HomeHubAiError } from '@/ai/errors';
 import { adminDb } from '@/lib/server/firebase-admin';
+import { adminStorageBucket } from '@/lib/server/firebase-admin';
+import { cleanupOrphanUploadsAs, type CleanupBucket, type CleanupResult } from '@/lib/server/maintenance-files';
+import {
+  MaintenanceStorageUnavailable,
+  deleteMaintenanceRecordCascade,
+  type MaintenanceDeleteTargetType,
+  type MaintenanceFileBucket,
+} from '@/lib/server/maintenance-delete';
 import { personalOperationContext } from '@/lib/server/operation-context';
+import { publicDisplayName } from '@/lib/member-directory';
 import {
   MaintenanceOperationError,
   completeMaintenanceScheduleAs,
@@ -15,8 +24,12 @@ import {
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
   renewVehicleDocumentAs,
+  undoVehicleMileageAs,
   undoVehicleRenewalAs,
+  updateVehicleMileageAs,
   type CompleteInput,
+  type MileageInput,
+  type MileageResult,
   type RenewInput,
   type RenewResult,
   type CompleteResult,
@@ -151,4 +164,80 @@ export async function saveHomeAsset(input: Context & { save: SaveInput }): Promi
 /** Creates or edits a vehicle (maintenance.edit). */
 export async function saveVehicle(input: Context & { save: SaveInput }): Promise<MaintenanceActionResult<SaveResult>> {
   return run(input, input?.save, () => EDIT, user => saveVehicleAs(adminDb, user.householdId, input.save, contextOf(user)));
+}
+
+/** "Update mileage": an explicit odometer reading (maintenance.edit; a lower one only as a correction). */
+export async function updateVehicleMileage(input: Context & { mileage: MileageInput }): Promise<MaintenanceActionResult<MileageResult>> {
+  return run(input, input?.mileage, () => EDIT, user => updateVehicleMileageAs(adminDb, user.householdId, input.mileage, contextOf(user)));
+}
+
+/** Undoes the caller's own mileage update within the Undo window. */
+export async function undoVehicleMileage(input: Context & { opId: string }): Promise<MaintenanceActionResult<UndoResult>> {
+  return run(input, { opId: input?.opId }, () => EDIT, user => undoVehicleMileageAs(adminDb, user.householdId, { opId: input.opId }, contextOf(user)));
+}
+
+export type DeleteRecordResult = {
+  status: 'deleted' | 'already';
+  /** Files and logs the delete handled. */
+  attachments: number;
+  logs: number;
+  /**
+   * The record is gone but some of its files could not be removed yet; a retry or the hourly
+   * upkeep finishes (the database stays consistent meanwhile).
+   */
+  pending: boolean;
+};
+
+const DELETE_TARGETS: readonly MaintenanceDeleteTargetType[] = ['home_asset', 'vehicle', 'maintenance_log'];
+
+/**
+ * Deletes a home asset, vehicle or log together with its own attachments (maintenance.delete;
+ * MA-22, MA-4c): one confirmed, resumable operation. An asset's or vehicle's logs stay as
+ * general history and keep their files. Retrying the same delete finishes what is left.
+ */
+export async function deleteMaintenanceRecord(
+  input: Context & { target: { targetType: MaintenanceDeleteTargetType; targetId: string } },
+): Promise<MaintenanceActionResult<DeleteRecordResult>> {
+  return run(input, input?.target, () => ['maintenance.delete'], async user => {
+    const target = input.target;
+    if (!DELETE_TARGETS.includes(target?.targetType) || typeof target.targetId !== 'string'
+      || !target.targetId || target.targetId.length > 1500 || target.targetId.includes('/')) {
+      throw new MaintenanceOperationError('invalid');
+    }
+    const member = await adminDb.collection('households').doc(user.householdId).collection('members').doc(user.uid).get();
+    const actor = { uid: user.uid, name: publicDisplayName(member.get('displayName')) };
+    let afterBarrier = false;
+    try {
+      const outcome = await deleteMaintenanceRecordCascade(
+        adminDb, adminStorageBucket() as unknown as MaintenanceFileBucket | null,
+        { householdId: user.householdId, targetType: target.targetType, targetId: target.targetId, actor, now: operationNow() },
+        { afterBarrier: async () => { afterBarrier = true; } },
+      );
+      return { status: outcome.status, attachments: outcome.attachments, logs: outcome.logs, pending: false };
+    } catch (error) {
+      // Gone from every list already; the tombstone makes a retry or upkeep finish it.
+      if (afterBarrier) {
+        console.error('Maintenance delete stopped part-way; upkeep will finish it', error instanceof MaintenanceStorageUnavailable ? error.message : error);
+        return { status: 'deleted' as const, attachments: 0, logs: 0, pending: true };
+      }
+      throw error;
+    }
+  });
+}
+
+/**
+ * Removes files this member just uploaded whose attachment metadata was refused (MA-11k), for
+ * members who may upload but not delete. See src/lib/server/maintenance-files.ts.
+ */
+export async function cleanupMaintenanceUpload(input: Context & { paths: string[] }): Promise<MaintenanceActionResult<CleanupResult>> {
+  try {
+    if (!Array.isArray(input?.paths) || exceedsPayloadBudget(input.paths, 8 * 1024)) return failure('invalid');
+    const user = await authorizeHouseholdAction({ idToken: input?.idToken, householdId: input?.householdId }, ['maintenance.edit', 'maintenance.createLogs']);
+    const result = await cleanupOrphanUploadsAs(adminDb, adminStorageBucket() as unknown as CleanupBucket | null, user.householdId, input.paths, user.uid);
+    return { ok: true, data: result };
+  } catch (error) {
+    if (error instanceof HomeHubAiError) return failure(error.code === 'unauthenticated' ? 'unauthenticated' : error.code === 'forbidden' ? 'forbidden' : 'failed');
+    console.error('Maintenance upload cleanup failed', error);
+    return failure('failed');
+  }
 }

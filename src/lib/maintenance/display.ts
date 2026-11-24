@@ -2,6 +2,7 @@
 import { format, isValid, parseISO } from 'date-fns';
 import { publicDisplayName } from '../member-directory';
 import type { MaintenanceAttachment } from '../types';
+import { PROOF_CATEGORIES, attachmentImageUrl } from './attachments';
 
 /** What a log with no readable date shows instead of one (MA-11e); such logs sort last. */
 export const UNDATED_LOG = 'Undated';
@@ -55,16 +56,20 @@ export const shouldOfferAiSummary = (notes?: string | null) => {
 const IMAGE_TYPE = /^image\/(png|jpe?g|webp|gif|avif)$/i;
 const IMAGE_NAME = /\.(png|jpe?g|webp|gif|avif)$/i;
 
-/** True for an attachment that can be shown as a picture. */
-export const isImageAttachment = (attachment: Pick<MaintenanceAttachment, 'contentType' | 'fileName' | 'downloadUrl'>) =>
-  Boolean(attachment.downloadUrl) && (
+/**
+ * True for an attachment that can be shown as a picture. A HEIC/HEIF file counts only with
+ * its JPEG display copy (most browsers cannot draw HEIC).
+ */
+export const isImageAttachment = (attachment: Pick<MaintenanceAttachment, 'contentType' | 'fileName' | 'downloadUrl'> & { displayUrl?: string }) =>
+  Boolean(attachment.displayUrl) || (Boolean(attachment.downloadUrl) && (
     attachment.contentType ? IMAGE_TYPE.test(attachment.contentType) : IMAGE_NAME.test(attachment.fileName)
-  );
+  ));
 
 /**
  * The picture for an asset or vehicle card (H30): the newest image attached to
- * it, preferring the "photo" category over receipts or manuals that happen to be
- * images. Null means the card shows the brand logo or category art instead.
+ * it, preferring the "photo" category. A receipt or invoice is never the card
+ * picture (MA-11b), even when it is the only image. Null means the card shows the
+ * brand logo or category art instead.
  */
 export const pickTargetPhoto = (
   attachments: MaintenanceAttachment[],
@@ -72,9 +77,13 @@ export const pickTargetPhoto = (
   targetId: string,
 ): MaintenanceAttachment | null => {
   const images = attachments
-    .filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId && isImageAttachment(attachment))
+    .filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId
+      && !PROOF_CATEGORIES.includes(attachment.category) && isImageAttachment(attachment))
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  return images.find((attachment) => attachment.category === 'photo') || images[0] || null;
+  const picked = images.find((attachment) => attachment.category === 'photo') || images[0] || null;
+  // Cards draw `downloadUrl`: give them the 1024 px display copy when there is one (MA-25d; the
+  // only drawable form of a HEIC photo).
+  return picked ? { ...picked, downloadUrl: attachmentImageUrl(picked) ?? picked.downloadUrl } : null;
 };
 
 export const pickAssetPhoto = (attachments: MaintenanceAttachment[], assetId: string) => pickTargetPhoto(attachments, 'home_asset', assetId);
