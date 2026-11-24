@@ -8,11 +8,14 @@ import {
   nextDueDay,
   renewedExpiration,
   RENEWAL_GRACE_DAYS,
+  SNOOZE_SHIFT_DAYS,
 } from '../../functions/src/shared/maintenance-schedule';
 import {
   calculateNextAssetDueDate,
   calculateNextVehicleDueDate,
   nextDueAfterCompletion,
+  snoozedDueDate,
+  SNOOZE_DAYS,
 } from '../../src/lib/maintenance/schedules';
 import type { HomeAssetSchedule, VehicleServiceSchedule } from '../../src/lib/types';
 
@@ -67,7 +70,9 @@ describe('calendar-anchored completion (MA-11g)', () => {
   it('places a new calendar schedule by its anchor month, and falls back to completion + interval', () => {
     assert.equal(nextDueAfterCompletion({ ...gutters, nextDueDate: undefined }, '2026-11-24'), '2027-10-01');
     assert.equal(nextDueAfterCompletion({ ...gutters, nextDueDate: undefined }, '2026-09-20'), '2026-10-01');
-    assert.equal(nextDueAfterCompletion({ ...gutters, nextDueDate: undefined, anchorMonth: undefined }, '2026-09-20'), '2027-09-20');
+    // A day-only yearly anchor keeps the completion's month on that day; no anchors at all: completion + interval.
+    assert.equal(nextDueAfterCompletion({ ...gutters, nextDueDate: undefined, anchorMonth: undefined }, '2026-09-20'), '2027-09-01');
+    assert.equal(nextDueAfterCompletion({ ...gutters, nextDueDate: undefined, anchorMonth: undefined, anchorDay: undefined }, '2026-09-20'), '2027-09-20');
     assert.equal(firstCalendarDue({ unit: 'years', value: 1, anchorMonth: 10, anchorDay: 1 }, '2026-11-24'), '2027-10-01');
     assert.equal(firstCalendarDue({ unit: 'years', value: 1, anchorMonth: 10, anchorDay: 1 }, '2026-10-01'), '2026-10-01');
   });
@@ -139,5 +144,80 @@ describe('renewed registration or inspection (MA-11h)', () => {
     assert.equal(renewedExpiration(undefined, '2026-11-24'), '2027-11-24');
     assert.equal(renewedExpiration('2028-02-29', '2028-02-01'), '2029-02-28');
     assert.equal(renewedExpiration('2026-12-15T06:00:00.000Z', '2026-11-24'), '2027-12-15');
+  });
+});
+
+describe('review fixes (PR #209)', () => {
+  it('a snoozed anchored schedule completes the cycle the snooze moved away from', () => {
+    const snoozed = { ...gutters, nextDueDate: '2026-10-08', snoozedUntil: '2026-10-08' };
+    // Completed before the original Oct 1: still the 2026 cycle, as without the snooze.
+    assert.equal(nextDueAfterCompletion(snoozed, '2026-09-30'), '2027-10-01');
+    assert.equal(nextDueAfterCompletion({ ...gutters }, '2026-09-30'), '2027-10-01');
+    assert.equal(nextDueAfterCompletion(snoozed, '2026-10-08'), '2027-10-01');
+    // Snoozed while overdue (today Oct 20, due Oct 1): moved to Oct 27.
+    const late = { ...gutters, nextDueDate: '2026-10-27', snoozedUntil: '2026-10-27' };
+    assert.equal(nextDueAfterCompletion(late, '2026-10-21'), '2027-10-01');
+  });
+
+  it('day-only anchors place the first calendar due day', () => {
+    assert.equal(firstCalendarDue({ unit: 'months', value: 1, anchorDay: 31 }, '2026-11-24'), '2026-11-30');
+    assert.equal(firstCalendarDue({ unit: 'months', value: 1, anchorDay: 31 }, '2026-12-01'), '2026-12-31');
+    assert.equal(firstCalendarDue({ unit: 'months', value: 1, anchorDay: 15 }, '2026-11-15'), '2026-11-15');
+    assert.equal(firstCalendarDue({ unit: 'years', value: 1, anchorDay: 1 }, '2026-11-24'), '2027-11-01');
+    assert.equal(nextDueAfterCompletion({ frequencyType: 'months', intervalValue: 1, anchor: 'calendar', anchorDay: 31 }, '2027-02-10'), '2027-02-28');
+  });
+
+  it('the shared snooze shift equals the page snooze', () => {
+    assert.equal(SNOOZE_SHIFT_DAYS, SNOOZE_DAYS);
+  });
+
+  // Deterministic PRNG (mulberry32).
+  const rng = (seed: number) => () => {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  it('property: always after the completion day, and a snooze never changes the result', () => {
+    const random = rng(209);
+    const int = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
+    const pick = <T,>(items: readonly T[]) => items[Math.floor(random() * items.length)];
+    const anyDay = () => addDays('2025-01-01', int(0, 1500));
+    for (let i = 0; i < 4000; i++) {
+      // Anchored month/year schedules whose cycle the anchors define (intervals that divide a year).
+      const unit = pick(['months', 'years'] as const);
+      const intervalValue = unit === 'years' ? 1 : pick([1, 2, 3, 4, 6]);
+      const anchorDay = int(1, 31);
+      const anchorMonth = unit === 'months' && intervalValue === 1 && random() < 0.5 ? undefined : int(1, 12);
+      const base: HomeAssetSchedule = { frequencyType: unit, intervalValue, anchor: 'calendar', anchorDay, anchorMonth };
+      const due = firstCalendarDue({ unit, value: intervalValue, anchorDay, anchorMonth }, anyDay())!;
+      // Snooze is offered from 14 days before the due day, or while overdue.
+      const today = addDays(due, int(-14, 60));
+      const snoozedTo = snoozedDueDate(due, today);
+      const completed = today <= due ? addDays(due, int(-60, 400)) : addDays(today, int(0, 400));
+      const plain = nextDueAfterCompletion({ ...base, nextDueDate: due }, completed)!;
+      const snoozed = nextDueAfterCompletion({ ...base, nextDueDate: snoozedTo, snoozedUntil: snoozedTo }, completed)!;
+      const context = JSON.stringify({ base, due, today, snoozedTo, completed });
+      assert.ok(plain > completed, context);
+      assert.equal(snoozed, plain, context);
+    }
+    // Any schedule (any unit, anchor or none, stale or live snooze): strictly after the completion day.
+    for (let i = 0; i < 4000; i++) {
+      const unit = pick(['days', 'weeks', 'months', 'years'] as const);
+      const nextDueDate = random() < 0.8 ? anyDay() : undefined;
+      const schedule: HomeAssetSchedule = {
+        frequencyType: unit,
+        intervalValue: int(1, 12),
+        anchor: pick(['calendar', 'completion', undefined] as const),
+        anchorDay: random() < 0.5 ? int(1, 31) : undefined,
+        anchorMonth: random() < 0.5 ? int(1, 12) : undefined,
+        nextDueDate,
+        snoozedUntil: random() < 0.4 ? (random() < 0.7 ? nextDueDate : anyDay()) : undefined,
+      };
+      const completed = anyDay();
+      const next = nextDueAfterCompletion(schedule, completed);
+      assert.ok(next && next > completed, JSON.stringify({ schedule, completed, next }));
+    }
   });
 });

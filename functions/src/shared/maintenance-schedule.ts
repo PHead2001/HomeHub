@@ -89,6 +89,41 @@ const monthIndex = (day: string) => {
 };
 
 /**
+ * Days a snooze moves a due day past the later of today and that day
+ * (`SNOOZE_DAYS` in src/lib/maintenance/schedules.ts; a unit test keeps the
+ * two equal). Used to find the cycle a snooze moved away from.
+ */
+export const SNOOZE_SHIFT_DAYS = 7;
+
+/**
+ * The smallest k (>= 1) for which base + k x interval falls after `after`.
+ * @param {string} base Lattice origin.
+ * @param {IntervalUnit} unit Interval unit.
+ * @param {number} value Interval length (> 0).
+ * @param {string} after Day the step must be after.
+ * @param {number} dayOfMonth Day of month for month/year steps.
+ * @return {number} Step index.
+ */
+const firstStepAfter = (
+  base: string, unit: IntervalUnit, value: number, after: string,
+  dayOfMonth?: number,
+): number => {
+  let k = 1;
+  if (stepFrom(base, unit, value, 1, dayOfMonth) <= after) {
+    if (unit === "days" || unit === "weeks") {
+      const length = (unit === "weeks" ? 7 : 1) * value;
+      k = Math.max(1, Math.floor(diffDays(after, base) / length));
+    } else {
+      const length = (unit === "years" ? 12 : 1) * value;
+      k = Math.max(1, Math.floor((monthIndex(after) - monthIndex(base)) /
+        length));
+    }
+    while (stepFrom(base, unit, value, k, dayOfMonth) <= after) k++;
+  }
+  return k;
+};
+
+/**
  * The first of base + k x interval (k >= 1) that falls after `after`. Every
  * step is computed from `base`, never from a clamped earlier step, so a
  * schedule due on the 31st returns to the 31st after a short month.
@@ -102,20 +137,31 @@ const monthIndex = (day: string) => {
 export const nextCalendarDue = (
   base: string, unit: IntervalUnit, value: number, after: string,
   dayOfMonth?: number,
-): string => {
-  let k = 1;
-  if (stepFrom(base, unit, value, 1, dayOfMonth) <= after) {
-    if (unit === "days" || unit === "weeks") {
-      const length = (unit === "weeks" ? 7 : 1) * value;
-      k = Math.max(1, Math.floor(diffDays(after, base) / length));
-    } else {
-      const length = (unit === "years" ? 12 : 1) * value;
-      k = Math.max(1, Math.floor((monthIndex(after) - monthIndex(base)) /
-        length));
-    }
-    while (stepFrom(base, unit, value, k, dayOfMonth) <= after) k++;
-  }
-  return stepFrom(base, unit, value, k, dayOfMonth);
+): string => stepFrom(base, unit, value,
+  firstStepAfter(base, unit, value, after, dayOfMonth), dayOfMonth);
+
+/**
+ * The anchor lattice of a month/year schedule with an anchor month and/or
+ * day: an origin a year before `reference` (in the anchor month, else the
+ * reference's month) and the day of month every step keeps. Null without
+ * anchor fields or for day/week intervals.
+ * @param {AnchoredSchedule} schedule Interval and anchors.
+ * @param {string} reference A day the origin must not be after.
+ * @return {{base: string, day: number} | null} Lattice.
+ */
+const anchorLattice = (
+  schedule: AnchoredSchedule, reference: string,
+): {base: string; day: number} | null => {
+  if (schedule.unit !== "months" && schedule.unit !== "years") return null;
+  const anchorMonth = validMonth(schedule.anchorMonth);
+  const anchorDay = validDayOfMonth(schedule.anchorDay);
+  if (!anchorMonth && !anchorDay) return null;
+  const year = Number(reference.slice(0, 4)) - 1;
+  const month = anchorMonth ?? Number(reference.slice(5, 7));
+  const day = anchorDay ?? 1;
+  const base = `${String(year).padStart(4, "0")}-${pad(month)}-` +
+    pad(Math.min(day, daysInMonth(year, month)));
+  return {base, day};
 };
 
 /**
@@ -123,11 +169,16 @@ export const nextCalendarDue = (
  *
  * - Completion-anchored (default): completion day + interval.
  * - Calendar-anchored: steps from the previous due day (`nextDueDate`) until
- *   after the completion day. A snoozed due day (`snoozedUntil` equal to it)
- *   is not the schedule's real phase, so then the anchor month/day is used
- *   when set; without them the snoozed day is used. With no due day at all,
- *   the anchor month/day place the cycle; with neither it falls back to
- *   completion + interval.
+ *   after the completion day.
+ * - Snoozed (`snoozedUntil` equal to `nextDueDate`): the snoozed day is not
+ *   the schedule's real cycle. A snooze sets it SNOOZE_SHIFT_DAYS after the
+ *   later of that day's today and the due day, so with an anchor month/day
+ *   the completed cycle is the last anchor day on or before
+ *   snoozed - SNOOZE_SHIFT_DAYS, and the result is the same as completing
+ *   the unsnoozed schedule. Without anchor fields the snoozed day is used.
+ * - No due day: the anchor month/day place the cycle (a day-only anchor uses
+ *   every month, or the completion's month for yearly schedules); with
+ *   neither it falls back to completion + interval.
  *
  * `anchorDay` (when set) keeps month/year steps on that day of the month.
  * @param {AnchoredSchedule} schedule Interval and anchor.
@@ -152,22 +203,29 @@ export const nextDueDay = (
   if (schedule.anchor !== "calendar") {
     return stepFrom(completed, unit, interval, 1);
   }
+  const anchored = {...schedule, unit, value: interval};
   const previous = dayOnly(schedule.nextDueDate);
   const snoozed = Boolean(previous) &&
     dayOnly(schedule.snoozedUntil) === previous;
   if (previous && !snoozed) {
     return nextCalendarDue(previous, unit, interval, completed, anchorDay);
   }
-  const anchorMonth = byMonth ? validMonth(schedule.anchorMonth) : undefined;
-  if (anchorMonth) {
-    const year = Number(completed.slice(0, 4)) - 1;
-    const day = Math.min(anchorDay ?? 1, daysInMonth(year, anchorMonth));
-    const base = `${String(year).padStart(4, "0")}-${pad(anchorMonth)}-` +
-      pad(day);
-    return nextCalendarDue(base, unit, interval, completed, anchorDay ?? 1);
-  }
   if (previous) {
-    return nextCalendarDue(previous, unit, interval, completed, anchorDay);
+    // The cycle the snooze moved away from.
+    const movedFrom = addDays(previous, -SNOOZE_SHIFT_DAYS);
+    const lattice = anchorLattice(anchored, movedFrom);
+    if (!lattice) {
+      return nextCalendarDue(previous, unit, interval, completed, anchorDay);
+    }
+    const k = firstStepAfter(lattice.base, unit, interval, movedFrom,
+      lattice.day);
+    const cycle = stepFrom(lattice.base, unit, interval, k - 1, lattice.day);
+    return nextCalendarDue(cycle, unit, interval, completed, lattice.day);
+  }
+  const lattice = anchorLattice(anchored, completed);
+  if (lattice) {
+    return nextCalendarDue(lattice.base, unit, interval, completed,
+      lattice.day);
   }
   return stepFrom(completed, unit, interval, 1);
 };
