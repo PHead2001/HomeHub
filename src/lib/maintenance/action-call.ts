@@ -9,7 +9,7 @@ export type MaintenanceCallOutcome<T> =
   | { kind: 'ok'; data: T }
   | { kind: 'failed'; message: string }
   | { kind: 'offline' }
-  /** No answer in time, or the request failed in transit: it may have been saved. */
+  /** No answer in time, or the request failed in transit (also when the connection dropped after it left): it may have been saved. */
   | { kind: 'no_answer' };
 
 /**
@@ -30,7 +30,10 @@ export async function callWithDeadline<T>(
     if (result === 'deadline') return { kind: 'no_answer' };
     return result.ok ? { kind: 'ok', data: result.data } : { kind: 'failed', message: result.message };
   } catch {
-    return isOffline() ? { kind: 'offline' } : { kind: 'no_answer' };
+    // Once the request may have left (anything after the check above), its outcome is
+    // unknown even when the connection is gone now: the caller keeps the request and its op
+    // id, so a retry after reconnecting replays it instead of saving it twice (PR #210).
+    return { kind: 'no_answer' };
   } finally {
     if (timer) clearTimeout(timer);
   }

@@ -46,6 +46,14 @@ const MESSAGES: Record<MaintenanceFailureCode, string> = {
 
 /** Requests are a few KB; anything far larger is refused before any work. */
 const MAX_PAYLOAD = 96 * 1024;
+/**
+ * An edit carries two snapshots of the record (`base`, what the form started from, and
+ * `values`), so its budget is twice one record's plus room for the rest (PR #210 review):
+ * every record that could be created stays editable.
+ */
+const MAX_EDIT_PAYLOAD = 2 * MAX_PAYLOAD + 16 * 1024;
+const payloadBudget = (payload: unknown) =>
+  payload && typeof payload === 'object' && 'base' in payload && (payload as { base?: unknown }).base ? MAX_EDIT_PAYLOAD : MAX_PAYLOAD;
 
 // End-to-end tests pin the browser clock; the server follows the same pinned
 // instant, but only against the emulator, so production always uses the real time.
@@ -70,7 +78,7 @@ const run = async <T>(
   task: (user: AuthorizedHouseholdUser) => Promise<T>,
 ): Promise<MaintenanceActionResult<T>> => {
   try {
-    if (!payload || typeof payload !== 'object' || exceedsPayloadBudget(payload, MAX_PAYLOAD)) return failure('invalid');
+    if (!payload || typeof payload !== 'object' || exceedsPayloadBudget(payload, payloadBudget(payload))) return failure('invalid');
     const permissions = required(payload);
     const user = await authorizeHouseholdAction({ idToken: context?.idToken, householdId: context?.householdId }, permissions[0]);
     if (!permissions.every(permission => user.permissions[permission])) return failure('forbidden');

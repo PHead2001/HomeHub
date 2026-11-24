@@ -201,9 +201,11 @@ describe('snooze plan', () => {
     assert.deepEqual(plan.after, { nextDueDate: '2026-03-12', snoozedUntil: '2026-03-12', snoozedFrom: '2026-03-05' });
     assert.deepEqual(plan.before, { nextDueDate: '2026-03-05', snoozedUntil: null, snoozedFrom: null });
     const undone = planUndoSnooze(plan.schedule, plan.before, plan.after);
+    assert.ok(undone.kind === 'apply');
     assert.deepEqual(undone.schedule, schedule);
     // Renamed meanwhile: the name stays, the snooze goes.
     const renamed = planUndoSnooze({ ...plan.schedule, scheduleName: 'New' }, plan.before, plan.after);
+    assert.ok(renamed.kind === 'apply');
     assert.equal(renamed.schedule.scheduleName, 'New');
     assert.equal(renamed.schedule.nextDueDate, '2026-03-05');
   });
@@ -225,9 +227,11 @@ describe('snoozedFrom (M3, PR #209)', () => {
     assert.ok(plan.kind === 'apply');
     assert.equal(plan.schedule.snoozedFrom, '2026-03-05');
     const undone = planUndoSnooze(plan.schedule, plan.before, plan.after);
+    assert.ok(undone.kind === 'apply');
     assert.deepEqual(undone.schedule, schedule, 'no snoozedFrom left behind');
     // A field changed since keeps its value (compare-and-revert).
     const edited = planUndoSnooze({ ...plan.schedule, snoozedFrom: '2026-03-04' }, plan.before, plan.after);
+    assert.ok(edited.kind === 'apply');
     assert.equal(edited.schedule.snoozedFrom, '2026-03-04');
     assert.deepEqual(edited.kept.map(entry => entry.field), ['snoozedFrom']);
   });
@@ -387,7 +391,14 @@ describe('randomized interleavings', () => {
             schedule = plan.schedule!;
             completedOccurrences.delete(entry.opId);
           } else {
-            schedule = planUndoSnooze(schedule, entry.before!, entry.after!).schedule;
+            const undoSnooze = planUndoSnooze(schedule, entry.before!, entry.after!);
+            if (undoSnooze.kind === 'superseded') {
+              // The snooze no longer stands (completed or snoozed again): nothing changes, and a
+              // completion's next occurrence is never rolled back.
+              assert.deepEqual(schedule, before, 'a superseded snooze undo changes nothing');
+              continue;
+            }
+            schedule = undoSnooze.schedule;
           }
           entry.undone = true;
           // A later edit is never lost (compare-and-revert compares values: an edit back to
@@ -430,6 +441,10 @@ describe('calling the server (review of PR #210)', () => {
     assert.deepEqual(await callWithDeadline(async () => 't', async () => ({ ok: false as const, code: 'invalid', message: 'No.' }), 45), { kind: 'failed', message: 'No.' });
     assert.deepEqual(await callWithDeadline(async () => { throw new Error('network'); }, async () => answer(3), 45), { kind: 'no_answer' });
     assert.deepEqual(await callWithDeadline(async () => 't', async () => answer(4), 45, () => true), { kind: 'offline' });
+    // Offline only before the request leaves: a call that fails after it left is an unknown
+    // outcome even when the connection is gone by then (its op id must be kept; PR #210).
+    let online = true;
+    assert.deepEqual(await callWithDeadline(async () => 't', async () => { online = false; throw new Error('network'); }, 45, () => !online), { kind: 'no_answer' });
   });
 
   test('after no answer, saving again reuses the same op id until a definite answer or a fresh form', () => {
@@ -509,5 +524,22 @@ describe('the Undo offer follows the server window (PR #210 review)', () => {
   });
   test('an answer without undoMs (an older server) keeps the whole window', () => {
     assert.equal(undoOfferMs(undefined), 10_000);
+  });
+});
+
+describe('a snooze Undo never rolls back a later completion (PR #210 review)', () => {
+  test('weekly schedule snoozed to Mar 8, completed on Mar 1 (next due Mar 8): Undo of the snooze changes nothing', () => {
+    const weekly = filter({ frequencyType: 'weeks', intervalValue: 1, nextDueDate: '2026-03-01' });
+    const snooze = planSnooze({ ownerType: 'home_asset', owner: { id: 'hvac', name: 'HVAC' }, schedule: weekly, seen: cycleOf(weekly), today: '2026-03-01', timeZone: TZ });
+    assert.ok(snooze.kind === 'apply');
+    assert.equal(snooze.schedule.nextDueDate, '2026-03-08');
+    const done = planCompletion({ ownerType: 'home_asset', schedule: snooze.schedule, seen: cycleOf(snooze.schedule), values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op-done') });
+    assert.ok(done.kind === 'apply');
+    assert.equal(done.schedule.nextDueDate, '2026-03-08', 'the completion lands on the snoozed date');
+    const undo = planUndoSnooze(done.schedule, snooze.before, snooze.after);
+    assert.equal(undo.kind, 'superseded');
+    // And the completed cycle is not reopened: completing Mar 1 again is refused.
+    const again = planCompletion({ ownerType: 'home_asset', schedule: done.schedule, seen: { nextDueDate: '2026-03-01', nextDueMileage: null }, values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op-again') });
+    assert.notEqual(again.kind, 'apply');
   });
 });

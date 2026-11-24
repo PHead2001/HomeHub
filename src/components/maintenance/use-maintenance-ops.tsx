@@ -162,6 +162,8 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
       toast({ title: 'Snooze undone', description: keptMessage(outcome.data.kept, 'snoozed it') || undefined });
     } else if (outcome.data.status === 'expired') {
       toast({ title: "Can't undo", description: 'The time to undo has passed.' });
+    } else if (outcome.data.status === 'superseded') {
+      toast({ title: "Can't undo", description: 'It was marked done or snoozed again since, so it stays as it is.' });
     }
   };
 

@@ -444,9 +444,21 @@ export const planSnooze = (input: {
 };
 
 /** Undo of a snooze: compare-and-revert of nextDueDate, snoozedUntil and snoozedFrom. */
-export const planUndoSnooze = (schedule: StoredSchedule, before: FieldValues, after: FieldValues) => {
+export type UndoSnoozePlan =
+  | { kind: 'superseded' }
+  | { kind: 'apply'; schedule: StoredSchedule; kept: KeptField[] };
+
+/**
+ * Plans undoing a snooze. Only a snooze that still stands is taken back: once the schedule no
+ * longer carries this snooze's `snoozedUntil` (a completion ended it, or it was snoozed
+ * again), the snooze is over and nothing changes (`superseded`), even when the due date
+ * happens to equal the snoozed one, so a completion's next occurrence is never rolled back
+ * and its cycle never reopened (PR #210 review). Otherwise compare-and-revert per field.
+ */
+export const planUndoSnooze = (schedule: StoredSchedule, before: FieldValues, after: FieldValues): UndoSnoozePlan => {
+  if (!sameValue(orNull(schedule.snoozedUntil), orNull(after.snoozedUntil))) return { kind: 'superseded' };
   const result = compareAndRevert(schedule, pick(before, SNOOZE_FIELDS), pick(after, SNOOZE_FIELDS));
-  return { schedule: applyPatch(schedule, result.patch), kept: result.kept };
+  return { kind: 'apply', schedule: applyPatch(schedule, result.patch), kept: result.kept };
 };
 
 /* -------------------------------------------------------------------------- */

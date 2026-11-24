@@ -628,6 +628,9 @@ export async function undoMaintenanceSnoozeAs(db: Firestore, householdId: string
     let kept: KeptField[] = [];
     if (found) {
       const plan = planUndoSnooze(found.schedule, fieldValuesOf(entry.get('before')), fieldValuesOf(entry.get('after')));
+      // The snooze no longer stands (completed or snoozed again since): nothing changes, and the
+      // ledger entry stays open (not undone).
+      if (plan.kind === 'superseded') return { status: 'superseded' } as UndoResult;
       kept = plan.kept;
       tx.update(ownerRef, {
         [listField]: list.map((schedule, index) => (index === found.index ? compact(plan.schedule) : schedule)),

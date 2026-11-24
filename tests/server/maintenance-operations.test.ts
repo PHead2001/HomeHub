@@ -14,7 +14,7 @@ import {
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
 } from '../../src/lib/server/maintenance-operations';
-import { completeMaintenanceSchedule, saveMaintenanceLog, snoozeMaintenanceSchedule } from '../../src/app/maintenance/actions';
+import { completeMaintenanceSchedule, saveHomeAsset, saveMaintenanceLog, snoozeMaintenanceSchedule } from '../../src/app/maintenance/actions';
 
 // M1: the maintenance completion contract through the Admin SDK, against the
 // Firestore and Auth emulators (audit 17.3: MA-3 to MA-8, MA-20).
@@ -458,6 +458,20 @@ describe('server actions', () => {
     });
   };
   const completion = () => ({ opId: randomUUID(), ownerType: 'home_asset', ownerId: 'hvac', scheduleId: 'filter', seen: { nextDueDate: '2026-08-01', nextDueMileage: null }, completedDate: '2026-08-01' });
+
+  test('a large record that could be created stays editable: an edit carries two snapshots (PR #210 review)', async () => {
+    await seedMembers();
+    const values = {
+      name: 'Big record', category: 'Other', status: 'active', notes: 'n'.repeat(20_000),
+      schedules: Array.from({ length: 70 }, (_, index) => ({ id: `check-${index}`, mode: 'checklist', scheduleName: `${index} `.padEnd(500, 'x') })),
+    };
+    const created = await saveHomeAsset({ idToken: tokens.get(USERS.editor.uid)!, householdId: HOUSE, save: { opId: randomUUID(), values } });
+    assert.ok(created.ok, created.ok ? '' : created.message);
+    if (!created.ok) return;
+    const renamed = await saveHomeAsset({ idToken: tokens.get(USERS.editor.uid)!, householdId: HOUSE, save: { opId: randomUUID(), id: created.data.id, base: values, values: { ...values, name: 'Big record, renamed' } } });
+    assert.ok(renamed.ok, renamed.ok ? '' : renamed.message);
+    assert.equal((await assets().doc(created.data.id).get()).get('name'), 'Big record, renamed');
+  });
 
   test('a log reading raises the odometer only for members who may edit vehicles (PR #210 review)', async () => {
     await seedMembers();
