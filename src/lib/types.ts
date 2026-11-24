@@ -344,6 +344,14 @@ export type MaintenanceLog = {
   createdAt?: string;
   updatedAt?: string;
   summary?: string;
+  /**
+   * Server-written with `summary` by the AI summary action (MA-11d): a hash of the notes the
+   * summary was made from (`notesHash` in src/lib/maintenance/summary.ts), the model, and when.
+   * The stored summary is shown only while the notes still hash to `summaryNotesHash`.
+   */
+  summaryNotesHash?: string;
+  summaryModel?: string;
+  summaryAt?: string;
   receiptUrl?: string;
   /** Server-written (M1): who saved or completed it, never an email. */
   doneByUid?: string;
@@ -387,6 +395,12 @@ export type MaintenanceAttachment = {
   uploadedByUid?: string;
   uploadedByName?: string;
   createdAt: string;
+  /** Resized display copy (longer edge 1024 px, JPEG) of an image, in the same folder (MA-25d). */
+  displayPath?: string;
+  displayUrl?: string;
+  /** Thumbnail (longer edge 256 px, JPEG) of an image, in the same folder. */
+  thumbnailPath?: string;
+  thumbnailUrl?: string;
 };
 
 export type Room = {

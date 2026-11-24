@@ -15,6 +15,13 @@ export type SummarizeMaintenanceLogOutput = z.infer<typeof SummarizeMaintenanceL
 export async function summarizeMaintenanceLogFlow(
   candidateInput: SummarizeMaintenanceLogInput
 ): Promise<SummarizeMaintenanceLogOutput> {
+  return (await summarizeMaintenanceLogWithModel(candidateInput)).output;
+}
+
+/** The summary and the model that wrote it (stored with a persisted summary, MA-11d). */
+export async function summarizeMaintenanceLogWithModel(
+  candidateInput: SummarizeMaintenanceLogInput
+): Promise<{ output: SummarizeMaintenanceLogOutput; model: string }> {
   const input = parseTaskInput(SummarizeMaintenanceLogInputSchema, candidateInput);
   const result = await generateStructured({
     flowName: 'maintenance-summary',
@@ -29,5 +36,5 @@ export async function summarizeMaintenanceLogFlow(
       'Do not invent facts. Return only the requested structured output.',
     ].join('\n'),
   });
-  return parseTaskOutput(SummarizeMaintenanceLogOutputSchema, result.output);
+  return { output: parseTaskOutput(SummarizeMaintenanceLogOutputSchema, result.output), model: result.model };
 }
