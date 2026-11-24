@@ -209,6 +209,59 @@ test.describe('maintenance center UX', () => {
     }
   });
 
+  test('MA-2: changes made elsewhere appear on the open page without a reload', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=logs');
+    await expect(page.getByTestId('maintenance-log-oil-change')).toBeVisible();
+    // Written with the Admin SDK, as another device (or quick add) would: the page has no reload or refetch.
+    const logRef = household.collection('maintenance').doc('live-update-e2e');
+    try {
+      await logRef.set({
+        householdId, targetType: 'home_asset', assetId: 'hvac-main', title: 'Live update E2E', item: 'Live update E2E',
+        date: '2026-07-30', type: 'routine', createdAt: '2026-07-30T12:00:00.000Z', updatedAt: '2026-07-30T12:00:00.000Z',
+      });
+      const liveLog = page.getByTestId('maintenance-log-live-update-e2e');
+      await expect(liveLog).toContainText('Live update E2E');
+      await logRef.update({ title: 'Live update E2E edited' });
+      await expect(liveLog).toContainText('Live update E2E edited');
+
+      // A schedule changed elsewhere moves its reminder.
+      await page.getByRole('tab', { name: 'Reminders' }).click();
+      const overdueDishwasher = page.getByTestId('reminders-overdue').getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' });
+      await expect(overdueDishwasher).toHaveCount(0);
+      await household.collection('home-assets').doc('dishwasher').update({
+        schedules: [{ ...DISHWASHER_SCHEDULES[0], nextDueDate: '2026-07-01' }],
+      });
+      await expect(overdueDishwasher).toHaveCount(1);
+
+      await logRef.delete();
+      await page.getByRole('tab', { name: 'Logs' }).click();
+      await expect(page.getByTestId('maintenance-log-live-update-e2e')).toHaveCount(0);
+      await expect(page.getByTestId('maintenance-log-oil-change')).toBeVisible();
+    } finally {
+      await logRef.delete();
+    }
+  });
+
+  test('MA-1: the day rolls over at the household midnight on an open page', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // One minute before midnight on Aug 1 in the household's zone (the seed household has none,
+    // so the server default, America/Chicago: midnight is 05:00 UTC). The clock is installed, not
+    // fixed, so the page's timer to the next household midnight runs.
+    await page.clock.install({ time: new Date('2026-08-02T04:59:00.000Z') });
+    await page.goto('/maintenance?tab=reminders');
+    await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
+    const filterIn = (testId: string) => page.getByTestId(testId).getByRole('listitem').filter({ hasText: 'Replace air filter' });
+    // The HVAC filter is due Aug 1: due today, so in Due Soon.
+    await expect(filterIn('reminders-due-soon')).toHaveCount(1);
+    await expect(filterIn('reminders-overdue')).toHaveCount(0);
+
+    await page.clock.fastForward('02:00');
+    // Aug 2 in the household: overdue, without a reload or any data change.
+    await expect(filterIn('reminders-overdue')).toHaveCount(1);
+    await expect(filterIn('reminders-due-soon')).toHaveCount(0);
+  });
+
   test('M1: Mark done offers Undo for 10 s, which puts the schedule back and removes the log', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?tab=reminders');
