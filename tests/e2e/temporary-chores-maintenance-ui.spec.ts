@@ -321,6 +321,9 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await expect(attachmentPanel.getByText('boiler-manual.txt', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Delete home asset Test Boiler E2E' }).click();
     await page.getByRole('alertdialog', { name: 'Delete home asset Test Boiler E2E?' }).getByRole('button', { name: /^Delete (Home Asset|Test Boiler E2E and its 1 attachment)$/ }).click();
+    // MA-22: the server delete removes the record first, then keeps its logs as history, removes
+    // its files and resolves its reminders; the confirmation closes once all of that answered.
+    await expect(page.getByRole('alertdialog', { name: 'Delete home asset Test Boiler E2E?' })).toHaveCount(0);
     await expect.poll(async () => (await assetRef.get()).exists).toBe(false);
     await expect.poll(async () => (await household.collection('maintenance-attachments').where('targetId', '==', assetId).get()).size).toBe(0);
     const preservedLog = await createdLog.docs[0].ref.get();
@@ -393,6 +396,8 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     expect((await vehicleRef.get()).exists).toBe(true);
     await page.getByRole('button', { name: 'Delete vehicle Test Roadster E2E' }).click();
     await page.getByRole('alertdialog', { name: 'Delete vehicle?' }).getByRole('button', { name: 'Delete Vehicle' }).click();
+    // The record goes first; the dialog closes after the logs are kept as history (MA-22).
+    await expect(page.getByRole('alertdialog', { name: 'Delete vehicle?' })).toHaveCount(0);
     await expect.poll(async () => (await vehicleRef.get()).exists).toBe(false);
     expect((await vehicleLog.docs[0].ref.get()).data()).toMatchObject({ targetType: 'general', formerTargetType: 'vehicle', formerTargetName: 'Test Roadster E2E' });
     await page.goto(`/maintenance?vehicle=${vehicleId}`);

@@ -116,7 +116,8 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
   test('MA-15 phones: the log form is a full-screen sheet with Cancel and Save on screen', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile-chromium');
     await open(page, '/maintenance');
-    await page.getByRole('button', { name: 'Add Maintenance Log' }).first().click();
+    // The page header's button (the dialog is titled "Add Maintenance Log").
+    await page.getByRole('button', { name: 'Add Log', exact: true }).first().click();
     const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
     const viewport = page.viewportSize()!;
     const box = (await dialog.boundingBox())!;
@@ -130,7 +131,8 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
   test('MA-16/MA-30: a receipt is read with AI, confirmed without overwriting what was typed, and attached on save', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance');
-    await page.getByRole('button', { name: 'Add Maintenance Log' }).first().click();
+    // The page header's button (the dialog is titled "Add Maintenance Log").
+    await page.getByRole('button', { name: 'Add Log', exact: true }).first().click();
     const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
     await dialog.getByLabel('Title').fill('Receipt log E2E');
     await dialog.getByLabel('Cost').fill('10');
@@ -167,7 +169,8 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
   test('MA-30: a late reading is ignored after the receipt is removed, and the log still saves', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance');
-    await page.getByRole('button', { name: 'Add Maintenance Log' }).first().click();
+    // The page header's button (the dialog is titled "Add Maintenance Log").
+    await page.getByRole('button', { name: 'Add Log', exact: true }).first().click();
     const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
     await dialog.getByLabel('Title').fill('Late receipt E2E');
     const picker = dialog.getByTestId('receipt-picker');
@@ -202,6 +205,7 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
       const confirm = page.getByRole('alertdialog', { name: 'Delete home asset Test Delete M56 E2E?' });
       await expect(confirm).toContainText(/attachment/);
       await confirm.getByRole('button', { name: /^Delete (Home Asset|Test Delete M56 E2E and its 1 attachment)$/ }).click();
+      // Closes only after the whole delete answered (record, history, files, reminders).
       await expect(confirm).toHaveCount(0);
       await expect.poll(async () => (await assetRef.get()).exists).toBe(false);
       expect((await household.collection('maintenance-attachments').doc('test-delete-m56-file').get()).exists).toBe(false);
