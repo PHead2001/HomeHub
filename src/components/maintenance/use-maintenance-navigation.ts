@@ -12,8 +12,10 @@ import type { OpenTarget } from './tab-types';
  * deep links (applied once per URL, after every listener has answered once: `ready`), and
  * in-page links to a record (pushed to history).
  */
-export function useMaintenanceNavigation({ ready, assets, vehicles, logs }: {
+export function useMaintenanceNavigation({ ready, confirmed, assets, vehicles, logs }: {
   ready: boolean;
+  /** Every listener has answered from the server: only then is a linked record known to be gone. */
+  confirmed: boolean;
   assets: HomeAsset[];
   vehicles: Vehicle[];
   logs: MaintenanceLog[];
@@ -39,8 +41,10 @@ export function useMaintenanceNavigation({ ready, assets, vehicles, logs }: {
 
   // Applied while rendering (React's "adjust state when an input changes"), once every listener
   // has answered, so a collection that arrives late never yields a false "no longer available".
-  if (ready && appliedSearch !== locationSearch) {
-    const plan = deepLinkPlan(locationSearch, { assets, vehicles, logs });
+  const plan = ready && appliedSearch !== locationSearch ? deepLinkPlan(locationSearch, { assets, vehicles, logs }) : null;
+  // A record missing from a cached answer may exist on the server (created on another device):
+  // "no longer available" waits for the server's answer.
+  if (plan && (!plan.notice || confirmed)) {
     setAppliedSearch(locationSearch);
     setDeepLinkNotice(plan.notice);
     setHighlightedLogId(plan.highlightedLogId);

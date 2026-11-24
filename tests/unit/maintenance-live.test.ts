@@ -5,7 +5,7 @@ import { recentLogSummary } from '../../src/lib/maintenance/recent';
 import { deepLinkPlan } from '../../src/lib/maintenance/deep-link';
 
 const answerAll = (key: string, docs: Record<string, unknown[]> = {}) => MAINTENANCE_COLLECTIONS.reduce(
-  (state, collection) => liveReducer(state, { type: 'answer', key, collection, docs: docs[collection] ?? [] }),
+  (state, collection) => liveReducer(state, { type: 'answer', key, session: 1, collection, docs: docs[collection] ?? [], fromCache: false }),
   initialLiveState(),
 );
 
@@ -13,10 +13,10 @@ describe('maintenance live data (MA-2)', () => {
   it('is ready only once every collection answered for the key', () => {
     let state = initialLiveState();
     for (const collection of MAINTENANCE_COLLECTIONS.slice(0, 3)) {
-      state = liveReducer(state, { type: 'answer', key: 'h1|u1', collection, docs: [] });
+      state = liveReducer(state, { type: 'answer', key: 'h1|u1', session: 1, collection, docs: [], fromCache: false });
       assert.equal(liveView(state, 'h1|u1').ready, false);
     }
-    state = liveReducer(state, { type: 'answer', key: 'h1|u1', collection: 'maintenance-attachments', docs: [] });
+    state = liveReducer(state, { type: 'answer', key: 'h1|u1', session: 1, collection: 'maintenance-attachments', docs: [], fromCache: false });
     assert.equal(liveView(state, 'h1|u1').ready, true);
   });
 
@@ -26,7 +26,7 @@ describe('maintenance live data (MA-2)', () => {
     const other = liveView(state, 'h2|u1');
     assert.deepEqual([other.assets, other.ready], [[], false]);
     // A late answer for the new key starts over: nothing of h1 survives.
-    const next = liveReducer(state, { type: 'answer', key: 'h2|u1', collection: 'vehicles', docs: [{ id: 'car' }] });
+    const next = liveReducer(state, { type: 'answer', key: 'h2|u1', session: 1, collection: 'vehicles', docs: [{ id: 'car' }], fromCache: false });
     assert.deepEqual(liveView(next, 'h2|u1').assets, []);
     assert.equal(liveView(next, 'h2|u1').vehicles.length, 1);
     // A late answer from the old key's listener cannot bring h1 back for h2.
@@ -35,26 +35,50 @@ describe('maintenance live data (MA-2)', () => {
 
   it('keeps loaded records through a transient failure and retries quietly', () => {
     const loaded = answerAll('h1|u1', { maintenance: [{ id: 'log' }] });
-    const failing = liveReducer(loaded, { type: 'failure', key: 'h1|u1', collection: 'maintenance', failure: 'retrying' });
+    const failing = liveReducer(loaded, { type: 'failure', key: 'h1|u1', session: 1, collection: 'maintenance', failure: 'retrying' });
     const view = liveView(failing, 'h1|u1');
     assert.deepEqual([view.logs.length, view.ready, view.failure], [1, true, null]);
   });
 
   it('is the error state when a collection fails before the first load, until it answers', () => {
-    let state = liveReducer(initialLiveState(), { type: 'failure', key: 'h1|u1', collection: 'vehicles', failure: 'retrying' });
+    let state = liveReducer(initialLiveState(), { type: 'failure', key: 'h1|u1', session: 1, collection: 'vehicles', failure: 'retrying' });
     assert.equal(liveView(state, 'h1|u1').failure, 'retrying');
-    state = MAINTENANCE_COLLECTIONS.reduce((current, collection) => liveReducer(current, { type: 'answer', key: 'h1|u1', collection, docs: [] }), state);
+    state = MAINTENANCE_COLLECTIONS.reduce((current, collection) => liveReducer(current, { type: 'answer', key: 'h1|u1', session: 1, collection, docs: [], fromCache: false }), state);
     assert.deepEqual([liveView(state, 'h1|u1').failure, liveView(state, 'h1|u1').ready], [null, true]);
   });
 
   it('clears every protected record when access is refused, and stays cleared', () => {
     const loaded = answerAll('h1|u1', { 'home-assets': [{ id: 'furnace' }], maintenance: [{ id: 'log' }] });
-    const refused = liveReducer(loaded, { type: 'failure', key: 'h1|u1', collection: 'home-assets', failure: 'unauthorized' });
+    const refused = liveReducer(loaded, { type: 'failure', key: 'h1|u1', session: 1, collection: 'home-assets', failure: 'unauthorized' });
     const view = liveView(refused, 'h1|u1');
     assert.deepEqual([view.assets, view.logs, view.vehicles, view.attachments, view.ready, view.failure], [[], [], [], [], false, 'unauthorized']);
     // A cached answer from another listener arriving afterwards shows nothing again.
-    const late: LiveEvent = { type: 'answer', key: 'h1|u1', collection: 'maintenance', docs: [{ id: 'log' }] };
+    const late: LiveEvent = { type: 'answer', key: 'h1|u1', session: 1, collection: 'maintenance', docs: [{ id: 'log' }], fromCache: false };
     assert.deepEqual(liveView(liveReducer(refused, late), 'h1|u1').logs, []);
+  });
+
+  it('recovers when the listeners are recreated under the same key (access granted again)', () => {
+    const refused = liveReducer(answerAll('h1|u1'), { type: 'failure', key: 'h1|u1', session: 1, collection: 'vehicles', failure: 'unauthorized' });
+    assert.equal(liveView(refused, 'h1|u1').failure, 'unauthorized');
+    // Session 2 (resubscribed): its first answer starts over.
+    let state = liveReducer(refused, { type: 'answer', key: 'h1|u1', session: 2, collection: 'home-assets', docs: [{ id: 'furnace' }], fromCache: false });
+    assert.deepEqual([liveView(state, 'h1|u1').failure, liveView(state, 'h1|u1').ready], [null, false]);
+    for (const collection of MAINTENANCE_COLLECTIONS.slice(1)) {
+      state = liveReducer(state, { type: 'answer', key: 'h1|u1', session: 2, collection, docs: [], fromCache: false });
+    }
+    assert.deepEqual([liveView(state, 'h1|u1').ready, liveView(state, 'h1|u1').assets.length], [true, 1]);
+  });
+
+  it('is confirmed only once every collection answered from the server', () => {
+    let state = MAINTENANCE_COLLECTIONS.reduce(
+      (current, collection) => liveReducer(current, { type: 'answer', key: 'h1|u1', session: 1, collection, docs: [], fromCache: true }),
+      initialLiveState(),
+    );
+    assert.deepEqual([liveView(state, 'h1|u1').ready, liveView(state, 'h1|u1').confirmed], [true, false]);
+    for (const collection of MAINTENANCE_COLLECTIONS) {
+      state = liveReducer(state, { type: 'answer', key: 'h1|u1', session: 1, collection, docs: [], fromCache: false });
+    }
+    assert.equal(liveView(state, 'h1|u1').confirmed, true);
   });
 });
 

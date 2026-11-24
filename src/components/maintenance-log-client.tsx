@@ -73,7 +73,7 @@ export function MaintenanceLogClient() {
   const {
     activeTab, selectedAssetId, setSelectedAssetId, selectedVehicleId, setSelectedVehicleId,
     highlightedLogId, highlightedScheduleKey, deepLinkNotice, changeTab, openTarget,
-  } = useMaintenanceNavigation({ ready, assets, vehicles, logs });
+  } = useMaintenanceNavigation({ ready, confirmed: listenerKey ? live.confirmed : true, assets, vehicles, logs });
   const {
     logToDelete, setLogToDelete, assetToDelete, setAssetToDelete, vehicleToDelete, setVehicleToDelete,
     attachmentToDelete, setAttachmentToDelete, deletingRecord, uploadingAttachmentTarget, deletingAttachmentId,
