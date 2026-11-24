@@ -13,6 +13,7 @@ import {
   VEHICLE_SCHEDULE_FIELDS,
   isRealDay,
   legacyScheduleKey,
+  applyPatch,
   mileagePatch,
   parseCycle,
   planCompletion,
@@ -75,7 +76,9 @@ export type UndoResult =
   | { status: 'undone'; kept: KeptField[] }
   | { status: 'already_undone' }
   | { status: 'superseded' }
-  | { status: 'expired' };
+  | { status: 'expired' }
+  /** The completion's log has attached files: nothing changes (remove them first, or keep it done). */
+  | { status: 'has_attachments' };
 
 export type SaveResult = { status: 'saved'; id: string; created: boolean; replay: boolean };
 
@@ -472,6 +475,12 @@ export async function undoMaintenanceCompletionAs(db: Firestore, householdId: st
     const ownerRef = house.collection(ownerCollection(ownerType)).doc(docIdOf(record.ownerId));
     const logRef = house.collection('maintenance').doc(docIdOf(entry.get('logId')));
     const [owner, log] = await tx.getAll(ownerRef, logRef);
+    // Undo deletes the log; files attached to it would be orphaned, so it is refused and
+    // nothing changes. Attachment metadata can only be created for an existing log
+    // (firestore.rules), and this transaction holds the log, so none can slip in meanwhile.
+    const files = await tx.get(house.collection('maintenance-attachments')
+      .where('targetType', '==', 'maintenance_log').where('targetId', '==', logRef.id).limit(1));
+    if (!files.empty) return { status: 'has_attachments' } as UndoResult;
     const listField = scheduleListField(ownerType);
     const list: StoredSchedule[] = owner.exists && Array.isArray(owner.get(listField)) ? owner.get(listField) : [];
     const found = owner.exists ? findSchedule(list, record.scheduleId) : null;
@@ -869,21 +878,33 @@ export async function saveMaintenanceLogAs(db: Firestore, householdId: string, i
     if (replay) return replay.summary.result as SaveResult;
     const id = existingId ?? newRecordId(String(values.title ?? ''), opId, 'log');
     const ref = house.collection('maintenance').doc(id);
-    const targetRef = targetType === 'home_asset' ? house.collection('home-assets').doc(docIdOf(values.assetId))
-      : targetType === 'vehicle' ? house.collection('vehicles').doc(docIdOf(values.vehicleId)) : null;
-    const [home, member, ledger, current, target] = await tx.getAll(
-      house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), ref, ...(targetRef ? [targetRef] : []),
-    );
+    const [home, member, ledger, current] = await tx.getAll(house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), ref);
     const { today } = householdDay(home, ctx.now);
     const stored = replayOf(ledger, 'save_log', ctx);
     if (stored) return { ...(stored as SaveResult), replay: true };
     const name = actorName(member, ctx);
     const nowIso = ctx.now.toISOString();
-    let mileageChanged = false;
+    if (!existingId && current.exists) throw new MaintenanceOperationError('conflict');
+    // Never resurrects a log deleted meanwhile.
+    if (existingId && !current.exists) throw new MaintenanceOperationError('not_found');
+    const plan = existingId ? planRecordEdit({ stored: current.data() ?? {}, base: base!, values, fields: Object.keys(LOG_SPECS) }) : null;
+    // The log as it will be stored: an edit's patch applied to the freshly read document, so
+    // a target someone else changed meanwhile (moved to another vehicle) is the one that counts.
+    const merged: Record<string, unknown> = plan ? applyPatch({ ...(current.data() ?? {}) }, plan.patch) : values;
+    // Older logs have no targetType: the linked id decides, as on the page (getLogTargetType).
+    const mergedType = merged.targetType === 'home_asset' || merged.targetType === 'vehicle' ? merged.targetType
+      : merged.targetType === undefined && typeof merged.vehicleId === 'string' ? 'vehicle'
+        : merged.targetType === undefined && typeof merged.assetId === 'string' ? 'home_asset' : 'general';
+    const mergedTargetId = mergedType === 'home_asset' ? merged.assetId : mergedType === 'vehicle' ? merged.vehicleId : null;
+    const targetRef = typeof mergedTargetId === 'string' && isDocId(mergedTargetId)
+      ? house.collection(mergedType === 'home_asset' ? 'home-assets' : 'vehicles').doc(mergedTargetId)
+      : null;
+    const target = targetRef ? await tx.get(targetRef) : null;
+    const targetChanged = !plan || ['targetType', 'assetId', 'vehicleId'].some(field => field in plan.patch);
+    // A new log, or one this save points at another record, needs that record to exist.
+    if (targetChanged && mergedType !== 'general' && !target?.exists) throw new MaintenanceOperationError('not_found');
     let created = false;
-    if (!existingId) {
-      if (current.exists) throw new MaintenanceOperationError('conflict');
-      if (targetRef && !target?.exists) throw new MaintenanceOperationError('not_found');
+    if (!plan) {
       tx.create(ref, compact({
         householdId,
         ...values,
@@ -896,22 +917,17 @@ export async function saveMaintenanceLogAs(db: Firestore, householdId: string, i
         opId,
         deviceAttribution: ctx.actor.device ?? null,
       }));
-      mileageChanged = typeof values.mileage === 'number';
       created = true;
-    } else {
-      if (!current.exists) throw new MaintenanceOperationError('not_found');
-      // A log about a record that still exists keeps pointing at it; a new target must exist.
-      const plan = planRecordEdit({ stored: current.data() ?? {}, base: base!, values, fields: Object.keys(LOG_SPECS) });
-      if (('assetId' in plan.patch || 'vehicleId' in plan.patch) && targetRef && !target?.exists) throw new MaintenanceOperationError('not_found');
-      if (plan.changed) {
-        const patch = { ...plan.patch };
-        if ('title' in patch) patch.item = patch.title;
-        tx.update(ref, { ...toUpdate(patch), updatedAt: nowIso });
-      }
-      mileageChanged = 'mileage' in plan.patch && typeof values.mileage === 'number';
+    } else if (plan.changed) {
+      const patch = { ...plan.patch };
+      if ('title' in patch) patch.item = patch.title;
+      tx.update(ref, { ...toUpdate(patch), updatedAt: nowIso });
     }
-    if (mileageChanged && target?.exists && targetType === 'vehicle') {
-      const patch = mileagePatch({ currentMileage: target.get('currentMileage') }, values.mileage as number, today);
+    // The reading counts for the merged log's own vehicle (max rule), when this save set the
+    // reading or pointed the log at a vehicle.
+    const readingSaved = !plan || 'mileage' in plan.patch || targetChanged;
+    if (readingSaved && mergedType === 'vehicle' && typeof merged.mileage === 'number' && target?.exists) {
+      const patch = mileagePatch({ currentMileage: target.get('currentMileage') }, merged.mileage, today);
       if (Object.keys(patch).length > 0) tx.update(target.ref, patch as { [field: string]: number | string });
     }
     const result: SaveResult = { status: 'saved', id, created, replay: false };
@@ -919,7 +935,7 @@ export async function saveMaintenanceLogAs(db: Firestore, householdId: string, i
       kind: 'save_log',
       actorUid: ctx.actor.uid,
       actorName: name,
-      ownerType: targetType,
+      ownerType: mergedType,
       ownerId: id,
       logId: id,
       appliedAt: Timestamp.fromDate(ctx.now),

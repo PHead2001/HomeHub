@@ -20,6 +20,7 @@ import {
   type MaintenanceCycle,
   type StoredSchedule,
 } from '../../src/lib/maintenance/operations';
+import { callWithDeadline, createPendingRequests, mileageWarningMessage } from '../../src/lib/maintenance/action-call';
 
 // M1: the maintenance completion contract, as pure plans (the server applies them
 // in one transaction: src/lib/server/maintenance-operations.ts).
@@ -360,4 +361,52 @@ describe('randomized interleavings', () => {
       }
     });
   }
+});
+
+describe('calling the server (review of PR #210)', () => {
+  const answer = <T,>(data: T) => ({ ok: true as const, data });
+  const never = () => new Promise<never>(() => undefined);
+
+  test('the deadline covers fetching the ID token: a hanging token is "no answer"', async () => {
+    const started = Date.now();
+    let called = false;
+    const outcome = await callWithDeadline(never, async () => { called = true; return answer(1); }, 40);
+    assert.deepEqual(outcome, { kind: 'no_answer' });
+    assert.equal(called, false);
+    assert.ok(Date.now() - started < 1000);
+  });
+
+  test('token time and call time share one deadline', async () => {
+    const slow = (ms: number) => new Promise<string>(resolve => setTimeout(() => resolve('token'), ms));
+    // 30 ms for the token plus 30 ms for the call: over a 45 ms deadline, under neither alone.
+    const outcome = await callWithDeadline(() => slow(30), async () => { await slow(30); return answer(1); }, 45);
+    assert.deepEqual(outcome, { kind: 'no_answer' });
+    assert.deepEqual(await callWithDeadline(async () => 't', async () => answer(2), 45), { kind: 'ok', data: 2 });
+    assert.deepEqual(await callWithDeadline(async () => 't', async () => ({ ok: false as const, code: 'invalid', message: 'No.' }), 45), { kind: 'failed', message: 'No.' });
+    assert.deepEqual(await callWithDeadline(async () => { throw new Error('network'); }, async () => answer(3), 45), { kind: 'no_answer' });
+    assert.deepEqual(await callWithDeadline(async () => 't', async () => answer(4), 45, () => true), { kind: 'offline' });
+  });
+
+  test('after no answer, saving again reuses the same op id until a definite answer or a fresh form', () => {
+    const pending = createPendingRequests<{ opId: string; values: string }>();
+    // Mirrors runOp: a held request wins over the fresh one.
+    const press = (fresh: { opId: string; values: string }) => pending.get('log') ?? fresh;
+    const first = press({ opId: 'op-1', values: 'Oil change' });
+    pending.hold('log', first); // no answer
+    const second = press({ opId: 'op-2', values: 'Oil change (edited)' });
+    assert.equal(second.opId, 'op-1', 'never a second op id for an uncertain save');
+    assert.equal(second.values, 'Oil change', 'the same request, so a replay cannot drop the edit silently');
+    pending.settle('log'); // a definite answer (or the dialog opened afresh)
+    assert.equal(press({ opId: 'op-3', values: 'x' }).opId, 'op-3');
+    pending.hold('done:a', { opId: 'card', values: '' });
+    assert.equal(pending.get('done:b'), undefined, 'per form or card');
+  });
+
+  test('odometer copy: a reading keeps the higher value; a vehicle correction lowers it', () => {
+    assert.match(mileageWarningMessage('lower', 48750, 40000, 'reading'), /keeps the higher reading/);
+    const correction = mileageWarningMessage('lower', 48750, 40000, 'correction');
+    assert.match(correction, /corrects the vehicle's odometer down to 40,000 mi/);
+    assert.doesNotMatch(correction, /keeps the higher/);
+    assert.match(mileageWarningMessage('jump', 48750, 80000, 'correction'), /sets the vehicle's odometer to 80,000 mi/);
+  });
 });

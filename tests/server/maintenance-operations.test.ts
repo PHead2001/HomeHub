@@ -320,6 +320,38 @@ describe('edits', () => {
   });
 });
 
+describe('review of PR #210', () => {
+  test('a mileage edit counts for the vehicle the log points at now, not the one the form showed', async () => {
+    await vehicles().doc('van').set({ householdId: HOUSE, nickname: 'Van', status: 'active', currentMileage: 10000, serviceSchedules: [] });
+    const created = await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), values: { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-03-01', type: 'repair', mileage: 48000 } }, ctx(SAM));
+    const base = { targetType: 'vehicle', vehicleId: 'car', title: 'Wipers', date: '2026-03-01', type: 'repair', mileage: 48000 };
+    // Alex moves the log to the van; Sam, whose form still shows the car, corrects the reading.
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, vehicleId: 'van' } }, ctx(ALEX));
+    await saveMaintenanceLogAs(adminDb, HOUSE, { opId: randomUUID(), id: created.id, base, values: { ...base, mileage: 60000 } }, ctx(SAM));
+    const log = (await logs().doc(created.id).get()).data()!;
+    assert.deepEqual({ vehicleId: log.vehicleId, mileage: log.mileage }, { vehicleId: 'van', mileage: 60000 });
+    assert.equal((await vehicles().doc('car').get()).get('currentMileage'), 49000, "the car's odometer is untouched");
+    assert.equal((await vehicles().doc('van').get()).get('currentMileage'), 60000, 'the van gets the reading');
+  });
+
+  test('a completion whose log has attached files cannot be undone; nothing changes', async () => {
+    const done = await completeMaintenanceScheduleAs(adminDb, HOUSE, complete(), ctx(SAM));
+    assert.ok(done.status === 'completed');
+    await house().collection('maintenance-attachments').doc('receipt').set({
+      householdId: HOUSE, targetType: 'maintenance_log', targetId: done.logId, category: 'receipt', fileName: 'r.pdf',
+      filePath: `households/${HOUSE}/maintenance/maintenance_log/${done.logId}/r.pdf`, uploadedByUid: SAM, createdAt: 'x',
+    });
+    const before = await asset();
+    assert.deepEqual(await undoMaintenanceCompletionAs(adminDb, HOUSE, { opId: done.opId }, ctx(SAM)), { status: 'has_attachments' });
+    assert.deepEqual(await asset(), before);
+    assert.ok((await logs().doc(done.logId).get()).exists, 'the log and its files stay');
+    assert.equal((await house().collection('maintenance-ops').doc(done.opId).get()).get('undoneAt'), null);
+    // Files of another log do not block it.
+    await house().collection('maintenance-attachments').doc('receipt').update({ targetId: 'other-log' });
+    assert.equal((await undoMaintenanceCompletionAs(adminDb, HOUSE, { opId: done.opId }, ctx(SAM))).status, 'undone');
+  });
+});
+
 describe('server actions', () => {
   const USERS = {
     editor: { uid: 'mo-editor', email: 'mo.editor@example.test' },

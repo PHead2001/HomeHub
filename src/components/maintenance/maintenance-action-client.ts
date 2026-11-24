@@ -3,6 +3,9 @@
 import { format, isValid, parseISO } from 'date-fns';
 import { auth } from '@/lib/firebase';
 import type { MaintenanceActionResult } from '@/app/maintenance/actions';
+import { callWithDeadline, type MaintenanceCallOutcome } from '@/lib/maintenance/action-call';
+
+export { mileageWarningMessage } from '@/lib/maintenance/action-call';
 import type { CompleteResult } from '@/lib/server/maintenance-operations';
 import type { CompletionRefusal, KeptField } from '@/lib/maintenance/operations';
 
@@ -12,47 +15,32 @@ export const NO_ANSWER_MESSAGE = 'No answer from HomeHub. It may have been saved
 export const OFFLINE_MESSAGE = 'Needs a connection. Your entries are kept.';
 export const CHANGED_MESSAGE = 'This changed since you opened it. The latest is shown now.';
 
-export type MaintenanceCallOutcome<T> =
-  | { kind: 'ok'; data: T }
-  | { kind: 'failed'; message: string }
-  | { kind: 'offline' }
-  /** No answer in time, or the request failed in transit: it may have been saved. */
-  | { kind: 'no_answer' };
+export type { MaintenanceCallOutcome } from '@/lib/maintenance/action-call';
 
 type Context = { idToken: string; householdId: string };
 
-/** A fresh op id: one per press, reused only by Retry. */
+/** A fresh op id: one per press, reused only for the same unresolved request. */
 export const newOpId = () =>
   (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
+const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
+
 /**
- * Calls a maintenance server action with the current user's ID token. Offline it
- * does not try; a call with no answer within the deadline (or one that fails in
- * transit) is `no_answer`, because the server may still have saved it.
+ * Calls a maintenance server action with the current user's ID token. Offline it does not
+ * try. The 20 s deadline covers fetching the token and the call together; no answer in
+ * time (or a failure in transit) is `no_answer`, because the server may have saved it.
  */
 export async function callMaintenanceAction<T>(
   householdId: string,
   call: (context: Context) => Promise<MaintenanceActionResult<T>>,
   deadlineMs = MAINTENANCE_ANSWER_DEADLINE_MS,
 ): Promise<MaintenanceCallOutcome<T>> {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return { kind: 'offline' };
+  if (offline()) return { kind: 'offline' };
   const user = auth.currentUser;
   if (!user) return { kind: 'failed', message: 'Your sign-in could not be verified. Sign in again.' };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const idToken = await user.getIdToken();
-    const deadline = new Promise<'deadline'>(resolve => { timer = setTimeout(() => resolve('deadline'), deadlineMs); });
-    const result = await Promise.race([call({ idToken, householdId }), deadline]);
-    if (result === 'deadline') return { kind: 'no_answer' };
-    return result.ok ? { kind: 'ok', data: result.data } : { kind: 'failed', message: result.message };
-  } catch {
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return { kind: 'offline' };
-    return { kind: 'no_answer' };
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  return callWithDeadline(() => user.getIdToken(), idToken => call({ idToken, householdId }), deadlineMs, offline);
 }
 
 const day = (value: unknown) => {
@@ -108,7 +96,4 @@ export const refusalField = (reason: CompletionRefusal): 'completedDate' | 'mile
   return 'nextDueDate';
 };
 
-/** Shown before saving a reading lower than the vehicle's, or far above it (MA-6d). */
-export const mileageWarningMessage = (warning: 'lower' | 'jump', current: number) => (warning === 'lower'
-  ? `That is lower than the recorded ${current.toLocaleString('en-US')} mi. The vehicle keeps the higher reading. Save anyway?`
-  : `That is more than 20,000 mi above the recorded ${current.toLocaleString('en-US')} mi. Save anyway?`);
+export const UNDO_HAS_ATTACHMENTS_MESSAGE = 'Remove the attached files first, or keep it done.';

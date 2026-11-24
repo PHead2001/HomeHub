@@ -2811,6 +2811,23 @@ describe('content shapes: maintenance', () => {
     await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { mileageUpdatedAt: '2026-08-01' }));
   });
 
+  test('attachment metadata is created only for a record that exists (review of PR #210)', async () => {
+    const attachment = (targetType: string, targetId: string) => ({
+      householdId: householdA, targetType, targetId, category: 'receipt', fileName: 'r.pdf',
+      filePath: `households/${householdA}/maintenance/${targetType}/${targetId}/r.pdf`,
+      uploadedByUid: users.member.uid, createdAt: nowIso,
+    });
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance-attachments', 'a1'), attachment('maintenance_log', 'legacy')));
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance-attachments', 'a2'), attachment('home_asset', 'furnace')));
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance-attachments', 'a3'), attachment('vehicle', 'car')));
+    // A log an Undo deleted, or an asset or vehicle deleted meanwhile, takes no new files.
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a4'), attachment('maintenance_log', 'undone-log')));
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a5'), attachment('home_asset', 'gone')));
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a6'), attachment('vehicle', 'gone')));
+    // The target type names the collection: a vehicle id is not a log.
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a7'), attachment('maintenance_log', 'car')));
+  });
+
   test('the maintenance op ledger is server-only (M1)', async () => {
     await environment.withSecurityRulesDisabled(async context => {
       await setDoc(doc(context.firestore(), 'households', householdA, 'maintenance-ops', 'op-1'), { kind: 'complete', actorUid: users.owner.uid });

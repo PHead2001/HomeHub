@@ -124,6 +124,7 @@ import {
   CHANGED_MESSAGE,
   NO_ANSWER_MESSAGE,
   OFFLINE_MESSAGE,
+  UNDO_HAS_ATTACHMENTS_MESSAGE,
   alreadyDoneMessage,
   callMaintenanceAction,
   keptMessage,
@@ -132,6 +133,7 @@ import {
   refusalField,
   refusalMessage,
 } from '@/components/maintenance/maintenance-action-client';
+import { createPendingRequests } from '@/lib/maintenance/action-call';
 import { MAX_MILEAGE, cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type StoredSchedule } from '@/lib/maintenance/operations';
 import { publicDisplayName } from '@/lib/member-directory';
 import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, writeBatch } from 'firebase/firestore';
@@ -610,6 +612,13 @@ const logFormFromRecord = (log: MaintenanceLog): LogFormValues => ({
 
 type SaveNoticeState = { message: string; retry?: () => void };
 
+/** An unanswered request kept for the next press: same op id, same call, same handling. */
+type HeldRequest<T, R> = {
+  opId: string;
+  call: (context: { idToken: string; householdId: string }) => Promise<MaintenanceActionResult<T>>;
+  handle: (data: T) => Promise<R> | R;
+};
+
 /** A dialog's offline or no-answer note; Retry resends the same request (same op id). */
 function SaveNotice({ notice, busy }: { notice?: SaveNoticeState; busy: boolean }) {
   if (!notice) return null;
@@ -1016,6 +1025,8 @@ export function MaintenanceLogClient() {
   // Requests in flight, by form or card action: their buttons are disabled with a spinner.
   const [inFlight, setInFlight] = useState<Record<string, boolean>>({});
   const inFlightRef = useRef(new Set<string>());
+  // Requests with no answer yet, by form or card action (see createPendingRequests).
+  const pendingRef = useRef(createPendingRequests<HeldRequest<unknown, unknown>>());
   // Offline / no answer / failure notes shown inside a dialog (with Retry when unknown).
   const [notices, setNotices] = useState<Record<string, SaveNoticeState | undefined>>({});
   const setNotice = useCallback((key: string, notice: SaveNoticeState) => setNotices(previous => ({ ...previous, [key]: notice })), []);
@@ -1298,10 +1309,12 @@ export function MaintenanceLogClient() {
     const uploadTarget = `${targetType}:${targetId}`;
 
     setUploadingAttachmentTarget(uploadTarget);
+    const storageRef = ref(getStorage(), filePath);
+    let uploaded = false;
 
     try {
-      const storageRef = ref(getStorage(), filePath);
       await uploadBytes(storageRef, file, { contentType: file.type || undefined });
+      uploaded = true;
       const downloadUrl = await getDownloadURL(storageRef);
       const attachmentData: Omit<MaintenanceAttachment, 'id'> = {
         householdId: currentUser.householdId,
@@ -1319,7 +1332,14 @@ export function MaintenanceLogClient() {
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(attachmentsCollection, attachmentId), cleanForFirestore(attachmentData));
+      try {
+        await setDoc(doc(attachmentsCollection, attachmentId), cleanForFirestore(attachmentData));
+      } catch (metadataError) {
+        // Refused (for example the record was deleted, or a completion's log was undone,
+        // meanwhile): the file just uploaded would be orphaned, so it is removed again.
+        if (uploaded) await deleteObject(storageRef).catch((cleanupError) => console.error('Could not remove the uploaded file:', cleanupError));
+        throw metadataError;
+      }
       toast({ title: 'Attachment uploaded' });
       await refreshMaintenanceData();
     } catch (uploadError) {
@@ -1385,6 +1405,7 @@ export function MaintenanceLogClient() {
     setAssetBase(asset ? assetValuesOf(form, scheduleForms) : null);
     setAssetScheduleErrors({});
     clearNotice('asset');
+    discardPending('asset');
     setAssetDialogOpen(true);
   };
 
@@ -1397,6 +1418,7 @@ export function MaintenanceLogClient() {
     setVehicleBase(vehicle ? vehicleValuesOf(form, scheduleForms) : null);
     setVehicleScheduleErrors({});
     clearNotice('vehicle');
+    discardPending('vehicle');
     setMileageCheck(null);
     setVehicleDialogOpen(true);
   };
@@ -1408,6 +1430,7 @@ export function MaintenanceLogClient() {
     logForm.reset(form);
     setLogBase(log ? logValuesOf(form) : null);
     clearNotice('log');
+    discardPending('log');
     setMileageCheck(null);
     setLogDialogOpen(true);
   };
@@ -1500,6 +1523,7 @@ export function MaintenanceLogClient() {
     });
     setMileageCheck(null);
     clearNotice('complete');
+    discardPending('complete');
     setScheduleCompletionTarget(target);
   };
 
@@ -1516,22 +1540,32 @@ export function MaintenanceLogClient() {
 
   const runOp = async <T, R>(
     key: string,
-    opId: string,
-    call: (context: { idToken: string; householdId: string }) => Promise<MaintenanceActionResult<T>>,
-    handle: (data: T) => Promise<R> | R,
+    freshOpId: string,
+    freshCall: (context: { idToken: string; householdId: string }) => Promise<MaintenanceActionResult<T>>,
+    freshHandle: (data: T) => Promise<R> | R,
     surface: 'dialog' | 'toast',
   ): Promise<{ kind: 'ok'; value: R } | { kind: 'failed' | 'offline' | 'no_answer' | 'busy' }> => {
     const householdId = currentUser?.householdId;
     if (!householdId) return { kind: 'failed' };
     // A second press while the first is in flight does nothing (the button is disabled too).
     if (inFlightRef.current.has(key)) return { kind: 'busy' };
+    // An earlier request of this form or card had no answer: it may have been saved, so this
+    // press sends that same request again (same op id, same values), never a new one.
+    const held = pendingRef.current.get(key) as HeldRequest<T, R> | undefined;
+    const opId = held?.opId ?? freshOpId;
+    const call = held?.call ?? freshCall;
+    const handle = held?.handle ?? freshHandle;
     inFlightRef.current.add(key);
     setInFlight(previous => ({ ...previous, [key]: true }));
     clearNotice(key);
     try {
       const outcome = await callMaintenanceAction(householdId, call);
-      if (outcome.kind === 'ok') return { kind: 'ok', value: await handle(outcome.data) };
+      if (outcome.kind === 'ok') {
+        pendingRef.current.settle(key);
+        return { kind: 'ok', value: await handle(outcome.data) };
+      }
       if (outcome.kind === 'failed') {
+        pendingRef.current.settle(key);
         if (surface === 'dialog') setNotice(key, { message: outcome.message });
         else toast({ variant: 'destructive', title: outcome.message });
         return { kind: 'failed' };
@@ -1541,7 +1575,8 @@ export function MaintenanceLogClient() {
         else toast({ title: OFFLINE_MESSAGE });
         return { kind: 'offline' };
       }
-      // No answer: it may have been saved. Retry sends the same request with the same op id.
+      // No answer: it may have been saved. Retry (or Save again) sends the same request.
+      pendingRef.current.hold(key, { opId, call, handle } as HeldRequest<unknown, unknown>);
       const retry = () => { void runOp(key, opId, call, handle, surface); };
       if (surface === 'dialog') setNotice(key, { message: NO_ANSWER_MESSAGE, retry });
       else {
@@ -1559,6 +1594,9 @@ export function MaintenanceLogClient() {
     }
   };
 
+  /** A dialog opened afresh: an unresolved request of its earlier form is discarded. */
+  const discardPending = (key: string) => pendingRef.current.settle(key);
+
   /** Blocks closing a dialog while its request is in flight (the outcome must be known). */
   const closable = (key: string) => !inFlightRef.current.has(key);
 
@@ -1570,7 +1608,9 @@ export function MaintenanceLogClient() {
     const warning = mileageWarning(reading, current);
     if (!warning || typeof reading !== 'number' || typeof current !== 'number') return true;
     if (mileageCheck?.key === key && mileageCheck.reading === reading) return true;
-    setMileageCheck({ key, reading, message: mileageWarningMessage(warning, current) });
+    // The vehicle form's odometer is a correction (written as entered); everything else is a
+    // reading under the max rule.
+    setMileageCheck({ key, reading, message: mileageWarningMessage(warning, current, reading, key === 'vehicle' ? 'correction' : 'reading') });
     return false;
   };
 
@@ -1586,6 +1626,8 @@ export function MaintenanceLogClient() {
       toast({ title: 'Undone', description: kept || `${title} is no longer marked done.` });
     } else if (outcome.data.status === 'superseded') {
       toast({ title: "Can't undo", description: 'It was marked done again since, so it stays done.' });
+    } else if (outcome.data.status === 'has_attachments') {
+      toast({ title: "Can't undo", description: UNDO_HAS_ATTACHMENTS_MESSAGE });
     } else if (outcome.data.status === 'expired') {
       toast({ title: "Can't undo", description: 'The time to undo has passed.' });
     }
@@ -1870,6 +1912,7 @@ export function MaintenanceLogClient() {
   const openMileageConfirm = (target: Extract<ScheduleCompletionTarget, { targetType: 'vehicle' }>) => {
     setMileageCheck(null);
     clearNotice('mileage');
+    discardPending('mileage');
     setMileageInput(typeof target.vehicle.currentMileage === 'number' ? String(target.vehicle.currentMileage) : '');
     setMileageInputError(null);
     setMileageTarget(target);

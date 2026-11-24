@@ -379,12 +379,25 @@ service cloud.firestore {
     // Attachments
     // ---------------------------------------------------------------------
 
+    // An attachment is created only for a record that exists (M1): a log that a completion's
+    // Undo is deleting, or a deleted asset or vehicle, cannot receive new files.
+    function maintenanceAttachmentTargetExists(householdId, targetType, targetId) {
+      return targetId is string && targetId.size() > 0 && targetId.size() <= 1500 && (
+        (targetType == 'maintenance_log' &&
+          exists(/databases/$(database)/documents/households/$(householdId)/maintenance/$(targetId))) ||
+        (targetType == 'home_asset' &&
+          exists(/databases/$(database)/documents/households/$(householdId)/home-assets/$(targetId))) ||
+        (targetType == 'vehicle' &&
+          exists(/databases/$(database)/documents/households/$(householdId)/vehicles/$(targetId))));
+    }
+
     function validNewMaintenanceAttachment(householdId) {
       return request.resource.data.householdId == householdId &&
              request.resource.data.uploadedByUid == request.auth.uid &&
              request.resource.data.targetType in ['home_asset', 'vehicle', 'maintenance_log'] &&
              request.resource.data.category in ['photo', 'receipt', 'manual', 'warranty_document', 'invoice', 'other'] &&
              request.resource.data.filePath.matches('households/' + householdId + '/maintenance/.*') &&
+             maintenanceAttachmentTargetExists(householdId, request.resource.data.targetType, request.resource.data.targetId) &&
              request.resource.data.keys().hasAll([
                'householdId',
                'targetType',
