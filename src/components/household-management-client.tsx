@@ -83,7 +83,6 @@ import { canSeeMemberEmails } from '@/lib/member-directory';
 import { DevicesTab } from '@/components/household/devices-tab';
 import { useMemberTabletControls } from '@/components/household/member-tablet-controls';
 import { useServerNow } from '@/components/household/use-server-now';
-import HouseholdLoading from '@/app/household/loading';
 
 // Wall tablets ship dark behind the public devices flag (docs/modules/devices/README.md).
 const devicesEnabled = process.env.NEXT_PUBLIC_HOMEHUB_DEVICES === 'true';
@@ -418,7 +417,13 @@ export function HouseholdManagementClient() {
     return <SignInPrompt what="manage your household" />;
   }
 
-  if (gate === 'loading') return <HouseholdLoading />;
+  if (gate === 'loading') {
+    return (
+      <div className="mx-auto max-w-6xl space-y-6">
+        <ManagerSkeleton />
+      </div>
+    );
+  }
 
   if (gate === 'no-household' || !household) {
     return (
@@ -470,13 +475,7 @@ export function HouseholdManagementClient() {
       </div>
 
       {live.loading ? (
-        <div role="status" aria-label="Loading household" className="space-y-4">
-          <Skeleton className="h-10 w-full rounded-lg" />
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
-            {[0, 1, 2, 3].map((key) => <Skeleton key={key} className="h-20 rounded-lg" />)}
-          </div>
-          <Skeleton className="h-40 w-full rounded-lg" />
-        </div>
+        <ManagerSkeleton />
       ) : (
         <Tabs value={shownTab} onValueChange={selectTab}>
           <TabsList className="grid h-auto w-full grid-cols-3 md:flex md:w-auto md:justify-start">
@@ -856,6 +855,19 @@ export function HouseholdManagementClient() {
           </form>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** Tabs, stat cards and the first card, while the household or its members load. */
+function ManagerSkeleton() {
+  return (
+    <div role="status" aria-label="Loading household" className="space-y-4">
+      <Skeleton className="h-10 w-full rounded-lg" />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+        {[0, 1, 2, 3].map((key) => <Skeleton key={key} className="h-20 rounded-lg" />)}
+      </div>
+      <Skeleton className="h-40 w-full rounded-lg" />
     </div>
   );
 }
