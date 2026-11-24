@@ -2,7 +2,8 @@ import { CardSkeleton, PageHeaderSkeleton, TabsSkeleton } from '@/components/rou
 
 /**
  * The Maintenance Center's one loading skeleton (MA-25a): the header with Add Log, the tab row
- * and the Overview's summary cards. The route's `loading.tsx` and the page's first load both
+ * (one row at every width, like the real one) and the Overview's Needs doing list beside the
+ * health and Coming up cards. The route's `loading.tsx` and the page's first load both
  * render it, so a cold load keeps the header and tabs in place instead of swapping layouts.
  */
 export function MaintenanceSkeleton() {
@@ -12,12 +13,14 @@ export function MaintenanceSkeleton() {
         <PageHeaderSkeleton action titleWidth="w-72" className="mb-0" />
       </div>
       <div data-testid="maintenance-skeleton-tabs">
-        <TabsSkeleton className="h-[5.25rem] md:h-10" />
+        <TabsSkeleton className="h-[calc(var(--target-min)+0.5rem)]" />
       </div>
-      <div className="grid gap-4 pt-4 sm:grid-cols-2 lg:grid-cols-5" data-testid="maintenance-skeleton-panel">
-        {Array.from({ length: 5 }, (_, i) => (
-          <CardSkeleton key={i} lines={1} className="h-32" />
-        ))}
+      <div className="grid gap-4 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]" data-testid="maintenance-skeleton-panel">
+        <CardSkeleton lines={4} className="h-96" />
+        <div className="space-y-4">
+          <CardSkeleton lines={2} className="h-44" />
+          <CardSkeleton lines={2} className="h-48" />
+        </div>
       </div>
     </div>
   );

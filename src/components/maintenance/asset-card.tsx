@@ -16,7 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import type { HealthResult } from '@/lib/maintenance/health';
 import type { HomeAsset, HomeAssetCategory, MaintenanceAttachment } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import type { WarrantyCountdown } from '@/lib/maintenance/warranty';
+import { warrantyCaption, type WarrantyCountdown } from '@/lib/maintenance/warranty';
 import { BrandLogo } from '@/components/brand/brand-logo';
 import { HealthRing } from './health-ring';
 import { PhotoBand } from './photo-band';
@@ -61,6 +61,8 @@ export function AssetCard({
 }) {
   const Icon = CATEGORY_ICONS[asset.category] || Package;
   const status = statusLabel(asset.status);
+  // The ring's own text is tiny; this caption says what it is, on touch too (MA-17, MA-23).
+  const caption = warranty ? warrantyCaption(warranty) : null;
 
   return (
     <button
@@ -83,11 +85,12 @@ export function AssetCard({
           <div className="flex items-center gap-2">
             {/* Named after the brand: the card text does not otherwise show it. */}
             <BrandLogo brand={asset.brand} size="sm" className="text-muted-foreground" />
-            <p className="min-w-0 font-headline font-semibold">{asset.name}</p>
+            <p className="min-w-0 break-words font-headline font-semibold [overflow-wrap:anywhere]">{asset.name}</p>
           </div>
-          <p className="text-sm text-muted-foreground">
+          <p className="break-words text-sm text-muted-foreground [overflow-wrap:anywhere]">
             {[asset.category, asset.location].filter(Boolean).join(' · ')}
           </p>
+          {caption && <p className="mt-1 text-sm text-muted-foreground" data-testid="warranty-caption">{caption}</p>}
           {status && (
             <Badge variant={asset.status === 'needs_attention' ? 'destructive' : 'outline'} className="mt-2">{status}</Badge>
           )}

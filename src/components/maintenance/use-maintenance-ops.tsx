@@ -8,13 +8,15 @@ import { playFeedback } from '@/lib/feedback';
 import { ToastAction } from '@/components/ui/toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import {
-  completeMaintenanceSchedule, undoMaintenanceCompletion, undoMaintenanceSnooze, type MaintenanceActionResult,
+  completeMaintenanceSchedule, renewVehicleDocument, undoMaintenanceCompletion, undoMaintenanceSnooze, undoVehicleRenewal,
+  type MaintenanceActionResult,
 } from '@/app/maintenance/actions';
 import {
   CHANGED_MESSAGE, UNDO_HAS_ATTACHMENTS_MESSAGE, NO_ANSWER_MESSAGE, OFFLINE_MESSAGE, alreadyDoneMessage, callMaintenanceAction, keptMessage,
   mileageWarningMessage, newOpId,
 } from './maintenance-action-client';
-import { cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type StoredSchedule } from '@/lib/maintenance/operations';
+import { cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type RenewableDocument, type StoredSchedule } from '@/lib/maintenance/operations';
+import type { Vehicle } from '@/lib/types';
 import type { ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
 import type { MarkDoneResult } from './reminder-list';
 import { formatDate, getScheduleCompletionName, trimOptional, type SaveNoticeState } from './page-model';
@@ -166,6 +168,54 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
     }
   };
 
+  const undoRenewal = async (opId: string) => {
+    if (!householdId) return;
+    const outcome = await callMaintenanceAction(householdId, context => undoVehicleRenewal({ ...context, opId }));
+    if (outcome.kind !== 'ok') {
+      toast({ variant: 'destructive', title: "Couldn't undo", description: outcome.kind === 'failed' ? outcome.message : outcome.kind === 'offline' ? OFFLINE_MESSAGE : NO_ANSWER_MESSAGE });
+    } else if (outcome.data.status === 'undone') {
+      toast({ title: 'Renewal undone', description: keptMessage(outcome.data.kept, 'renewed it') || undefined });
+    } else if (outcome.data.status === 'expired') {
+      toast({ title: "Can't undo", description: 'The time to undo has passed.' });
+    }
+  };
+
+  // The document being renewed (one at a time), for the button's spinner.
+  const [renewing, setRenewing] = useState<{ vehicleId: string; field: RenewableDocument } | null>(null);
+
+  /**
+   * "Renewed (+1 year)" (MA-33a): the server moves that one date a year on, from the value it
+   * reads, only while it is still the date this page showed; a toast offers Undo for 10 s.
+   */
+  const renewDocument = async (vehicle: Vehicle, field: RenewableDocument) => {
+    if (renewing) return;
+    const label = field === 'registrationExpiration' ? 'Registration' : 'Inspection';
+    const renew = { opId: newOpId(), vehicleId: vehicle.id, field, seen: vehicle[field] || null };
+    setRenewing({ vehicleId: vehicle.id, field });
+    try {
+      await runOp(`renew:${vehicle.id}:${field}`, renew.opId, context => renewVehicleDocument({ ...context, renew }), (result) => {
+        if (result.status === 'renewed') {
+          const handle = toast({
+            title: `${label} renewed`,
+            description: `${vehicle.nickname}'s ${label.toLowerCase()} now expires ${formatDate(result.expiration)}.`,
+            duration: UNDO_WINDOW_MS,
+            action: (
+              <ToastAction altText={`Undo renewing the ${label.toLowerCase()}`} onClick={() => { handle.dismiss(); void undoRenewal(result.opId); }}>
+                Undo
+              </ToastAction>
+            ),
+          });
+        } else if (result.status === 'gone') {
+          toast({ title: 'That vehicle no longer exists.' });
+        } else {
+          toast({ title: CHANGED_MESSAGE });
+        }
+      }, 'toast');
+    } finally {
+      setRenewing(null);
+    }
+  };
+
   /** The "done" toast with a 10 s Undo (the shared window). */
   const completedToast = (title: string, description: string, opId: string, undoLabel: string) => {
     const handle = toast({
@@ -248,6 +298,8 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
     mileageConfirmed: useStableHandler(mileageConfirmed),
     undoSnooze: useStableHandler(undoSnooze),
     completeSchedule: useStableHandler(completeSchedule),
+    renewing,
+    renewDocument: useStableHandler(renewDocument),
     ownerIdOf,
   };
 }

@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { buildMaintenanceReminders, type MaintenanceReminder } from '@functions/shared/maintenance-reminders';
-import { useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { AlertCircle, Plus } from 'lucide-react';
 import type { HomeAsset, MaintenanceLog, Vehicle } from '@/lib/types';
 import { EmptyState } from '@/components/empty-state';
@@ -39,6 +39,14 @@ import { useMaintenanceNavigation } from '@/components/maintenance/use-maintenan
 import { useMaintenanceRecords } from '@/components/maintenance/use-maintenance-records';
 import { householdDayZone, useHouseholdToday } from '@/lib/household-day';
 import { recentLogSummary } from '@/lib/maintenance/recent';
+import { comingUp, COMING_UP_DAYS } from '@/lib/maintenance/coming-up';
+import {
+  categoryChips, filterAssets, filterLogs, filterReminders, filterVehicles, hasActiveFilters, locationChips, sortLogs,
+} from '@/lib/maintenance/filters';
+import { reminderMileageEstimates } from '@/lib/maintenance/mileage-prediction';
+import { needsDoing } from '@/lib/maintenance/needs-doing';
+import { MaintenanceFilterBar } from '@/components/maintenance/maintenance-filters';
+import { OVERVIEW_COMING_UP_DAYS } from '@/components/maintenance/overview-tab';
 import { MaintenanceLoadingState } from '@/components/maintenance/maintenance-skeleton';
 import {
   formatDate, getLogTargetType, logValuesOf, toNumber, trimOptional, type AssetValues, type LogFormValues, type LogPreset,
@@ -66,13 +74,15 @@ export function MaintenanceLogClient() {
   // Live records of this household for this member (MA-2); null stops the listeners.
   const listenerKey = currentUser?.householdId && currentUser.uid && !accessDenied ? `${currentUser.householdId}|${currentUser.uid}` : null;
   const live = useMaintenanceLiveData(currentUser?.householdId, listenerKey);
-  const { assets, vehicles, logs, attachments } = live;
+  const { assets, vehicles, attachments } = live;
+  // Read unordered (a log without a date is kept, MA-11e) and sorted here: newest first, undated last.
+  const logs = useMemo(() => sortLogs(live.logs), [live.logs]);
   // Only the first load (per household) shows the skeleton; later changes arrive in place.
   const ready = listenerKey ? live.ready : true;
   const loading = Boolean(listenerKey) && !live.ready && !live.failure;
   const {
     activeTab, selectedAssetId, setSelectedAssetId, selectedVehicleId, setSelectedVehicleId,
-    highlightedLogId, highlightedScheduleKey, deepLinkNotice, changeTab, openTarget,
+    highlightedLogId, highlightedScheduleKey, deepLinkNotice, changeTab, openTarget, filters, setFilters, detailRequest,
   } = useMaintenanceNavigation({ ready, confirmed: listenerKey ? live.confirmed : true, assets, vehicles, logs });
   const {
     logToDelete, setLogToDelete, assetToDelete, setAssetToDelete, vehicleToDelete, setVehicleToDelete,
@@ -97,7 +107,7 @@ export function MaintenanceLogClient() {
   const [dialogSession, setDialogSession] = useState(0);
   const {
     inFlight, notices, clearNotice, mileageCheck, setMileageCheck, reminderListEpoch,
-    runOp, closable, discardPending, mileageConfirmed, undoSnooze, completeSchedule, ownerIdOf,
+    runOp, closable, discardPending, mileageConfirmed, undoSnooze, completeSchedule, ownerIdOf, renewing, renewDocument,
   } = useMaintenanceOps({
     householdId: currentUser?.householdId,
     onTargetSettled: (target) => {
@@ -116,8 +126,10 @@ export function MaintenanceLogClient() {
   // when the page is shown again, regains focus or comes back online: useHouseholdToday).
   const timeZone = householdDayZone(household?.timeZone);
   const today = useHouseholdToday(timeZone);
+  // Upcoming warranties, registrations and inspections are included 90 days ahead, so the
+  // Reminders tab's Upcoming group and Coming up agree (none of them is notified).
   const reminders = useMemo(
-    () => buildMaintenanceReminders(assets, vehicles, today, timeZone),
+    () => buildMaintenanceReminders(assets, vehicles, today, timeZone, { expiryLookaheadDays: COMING_UP_DAYS }),
     [assets, vehicles, today, timeZone],
   );
   const health = useMemo(
@@ -125,33 +137,64 @@ export function MaintenanceLogClient() {
     [assets, vehicles, logs, today, timeZone],
   );
 
-  const dueSoonReminders = useMemo(() => {
-    return reminders.filter((reminder) => reminder.status === 'due_soon' || reminder.status === 'due_today');
-  }, [reminders]);
+  // Location, category and search from the URL (MA-21). Lists follow them; a record asked for
+  // by a link is still shown when they would hide its card.
+  const filtered = hasActiveFilters(filters);
+  const filterContext = useMemo(() => ({ assets, vehicles }), [assets, vehicles]);
+  const visibleAssets = useMemo(() => filterAssets(assets, filters), [assets, filters]);
+  // Retired assets leave the main grid for a collapsed "Retired" section (MA-11j).
+  const activeAssets = useMemo(() => visibleAssets.filter((asset) => asset.status !== 'retired'), [visibleAssets]);
+  const retiredAssets = useMemo(() => visibleAssets.filter((asset) => asset.status === 'retired'), [visibleAssets]);
+  const visibleVehicles = useMemo(() => filterVehicles(vehicles, filters), [vehicles, filters]);
+  const activeVehicles = useMemo(
+    () => visibleVehicles.filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold'),
+    [visibleVehicles],
+  );
+  const inactiveVehicles = useMemo(
+    () => visibleVehicles.filter((vehicle) => vehicle.status === 'retired' || vehicle.status === 'sold'),
+    [visibleVehicles],
+  );
+  const visibleLogs = useMemo(() => filterLogs(logs, filters, filterContext), [logs, filters, filterContext]);
+  const visibleReminders = useMemo(() => filterReminders(reminders, filters, filterContext), [reminders, filters, filterContext]);
+  const filterLocationChips = useMemo(() => locationChips(assets.filter((asset) => asset.status !== 'retired')), [assets]);
+  const filterCategoryChips = useMemo(() => categoryChips(assets, vehicles), [assets, vehicles]);
+  const filterKey = `${filters.location ?? ''}|${filters.category ?? ''}|${filters.q}`;
 
-  const overdueReminders = useMemo(() => {
-    return reminders.filter((reminder) => reminder.status === 'overdue');
-  }, [reminders]);
+  // Mileage estimates beside vehicle reminders (MA-29) and on the Coming up timeline.
+  const estimates = useMemo(
+    () => reminderMileageEstimates(reminders, vehicles, logs, today, timeZone),
+    [reminders, vehicles, logs, today, timeZone],
+  );
+  const predictedDates = useMemo(() => {
+    const dates: Record<string, string> = {};
+    for (const reminder of reminders) {
+      const estimate = estimates[reminder.id];
+      if (estimate) dates[reminder.scheduleKey ?? reminder.id] = estimate.date;
+    }
+    return dates;
+  }, [reminders, estimates]);
+  const comingUpReminders = useMemo(
+    () => comingUp(visibleReminders, today, COMING_UP_DAYS, { timeZone, predictedDates }),
+    [visibleReminders, today, timeZone, predictedDates],
+  );
 
-  const warrantyReminders = useMemo(() => {
-    return reminders.filter((reminder) => reminder.group === 'warranty');
-  }, [reminders]);
-
-  const vehicleServiceReminders = useMemo(() => {
-    return reminders.filter((reminder) => reminder.group === 'vehicle_service' || reminder.group === 'vehicle_document');
-  }, [reminders]);
+  // Overview: Needs doing and the next 30 days, narrowed to a room by ?location= (MA-26).
+  const room = filters.location;
+  const roomReminders = useMemo(
+    () => (room ? filterReminders(reminders, { location: room, category: null, q: '' }, filterContext) : reminders),
+    [reminders, room, filterContext],
+  );
+  const needs = useMemo(() => needsDoing({ reminders, assets, vehicles, roomName: room }), [reminders, assets, vehicles, room]);
+  const overviewComingUp = useMemo(
+    () => comingUp(roomReminders, today, OVERVIEW_COMING_UP_DAYS, { timeZone, predictedDates }),
+    [roomReminders, today, timeZone, predictedDates],
+  );
+  const setRoom = useStableHandler((location: string | null) => setFilters({ ...filters, location }));
+  const recentLogs = useMemo(() => logs.slice(0, 5), [logs]);
 
   const selectedAsset = useMemo(() => {
-    return assets.find((asset) => asset.id === selectedAssetId) || assets[0] || null;
-  }, [assets, selectedAssetId]);
-
-  const activeVehicles = useMemo(() => {
-    return vehicles.filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold');
-  }, [vehicles]);
-
-  const inactiveVehicles = useMemo(() => {
-    return vehicles.filter((vehicle) => vehicle.status === 'retired' || vehicle.status === 'sold');
-  }, [vehicles]);
+    return assets.find((asset) => asset.id === selectedAssetId) || activeAssets[0] || null;
+  }, [assets, activeAssets, selectedAssetId]);
 
   const selectedVehicle = useMemo(() => {
     return vehicles.find((vehicle) => vehicle.id === selectedVehicleId) || activeVehicles[0] || null;
@@ -166,6 +209,8 @@ export function MaintenanceLogClient() {
     if (!selectedVehicle) return [];
     return logs.filter((log) => getLogTargetType(log) === 'vehicle' && log.vehicleId === selectedVehicle.id);
   }, [logs, selectedVehicle]);
+
+  const renewingField = renewing && renewing.vehicleId === selectedVehicle?.id ? renewing.field : null;
 
 
   const openReminderTarget = openTarget as (reminder: MaintenanceReminder) => void;
@@ -499,7 +544,21 @@ export function MaintenanceLogClient() {
     onMarkDone: markReminderDone,
     onLogService: openLogService,
     onSnooze: snoozeFromCard,
-  }), [today, canComplete, canCreateLogs, canEdit, reminderBusy, reminderCompletesInPlace, openReminderTarget, markReminderDone, openLogService, snoozeFromCard]);
+    estimates,
+  }), [today, canComplete, canCreateLogs, canEdit, reminderBusy, reminderCompletesInPlace, openReminderTarget, markReminderDone, openLogService, snoozeFromCard, estimates]);
+
+  // A dialog over the page: the phone detail sheet keeps its place under it (Back closes the dialog's own way).
+  const dialogOpen = assetDialogOpen || vehicleDialogOpen || logDialogOpen || Boolean(scheduleCompletionTarget) || Boolean(mileageTarget)
+    || Boolean(assetToDelete) || Boolean(vehicleToDelete) || Boolean(logToDelete) || Boolean(attachmentToDelete);
+
+  // The phone's tab row scrolls sideways: keep the chosen tab in view.
+  // Only the row scrolls (sideways), never the page.
+  useEffect(() => {
+    const list = document.querySelector<HTMLElement>('[data-maintenance-tabs]');
+    const tab = list?.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+    if (!list || !tab || list.scrollWidth <= list.clientWidth) return;
+    list.scrollLeft = Math.max(0, tab.offsetLeft - (list.clientWidth - tab.offsetWidth) / 2);
+  }, [activeTab]);
 
   // Dialog close requests: refused while the dialog's request is in flight (its outcome must be known).
   const assetDialogOpenChange = useStableHandler((open: boolean) => {
@@ -581,7 +640,8 @@ export function MaintenanceLogClient() {
         </div>
 
         <Tabs value={activeTab} onValueChange={changeTab} className="w-full">
-          <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-5">
+          {/* One row: on a phone it scrolls sideways instead of wrapping (MA-17). */}
+          <TabsList data-maintenance-tabs className="relative flex h-auto w-full justify-start overflow-x-auto [scrollbar-width:none] md:grid md:grid-cols-5 [&>*]:shrink-0">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="assets">Home Assets</TabsTrigger>
             <TabsTrigger value="vehicles">Vehicles</TabsTrigger>
@@ -596,30 +656,51 @@ export function MaintenanceLogClient() {
             </div>
           )}
 
+          {activeTab !== 'overview' && (
+            <div className="mt-4">
+              <MaintenanceFilterBar filters={filters} locationChips={filterLocationChips} categoryChips={filterCategoryChips} onChange={setFilters} />
+            </div>
+          )}
+
           <OverviewTab
             health={health}
             assets={assets}
             vehicles={vehicles}
-            logs={logs}
+            recentLogs={recentLogs}
             summary={summary}
+            needs={needs}
+            room={room}
+            roomChips={filterLocationChips}
+            onRoomChange={setRoom}
+            comingUp={overviewComingUp}
+            today={today}
             canEdit={canEdit}
             logListProps={logListProps}
+            reminderListProps={reminderListProps}
+            reminderListEpoch={reminderListEpoch}
             changeTab={changeTab}
             openAssetDialog={openAssetDialog}
             openVehicleDialog={openVehicleDialog}
             openTarget={openTarget}
+            openReminder={openReminderTarget}
             openHealthDeduction={openHealthDeduction}
           />
 
           <AssetsTab
-            assets={assets}
+            assets={activeAssets}
+            retiredAssets={retiredAssets}
+            totalAssets={assets.length}
+            filtered={filtered}
             attachments={attachments}
             health={health}
             today={today}
+            timeZone={timeZone}
             selectedAsset={selectedAsset}
-            assetLogs={assetLogs}
+            logs={assetLogs}
             highlightedScheduleKey={highlightedScheduleKey}
             detailMorph={detailMorph}
+            detailRequest={detailRequest}
+            dialogOpen={dialogOpen}
             canEdit={canEdit}
             canDelete={canDelete}
             canComplete={canComplete}
@@ -637,15 +718,22 @@ export function MaintenanceLogClient() {
           />
 
           <VehiclesTab
-            vehicles={vehicles}
+            totalVehicles={vehicles.length}
             activeVehicles={activeVehicles}
             inactiveVehicles={inactiveVehicles}
+            filtered={filtered}
             attachments={attachments}
             health={health}
+            today={today}
+            timeZone={timeZone}
             selectedVehicle={selectedVehicle}
-            vehicleLogs={vehicleLogs}
+            logs={vehicleLogs}
             highlightedScheduleKey={highlightedScheduleKey}
             detailMorph={detailMorph}
+            detailRequest={detailRequest}
+            dialogOpen={dialogOpen}
+            renewing={renewingField}
+            onRenew={renewDocument}
             showInactiveVehicles={showInactiveVehicles}
             canEdit={canEdit}
             canDelete={canDelete}
@@ -665,15 +753,23 @@ export function MaintenanceLogClient() {
           />
 
           <RemindersTab
-            dueSoonReminders={dueSoonReminders}
-            overdueReminders={overdueReminders}
-            warrantyReminders={warrantyReminders}
-            vehicleServiceReminders={vehicleServiceReminders}
+            reminders={visibleReminders}
+            comingUp={comingUpReminders}
+            today={today}
             reminderListProps={reminderListProps}
             reminderListEpoch={reminderListEpoch}
+            onOpen={openReminderTarget}
           />
 
-          <LogsTab logs={logs} highlightedLogId={highlightedLogId} canCreateLogs={canCreateLogs} logListProps={logListProps} openLogDialog={openLogDialog} />
+          <LogsTab
+            logs={visibleLogs}
+            filtered={filtered}
+            filterKey={filterKey}
+            highlightedLogId={highlightedLogId}
+            canCreateLogs={canCreateLogs}
+            logListProps={logListProps}
+            openLogDialog={openLogDialog}
+          />
         </Tabs>
       </div>
 

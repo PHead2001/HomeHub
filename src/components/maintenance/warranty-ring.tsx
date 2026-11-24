@@ -18,7 +18,8 @@ const SOON_DAYS = 30;
  * the days left inside. It sweeps down from full on mount (550 ms, value only);
  * reduced motion shows the end state at once. Fixed size, so nothing shifts.
  * A lifetime warranty has no countdown: a 40 px tall pill reads "Lifetime" in
- * place of the ring (same height, so the card row does not shift).
+ * place of the ring (same height, so the card row does not shift). No hover-only
+ * text: the asset card prints the caption ("Warranty · 198 days") under the name.
  */
 export function WarrantyRing({ countdown, name, className }: { countdown: WarrantyCountdown; name: string; className?: string }) {
   const reduced = useReducedMotion();
@@ -31,7 +32,6 @@ export function WarrantyRing({ countdown, name, className }: { countdown: Warran
       <div
         role="img"
         aria-label={`${name}: ${text}`}
-        title={text}
         className={cn('inline-flex shrink-0 items-center rounded-full border-4 border-success px-2 font-headline text-[10px] font-semibold text-foreground', className)}
         style={{ height: BOX }}
         data-testid="warranty-ring"
@@ -46,7 +46,6 @@ export function WarrantyRing({ countdown, name, className }: { countdown: Warran
     <div
       role="img"
       aria-label={`${name}: ${text}`}
-      title={text}
       className={cn('relative inline-grid shrink-0 place-items-center', className)}
       style={{ width: BOX, height: BOX }}
       data-testid="warranty-ring"
