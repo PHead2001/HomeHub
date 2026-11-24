@@ -77,7 +77,8 @@ describe('Needs doing (MA-12, MA-14)', () => {
 
 describe('log pages and display (MA-21, MA-11e, MA-20)', () => {
   const logs = Array.from({ length: 45 }, (_, index) => ({ id: `log-${String(index).padStart(2, '0')}`, date: `2026-0${1 + (index % 9)}-1${index % 10}` }));
-  const undated = [{ id: 'undated', date: '' }, { id: 'garbled', date: 'soon' }];
+  // A legacy log may have an empty date, an unreadable one, or no date field at all.
+  const undated = [{ id: 'undated', date: '' }, { id: 'garbled', date: 'soon' }, { id: 'no-date-field' } as { id: string; date: string }];
 
   it('finds the page a log is on, in the paginated order; undated logs are kept, last', () => {
     const all = [...undated, ...logs];
@@ -88,8 +89,8 @@ describe('log pages and display (MA-21, MA-11e, MA-20)', () => {
     assert.equal(pageOfLog(all, 'missing'), null);
     assert.equal(pageOfLog(all, null), null);
     const last = paginateLogs(all, 3);
-    assert.deepEqual(last.items.slice(-2).map((item) => item.id).sort(), ['garbled', 'undated']);
-    assert.equal(last.total, 47);
+    assert.deepEqual(last.items.slice(-3).map((item) => item.id).sort(), ['garbled', 'no-date-field', 'undated']);
+    assert.equal(last.total, 48);
   });
 
   it('labels an unreadable date "Undated", never today', () => {

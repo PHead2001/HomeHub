@@ -6,7 +6,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 
 /**
  * The asset or vehicle detail on a phone (MA-17): a full-height sheet opened by tapping a
- * card (or a link to the record). Back closes it (`useBackCloses`), except while a dialog
+ * card (or a link to the record). Its top bar (name and Close) stays put while the detail scrolls. Back closes it (`useBackCloses`), except while a dialog
  * opened from it (Edit, Log, a delete confirmation) is still open: `blocked` keeps the sheet,
  * so Back never pulls the sheet away from under that dialog.
  */
@@ -37,11 +37,14 @@ export function DetailSheet({
       <SheetContent
         side="bottom"
         data-testid={testId}
-        className="h-[100dvh] max-h-[100dvh] gap-0 overflow-y-auto rounded-none p-0 pb-[env(safe-area-inset-bottom)]"
+        className="flex h-[100dvh] max-h-[100dvh] flex-col gap-0 overflow-hidden rounded-none p-0"
       >
-        <SheetTitle className="sr-only">{title}</SheetTitle>
+        {/* A bar that never scrolls away: the record's name and the sheet's Close (top right). */}
+        <div className="flex min-h-14 shrink-0 items-center border-b px-4 pr-14">
+          <SheetTitle className="min-w-0 truncate font-headline text-base">{title}</SheetTitle>
+        </div>
         {description ? <SheetDescription className="sr-only">{description}</SheetDescription> : null}
-        <div className="pt-12">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]">{children}</div>
       </SheetContent>
     </Sheet>
   );

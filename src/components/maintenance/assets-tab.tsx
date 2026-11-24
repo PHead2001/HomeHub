@@ -38,8 +38,12 @@ type AssetsTabProps = Omit<AssetDetailProps, 'asset' | 'health' | 'style' | 'cla
 export const CARD_GRID = 'grid content-start gap-3 grid-cols-[repeat(auto-fill,minmax(min(100%,15rem),1fr))]';
 /** The page grid: the cards fill the width; from lg a sticky detail column sits beside them. */
 export const PAGE_GRID = 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,420px)]';
-/** The sticky detail column (below the site header), scrolling on its own when taller than the window. */
-export const DETAIL_COLUMN = 'min-w-0 lg:sticky lg:top-20 lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto lg:overscroll-contain';
+/**
+ * The sticky detail column, 1rem below the sticky site header (`header.tsx`: h-14, 3.5rem), scrolling
+ * on its own when taller than the window, with 1rem left below it (so its bottom is reachable at 1263x722
+ * and 1024x600).
+ */
+export const DETAIL_COLUMN = 'min-w-0 lg:sticky lg:top-[4.5rem] lg:max-h-[calc(100dvh-5.5rem)] lg:self-start lg:overflow-y-auto lg:overscroll-contain';
 
 /**
  * Home Assets (MA-17, MA-18): the photo-first card grid filling the width, retired assets in a
@@ -52,7 +56,10 @@ export const AssetsTab = React.memo(function AssetsTab(props: AssetsTabProps) {
     detailRequest, dialogOpen, filtered,
   } = props;
   const wide = useWideLayout();
-  const [sheetOpen, setSheetOpen] = React.useState(false);
+  // The record the phone sheet was opened for: if it goes away (deleted here or elsewhere) and the
+  // selection falls back to another record, the sheet closes instead of showing that one.
+  const [sheetFor, setSheetFor] = React.useState<string | null>(null);
+  const sheetOpen = sheetFor !== null && selectedAsset?.id === sheetFor;
   const [showRetired, setShowRetired] = React.useState(false);
 
   // A record link (deep link, Open from a reminder) opens the sheet on a phone.
@@ -60,13 +67,13 @@ export const AssetsTab = React.memo(function AssetsTab(props: AssetsTabProps) {
   const [handledRequest, setHandledRequest] = React.useState(0);
   if (detailRequest && detailRequest.n !== handledRequest) {
     setHandledRequest(detailRequest.n);
-    if (detailRequest.kind === 'asset' && !wide) setSheetOpen(true);
+    if (detailRequest.kind === 'asset' && !wide) setSheetFor(detailRequest.id);
   }
 
   const select = (asset: HomeAsset, event: React.MouseEvent<HTMLButtonElement>) => {
     if (!wide) {
       setSelectedAssetId(asset.id);
-      setSheetOpen(true);
+      setSheetFor(asset.id);
       return;
     }
     if (selectedAsset?.id === asset.id) return;
@@ -157,11 +164,11 @@ export const AssetsTab = React.memo(function AssetsTab(props: AssetsTabProps) {
 
       {!wide && (
         <DetailSheet
-          open={sheetOpen && Boolean(selectedAsset)}
+          open={sheetOpen}
           title={selectedAsset?.name ?? 'Home asset'}
           description="Home asset details"
           blocked={dialogOpen}
-          onClose={() => setSheetOpen(false)}
+          onClose={() => setSheetFor(null)}
           testId="asset-detail-sheet"
         >
           {detail}

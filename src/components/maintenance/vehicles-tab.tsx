@@ -46,19 +46,22 @@ export const VehiclesTab = React.memo(function VehiclesTab(props: VehiclesTabPro
     setShowInactiveVehicles, setSelectedVehicleId, openVehicleDialog, detailRequest, dialogOpen, filtered,
   } = props;
   const wide = useWideLayout();
-  const [sheetOpen, setSheetOpen] = React.useState(false);
+  // The record the phone sheet was opened for: if it goes away (deleted here or elsewhere) and the
+  // selection falls back to another record, the sheet closes instead of showing that one.
+  const [sheetFor, setSheetFor] = React.useState<string | null>(null);
+  const sheetOpen = sheetFor !== null && selectedVehicle?.id === sheetFor;
 
   // Starts at 0: a link applied as the page first appears (a deep link) opens the sheet too.
   const [handledRequest, setHandledRequest] = React.useState(0);
   if (detailRequest && detailRequest.n !== handledRequest) {
     setHandledRequest(detailRequest.n);
-    if (detailRequest.kind === 'vehicle' && !wide) setSheetOpen(true);
+    if (detailRequest.kind === 'vehicle' && !wide) setSheetFor(detailRequest.id);
   }
 
   const select = (vehicle: Vehicle, event: React.MouseEvent<HTMLButtonElement>) => {
     if (!wide) {
       setSelectedVehicleId(vehicle.id);
-      setSheetOpen(true);
+      setSheetFor(vehicle.id);
       return;
     }
     if (selectedVehicle?.id === vehicle.id) return;
@@ -160,11 +163,11 @@ export const VehiclesTab = React.memo(function VehiclesTab(props: VehiclesTabPro
 
       {!wide && (
         <DetailSheet
-          open={sheetOpen && Boolean(selectedVehicle)}
+          open={sheetOpen}
           title={selectedVehicle?.nickname ?? 'Vehicle'}
           description="Vehicle details"
           blocked={dialogOpen}
-          onClose={() => setSheetOpen(false)}
+          onClose={() => setSheetFor(null)}
           testId="vehicle-detail-sheet"
         >
           {detail}

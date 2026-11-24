@@ -176,7 +176,8 @@ test.describe('verification finding regressions', () => {
 
     for (const [path, tab, content] of cases) {
       await openAuthenticated(page, path, 'Maintenance Center');
-      await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
+      // Not by role: on a phone a record link opens its detail sheet, which hides the page from role queries.
+      await expect(page.locator('[role="tab"][data-state="active"]')).toHaveText(tab);
       await expect(page.getByText(content, { exact: true }).first()).toBeVisible();
     }
 

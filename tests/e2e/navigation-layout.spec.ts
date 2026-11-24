@@ -67,6 +67,42 @@ test.describe('navigation and layout regressions', () => {
     expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
   });
 
+  test('MA-17/MA-18: every Maintenance tab fits the tablet, WT-25 and desktop sizes; the detail column bottom is reachable', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    test.setTimeout(180_000);
+    const sizes = [
+      [1263, 818], [1263, 722], [1264, 843], [1024, 768], [1180, 820], [1200, 800], [1280, 800], [1340, 800],
+      [1366, 1024], [1024, 600], [1440, 900], [390, 844],
+    ] as const;
+    await open(page, '/maintenance', 'Maintenance Center');
+    for (const [width, height] of sizes) {
+      await page.setViewportSize({ width, height });
+      for (const tab of ['overview', 'assets', 'vehicles', 'reminders', 'logs'] as const) {
+        await page.goto(tab === 'overview' ? '/maintenance' : `/maintenance?tab=${tab}`);
+        await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
+        await expect(page.getByText(/Main HVAC System|Family SUV|Engine oil and filter/).first()).toBeVisible();
+        expect(await documentOverflow(page), `${tab} at ${width}x${height}: no sideways scroll`).toBeLessThanOrEqual(0);
+        // The tab row is one row at every size.
+        const tops = await page.locator('[data-maintenance-tabs] [role="tab"]').evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().top)));
+        expect(new Set(tops).size, `${tab} at ${width}x${height}: one tab row`).toBe(1);
+        if ((tab === 'assets' || tab === 'vehicles') && width >= 1024) {
+          // The sticky detail column scrolls on its own: its last control can be brought into view.
+          const detail = page.getByTestId(tab === 'assets' ? 'asset-detail' : 'vehicle-detail');
+          await expect(detail).toBeVisible();
+          const bottom = await detail.evaluate((element) => {
+            const column = element.parentElement!;
+            column.scrollTop = column.scrollHeight;
+            return { columnBottom: column.getBoundingClientRect().bottom, detailBottom: element.getBoundingClientRect().bottom };
+          });
+          // Scroll the page to the end too (the column is sticky inside it).
+          await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+          const after = await detail.evaluate((element) => element.getBoundingClientRect().bottom);
+          expect(Math.min(bottom.detailBottom, after), `${tab} at ${width}x${height}: the detail's bottom is reachable`).toBeLessThanOrEqual(height + 1);
+        }
+      }
+    }
+  });
+
   test('L10: unknown paths, including dotted probe paths, answer 404 with the not-found page', async ({ page }) => {
     for (const path of ['/this-page-does-not-exist', '/.env.save', '/.aws/config']) {
       const response = await page.goto(path);
