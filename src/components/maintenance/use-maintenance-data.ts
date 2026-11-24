@@ -63,6 +63,12 @@ export function useMaintenanceLiveData(
           status: (status) => {
             if (status.kind === 'live') return;
             if (status.kind === 'retrying') console.warn(`Maintenance ${name} listener failed; retrying in ${status.delayMs} ms.`);
+            // A refused listener that subscribes again (a tablet's recovery) must pass on its first
+            // answer, even an empty one: that answer ends the refusal (liveReducer).
+            if (status.kind === 'unauthorized') {
+              answered = false;
+              fromServer = false;
+            }
             dispatch({ type: 'failure', key, session, collection: name, failure: status.kind });
           },
         },

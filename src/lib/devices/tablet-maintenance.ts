@@ -6,6 +6,8 @@
 import type { MaintenanceReminder } from '../../../functions/src/shared/maintenance-reminders';
 import { cycleOf, scheduleRef, type StoredSchedule } from '../maintenance/operations';
 import { serviceCompletionValues, type ScheduleCompletionTarget } from '../maintenance/schedules';
+import { sortLogs } from '../maintenance/filters';
+import type { MaintenanceAttachment, MaintenanceLog } from '../types';
 
 /** "All rooms", chosen while the record named `room`; a new room on the record starts filtered again. */
 export type RoomChoice = { room: string; all: boolean } | null;
@@ -91,3 +93,38 @@ export const scheduleEditIntentOf = (target: ScheduleCompletionTarget, changes: 
 
 /** A reminder's subject line ("Replace filter for Furnace"). */
 export const reminderSubject = (reminder: Pick<MaintenanceReminder, 'title' | 'relatedName'>): string => `${reminder.title} for ${reminder.relatedName}`;
+
+/**
+ * A record's latest logs for the tablet's record sheet: the shared date-descending order
+ * (`sortLogs`: newest date first, undated last), then the first `count`. The live listener
+ * reads logs unordered (document-id order), so the slice must come after the sort.
+ */
+export const latestLogsOf = <T extends MaintenanceLog>(logs: readonly T[], record: { targetType: 'home_asset' | 'vehicle'; targetId: string }, count = 5): T[] =>
+  sortLogs(logs.filter((log) => (record.targetType === 'home_asset' ? log.assetId === record.targetId : log.vehicleId === record.targetId))).slice(0, count);
+
+/** The attachments a record owns (its own files, which a permanent delete removes). */
+export const ownFileCount = (attachments: readonly Pick<MaintenanceAttachment, 'targetType' | 'targetId'>[], targetType: 'home_asset' | 'vehicle' | 'maintenance_log', targetId: string): number =>
+  attachments.filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId).length;
+
+const files = (count: number) => (count === 1 ? '1 attached file' : `${count} attached files`);
+
+/**
+ * What the tablet asks before a permanent delete (as the personal page's DeleteDialogs): the
+ * record by name and what goes with it. Asked every time, also while a PIN session is open
+ * (the PIN proves who, not that the tap was meant; these deletes have no Undo).
+ */
+export const deleteConfirmation = (
+  target: { kind: 'log' | 'home_asset' | 'vehicle'; name: string; files: number },
+): { title: string; description: string; confirm: string } => {
+  const name = target.name.trim() || (target.kind === 'log' ? 'this log' : target.kind === 'vehicle' ? 'this vehicle' : 'this asset');
+  const withFiles = target.files > 0 ? ` Its ${files(target.files)} will be deleted too.` : '';
+  if (target.kind === 'log') {
+    return { title: `Delete maintenance log "${name}"?`, description: `This permanently deletes the log.${withFiles} This cannot be undone.`, confirm: 'Delete log' };
+  }
+  const noun = target.kind === 'vehicle' ? 'vehicle' : 'home asset';
+  return {
+    title: `Delete ${noun} "${name}"?`,
+    description: `This removes the ${noun} and its schedules. Its logs stay as general maintenance records, and its reminders are resolved.${withFiles} This cannot be undone.`,
+    confirm: target.kind === 'vehicle' ? 'Delete vehicle' : 'Delete home asset',
+  };
+};

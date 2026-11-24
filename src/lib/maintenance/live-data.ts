@@ -9,10 +9,13 @@
  *   skeleton shows until then, and deep links wait for it).
  * - A transient failure keeps what loaded and lets the listener retry with backoff; before
  *   anything loaded it is the page's error state.
- * - A refusal (`unauthorized`: access lost) clears every collection, so no stale protected
- *   record stays on screen, and the page shows its "not shared with you" state, until the
- *   listeners are recreated: every subscription has its own `session`, and the first event of
- *   a new session starts over (so access granted again under the same key recovers).
+ * - A refusal (`unauthorized`: access lost) clears the refused collection and shows nothing of
+ *   any collection while it stands, so no stale protected record stays on screen, and the page
+ *   shows its "not shared with you" state. It ends when the refused listener answers again: a
+ *   tablet's listener subscribes again after a refusal (`recoverUnauthorizedAfterMs`, M8b), and
+ *   its answer clears the refusal; the other collections kept their latest answers meanwhile
+ *   (not shown), so the view is whole again at once. Listeners recreated under the same key (a
+ *   new `session`) start over, as before.
  * - `confirmed` says every collection has had an answer from the server, not only from the
  *   persistent cache: a deep link to a missing record waits for it before saying it is gone.
  */
@@ -66,15 +69,17 @@ export type LiveEvent =
 export function liveReducer(state: MaintenanceLiveState, event: LiveEvent): MaintenanceLiveState {
   const base = state.key === event.key && state.session === event.session ? state : initialLiveState(event.key, event.session);
   if (event.type === 'answer') {
-    // After a refusal nothing is shown again until the listeners are recreated (a new key).
-    if (Object.values(base.failures).includes('unauthorized')) return base;
+    // Every answer is kept, also while another collection is refused (the view shows nothing
+    // then); the refused collection's own answer means its listener recovered: the refusal ends.
     const failures = { ...base.failures };
     delete failures[event.collection];
     const confirmed = event.fromCache ? base.confirmed : { ...base.confirmed, [event.collection]: true as const };
     return { ...base, records: { ...base.records, [event.collection]: event.docs }, failures, confirmed };
   }
   if (event.failure === 'unauthorized') {
-    return { ...base, records: EMPTY_RECORDS, failures: { ...base.failures, [event.collection]: 'unauthorized' }, confirmed: {} };
+    const confirmed = { ...base.confirmed };
+    delete confirmed[event.collection];
+    return { ...base, records: { ...base.records, [event.collection]: null }, failures: { ...base.failures, [event.collection]: 'unauthorized' }, confirmed };
   }
   if (base.failures[event.collection] === 'unauthorized') return base;
   return { ...base, failures: { ...base.failures, [event.collection]: 'retrying' } };
@@ -98,10 +103,12 @@ const NONE: never[] = [];
 /** The view of `state` for the listener key in use: nothing of another key, ever. */
 export function liveView(state: MaintenanceLiveState, key: string | null): MaintenanceLiveView {
   const current = state.key === key ? state : initialLiveState(key);
-  const { records } = current;
-  const ready = MAINTENANCE_COLLECTIONS.every((name) => records[name] !== null);
   const failures = Object.values(current.failures);
-  const failure: LiveFailure | null = failures.includes('unauthorized')
+  // While any collection is refused nothing is shown (the others' answers wait in the state).
+  const refused = failures.includes('unauthorized');
+  const records = refused ? EMPTY_RECORDS : current.records;
+  const ready = MAINTENANCE_COLLECTIONS.every((name) => records[name] !== null);
+  const failure: LiveFailure | null = refused
     ? 'unauthorized'
     : !ready && failures.includes('retrying') ? 'retrying' : null;
   return {

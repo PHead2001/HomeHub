@@ -15,6 +15,9 @@ import { useCallback, useMemo, useState } from 'react';
 import { Wrench } from 'lucide-react';
 import { buildMaintenanceReminders, type MaintenanceReminder } from '@functions/shared/maintenance-reminders';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { NeedsDoingPanel } from '@/components/maintenance/needs-doing-panel';
@@ -29,9 +32,9 @@ import { needsDoing } from '@/lib/maintenance/needs-doing';
 import { findReminderSchedule, quickCompletionValues, type ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
 import { TABLET_DENIED_RECOVERY_MS } from '@/lib/devices/tablet-listener';
 import {
-  completeIntentOf, maintenanceRoomView, needsMileageReading, reminderSubject, scheduleEditIntentOf, scheduleNameOf, snoozeIntentOf, type RoomChoice,
+  completeIntentOf, deleteConfirmation, latestLogsOf, maintenanceRoomView, ownFileCount, needsMileageReading, reminderSubject, scheduleEditIntentOf, scheduleNameOf, snoozeIntentOf, type RoomChoice,
 } from '@/lib/devices/tablet-maintenance';
-import type { HomeAsset, MaintenanceLog, Vehicle } from '@/lib/types';
+import type { HomeAsset, MaintenanceAttachment, MaintenanceLog, Vehicle } from '@/lib/types';
 import { useTablet } from './tablet-context';
 import { useTabletSubmit } from './use-tablet-submit';
 
@@ -49,7 +52,7 @@ export function TabletMaintenanceView() {
   const live = useMaintenanceLiveData(householdId, `device:${deviceId}:${generation}`, { recoverUnauthorizedAfterMs: TABLET_DENIED_RECOVERY_MS });
   const timeZone = householdDayZone(household?.timeZone);
   const today = useHouseholdToday(timeZone);
-  const { assets, vehicles, logs } = live;
+  const { assets, vehicles, logs, attachments } = live;
   const reminders = useMemo(
     () => buildMaintenanceReminders(assets, vehicles, today, timeZone, { expiryLookaheadDays: COMING_UP_DAYS }),
     [assets, vehicles, today, timeZone],
@@ -163,6 +166,7 @@ export function TabletMaintenanceView() {
           assets={assets}
           vehicles={vehicles}
           logs={logs}
+          attachments={attachments}
           onLog={(record) => setLogTarget({ reminder: null, target: null, record, askMileage: record.targetType === 'vehicle' })}
           onClose={() => setOpen(null)}
         />
@@ -272,20 +276,24 @@ function TabletLogServiceDialog({ entry, assets, vehicles, today, onReverted, on
  * (PIN), its latest logs with **Delete** (PIN), **Log maintenance** (face) and **Delete** the record
  * (PIN; its logs stay as history and its own files go). Nothing else of the record is editable here.
  */
-function TabletMaintenanceRecordSheet({ record, assets, vehicles, logs, onLog, onClose }: {
-  record: RecordRef; assets: HomeAsset[]; vehicles: Vehicle[]; logs: MaintenanceLog[]; onLog: (record: RecordRef) => void; onClose: () => void;
+function TabletMaintenanceRecordSheet({ record, assets, vehicles, logs, attachments, onLog, onClose }: {
+  record: RecordRef; assets: HomeAsset[]; vehicles: Vehicle[]; logs: MaintenanceLog[]; attachments: MaintenanceAttachment[]; onLog: (record: RecordRef) => void; onClose: () => void;
 }) {
   const { runAction } = useTablet();
   const asset = record.targetType === 'home_asset' ? assets.find((item) => item.id === record.targetId) : undefined;
   const vehicle = record.targetType === 'vehicle' ? vehicles.find((item) => item.id === record.targetId) : undefined;
   const [editing, setEditing] = useState<ScheduleCompletionTarget | null>(null);
   const [pending, setPending] = useState<string | null>(null);
-  useBackCloses(!editing, onClose);
+  // A permanent delete is confirmed first, naming the record and its files (as the personal
+  // page's DeleteDialogs), every time: a PIN session still open proves who, not that the tap was meant.
+  const [confirming, setConfirming] = useState<{ key: string; text: ReturnType<typeof deleteConfirmation>; request: Parameters<typeof runAction>[0]; after?: () => void } | null>(null);
+  useBackCloses(!editing && !confirming, onClose);
   const name = asset?.name ?? vehicle?.nickname ?? null;
   const schedules: ScheduleCompletionTarget[] = asset
     ? (asset.schedules ?? []).map((schedule, scheduleIndex) => ({ targetType: 'home_asset' as const, asset, schedule, scheduleIndex }))
     : vehicle ? (vehicle.serviceSchedules ?? []).map((schedule, scheduleIndex) => ({ targetType: 'vehicle' as const, vehicle, schedule, scheduleIndex })) : [];
-  const ownLogs = logs.filter((log) => (record.targetType === 'home_asset' ? log.assetId === record.targetId : log.vehicleId === record.targetId)).slice(0, 5);
+  // The latest five by date (the listener reads logs unordered).
+  const ownLogs = latestLogsOf(logs, record);
   const run = async (key: string, request: Parameters<typeof runAction>[0], after?: () => void) => {
     if (pending) return;
     setPending(key);
@@ -333,16 +341,19 @@ function TabletMaintenanceRecordSheet({ record, assets, vehicles, logs, onLog, o
                         <span className="block text-base font-medium">{getLogTitle(log)}</span>
                         <span className="block text-sm text-muted-foreground">{[formatDate(log.date), log.doneByName].filter(Boolean).join(' · ')}</span>
                       </span>
-                      <button type="button" className={BUTTON} disabled={pending !== null} onClick={() => void run(`log:${log.id}`, { capability: 'maintenance.log.delete', label: `Deleted ${getLogTitle(log)}`, intent: { logId: log.id } })}>Delete</button>
+                      <button type="button" className={BUTTON} disabled={pending !== null} onClick={() => setConfirming({ key: `log:${log.id}`, text: deleteConfirmation({ kind: 'log', name: getLogTitle(log), files: ownFileCount(attachments, 'maintenance_log', log.id) }), request: { capability: 'maintenance.log.delete', label: `Deleted ${getLogTitle(log)}`, intent: { logId: log.id } } })} data-testid={`tablet-maintenance-delete-log-${log.id}`}>Delete</button>
                     </li>
                   ))}
                 </ul>
               )}
             </section>
             <div className="flex flex-wrap justify-between gap-2">
-              <button type="button" className={BUTTON} disabled={pending !== null} onClick={() => void run('record', {
-                capability: 'maintenance.record.delete', label: `Deleted ${name}`, intent: { targetType: record.targetType, targetId: record.targetId },
-              }, onClose)} data-testid="tablet-maintenance-delete-record">
+              <button type="button" className={BUTTON} disabled={pending !== null} onClick={() => setConfirming({
+                key: 'record',
+                text: deleteConfirmation({ kind: record.targetType, name, files: ownFileCount(attachments, record.targetType, record.targetId) }),
+                request: { capability: 'maintenance.record.delete', label: `Deleted ${name}`, intent: { targetType: record.targetType, targetId: record.targetId } },
+                after: onClose,
+              })} data-testid="tablet-maintenance-delete-record">
                 Delete {record.targetType === 'vehicle' ? 'vehicle' : 'asset'}
               </button>
               <span className="flex gap-2">
@@ -354,6 +365,28 @@ function TabletMaintenanceRecordSheet({ record, assets, vehicles, logs, onLog, o
           </div>
         )}
         {editing && <TabletScheduleEditDialog target={editing} onClose={() => setEditing(null)} />}
+        <AlertDialog open={confirming !== null} onOpenChange={(value) => { if (!value) setConfirming(null); }}>
+          <AlertDialogContent data-testid="tablet-maintenance-delete-confirm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>{confirming?.text.title}</AlertDialogTitle>
+              <AlertDialogDescription>{confirming?.text.description}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel className="min-h-12">Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="min-h-12 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                data-testid="tablet-maintenance-delete-confirm-button"
+                onClick={() => {
+                  const chosen = confirming;
+                  setConfirming(null);
+                  if (chosen) void run(chosen.key, chosen.request, chosen.after);
+                }}
+              >
+                {confirming?.text.confirm}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </DialogContent>
     </Dialog>
   );

@@ -61,6 +61,27 @@ describe('maintenance live data (MA-2)', () => {
     assert.deepEqual(liveView(liveReducer(refused, late), 'h1|u1').logs, []);
   });
 
+  it('recovers when a refused listener answers again (a tablet resubscribing): ready with all four collections (M8b)', () => {
+    const loaded = answerAll('h1|u1', { 'home-assets': [{ id: 'furnace' }], vehicles: [{ id: 'car' }], maintenance: [{ id: 'log' }], 'maintenance-attachments': [{ id: 'file' }] });
+    let state = liveReducer(loaded, { type: 'failure', key: 'h1|u1', session: 1, collection: 'maintenance', failure: 'unauthorized' });
+    assert.deepEqual([liveView(state, 'h1|u1').failure, liveView(state, 'h1|u1').ready, liveView(state, 'h1|u1').assets], ['unauthorized', false, []]);
+    // Another listener's answer while refused is kept but not shown.
+    state = liveReducer(state, { type: 'answer', key: 'h1|u1', session: 1, collection: 'home-assets', docs: [{ id: 'furnace' }, { id: 'boiler' }], fromCache: false });
+    assert.deepEqual(liveView(state, 'h1|u1').assets, []);
+    // A retry failure of the refused listener keeps the refusal.
+    state = liveReducer(state, { type: 'failure', key: 'h1|u1', session: 1, collection: 'maintenance', failure: 'retrying' });
+    assert.equal(liveView(state, 'h1|u1').failure, 'unauthorized');
+    // The recovered subscription answers (same session): the refusal ends and all four are back.
+    state = liveReducer(state, { type: 'answer', key: 'h1|u1', session: 1, collection: 'maintenance', docs: [{ id: 'log' }, { id: 'log-2' }], fromCache: false });
+    const view = liveView(state, 'h1|u1');
+    assert.deepEqual([view.failure, view.ready, view.assets.length, view.vehicles.length, view.logs.length, view.attachments.length], [null, true, 2, 1, 2, 1]);
+  });
+
+  it('the hook passes on a resubscribed listener\'s first answer, even an empty one', () => {
+    const source = readFileSync('src/components/maintenance/use-maintenance-data.ts', 'utf8');
+    assert.match(source, /if \(status\.kind === 'unauthorized'\) \{\s*answered = false;\s*fromServer = false;/);
+  });
+
   it('recovers when the listeners are recreated under the same key (access granted again)', () => {
     const refused = liveReducer(answerAll('h1|u1'), { type: 'failure', key: 'h1|u1', session: 1, collection: 'vehicles', failure: 'unauthorized' });
     assert.equal(liveView(refused, 'h1|u1').failure, 'unauthorized');

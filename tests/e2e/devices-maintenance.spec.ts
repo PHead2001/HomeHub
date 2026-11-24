@@ -84,6 +84,7 @@ test.afterAll(async () => {
   await removeEveryTablet();
   await Promise.all(seeded.map((id) => asset(id).delete().catch(() => undefined)));
   const logs = await householdRef.collection('maintenance').where('assetId', 'in', ['tab-furnace', 'tab-garage', 'tab-offline']).get();
+  // (the record-sheet logs tab-log-2020..2025 are on tab-furnace)
   await Promise.all(logs.docs.map((d) => d.ref.delete()));
   await householdRef.update({ devicePolicy: { pointsPin: 'off' } }).catch(() => undefined);
   await restoreHousehold();
@@ -161,6 +162,34 @@ test('editing a schedule asks for the PIN and changes only that schedule', async
   expect((await asset('tab-furnace').get()).get('name')).toBe('Kitchen furnace');
   const audit = await householdRef.collection('auditLogs').where('action', '==', 'device.action').get();
   expect(audit.docs.some((d) => d.get('details')?.capability === 'maintenance.editSchedules' && d.get('level') === 'pin')).toBe(true);
+  await page.keyboard.press('Escape');
+});
+
+test('the record sheet lists the newest logs; a delete is confirmed first, even with an open PIN session', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  // Six logs whose document ids run oldest first: the sheet must show the newest five by date.
+  const logs = householdRef.collection('maintenance');
+  for (let year = 2020; year <= 2025; year += 1) {
+    await logs.doc(`tab-log-${year}`).set({ householdId: householdRef.id, targetType: 'home_asset', assetId: 'tab-furnace', title: `Service ${year}`, item: `Service ${year}`, date: `${year}-06-01`, type: 'routine', createdAt: 'x', updatedAt: 'x' });
+  }
+  const page = tabletPage();
+  // The owner stays chosen with the PIN session from the schedule edit (no "Done" here).
+  await openMaintenance(page);
+  await page.getByRole('button', { name: 'Open: Filter tab-furnace for Kitchen furnace' }).click();
+  await expect(page.getByTestId('tablet-maintenance-log-tab-log-2025')).toBeVisible();
+  await expect(page.getByTestId('tablet-maintenance-log-tab-log-2020')).toHaveCount(0);
+  // Delete asks first, naming the log; Cancel keeps it.
+  await page.getByTestId('tablet-maintenance-delete-log-tab-log-2025').click();
+  await expect(page.getByTestId('tablet-maintenance-delete-confirm')).toContainText('Delete maintenance log "Service 2025"?');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByTestId('tablet-maintenance-delete-confirm')).toHaveCount(0);
+  expect((await logs.doc('tab-log-2025').get()).exists).toBe(true);
+  // Confirmed, it is deleted (the PIN pad only if the session ended meanwhile).
+  await page.getByTestId('tablet-maintenance-delete-log-tab-log-2025').click();
+  await page.getByTestId('tablet-maintenance-delete-confirm-button').click();
+  if (await page.getByTestId('who-is-here').isVisible().catch(() => false)) await pick(page, OWNER_UID);
+  if (await page.getByTestId('pin-pad').isVisible().catch(() => false)) await enterPin(page, OWNER_PIN);
+  await expect.poll(async () => (await logs.doc('tab-log-2025').get()).exists, { timeout: 15_000 }).toBe(false);
   await page.keyboard.press('Escape');
 });
 
