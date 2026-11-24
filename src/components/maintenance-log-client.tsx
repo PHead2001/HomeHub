@@ -88,6 +88,7 @@ export function MaintenanceLogClient() {
     logToDelete, setLogToDelete, assetToDelete, setAssetToDelete, vehicleToDelete, setVehicleToDelete,
     attachmentToDelete, setAttachmentToDelete, deletingRecord, uploadingAttachmentTarget, deletingAttachmentId,
     summaries, loadingSummaries, uploadAttachment, deleteAttachment, deleteLog, deleteAsset, deleteVehicle, handleSummarize,
+    addPhotoAction,
   } = useMaintenanceRecords({ currentUser, attachments, setSelectedAssetId, setSelectedVehicleId });
   const [reminderBusy, setReminderBusy] = useState<ReminderBusy>(null);
   // Card -> detail panel shared-element morphs (H12), within this page.
@@ -346,11 +347,15 @@ export function MaintenanceLogClient() {
       ...(editing ? { id: editing.id, base } : {}),
       values: logValuesOf(values),
     };
-    await runOp('log', save.opId, context => saveMaintenanceLog({ ...context, save }), async () => {
+    await runOp('log', save.opId, context => saveMaintenanceLog({ ...context, save }), async (result) => {
       setLogDialogOpen(false);
       setEditingLog(null);
       setMileageCheck(null);
-      toast({ title: editing ? 'Maintenance log updated' : 'Maintenance log added' });
+      // A new log offers "Add photo" (MA-16): a receipt or photo for the log just saved.
+      toast({
+        title: editing ? 'Maintenance log updated' : 'Maintenance log added',
+        ...(!editing && result.created ? { action: addPhotoAction(result.id) } : {}),
+      });
     }, 'dialog');
   });
 
@@ -785,6 +790,7 @@ export function MaintenanceLogClient() {
         open={assetDialogOpen}
         session={dialogSession}
         record={editingAsset}
+        today={today}
         busy={Boolean(inFlight.asset)}
         notice={notices.asset}
         onOpenChange={assetDialogOpenChange}
@@ -795,6 +801,7 @@ export function MaintenanceLogClient() {
         open={vehicleDialogOpen}
         session={dialogSession}
         record={editingVehicle}
+        today={today}
         busy={Boolean(inFlight.vehicle)}
         notice={notices.vehicle}
         mileageMessage={mileageCheck?.key === 'vehicle' ? mileageCheck.message : undefined}
@@ -854,6 +861,7 @@ export function MaintenanceLogClient() {
         setVehicleToDelete={setVehicleToDelete}
         deleteVehicle={deleteVehicle}
         deletingRecord={deletingRecord}
+        attachments={attachments}
       />
     </>
   );

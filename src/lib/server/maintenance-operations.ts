@@ -92,12 +92,14 @@ export type SaveResult = { status: 'saved'; id: string; created: boolean; replay
 type OpKind = 'complete' | 'snooze' | 'renew' | 'save_asset' | 'save_vehicle' | 'save_log' | 'update_mileage';
 
 export type RenewResult =
-  | { status: 'renewed'; opId: string; field: RenewableDocument; expiration: string; replay: boolean }
+  /** `undoMs`: what is left of the Undo window when the answer leaves the server (as for completions). */
+  | { status: 'renewed'; opId: string; field: RenewableDocument; expiration: string; replay: boolean; undoMs?: number }
   | { status: 'changed' }
   | { status: 'gone' };
 
 export type MileageResult =
-  | { status: 'updated'; opId: string; currentMileage: number; mileageUpdatedAt: string; replay: boolean }
+  /** `undoMs`: what is left of the Undo window when the answer leaves the server (as for completions). */
+  | { status: 'updated'; opId: string; currentMileage: number; mileageUpdatedAt: string; replay: boolean; undoMs?: number }
   | { status: 'gone' }
   | { status: 'refused'; reason: 'invalid_mileage' | 'lower_needs_correction' };
 
@@ -682,25 +684,26 @@ export async function updateVehicleMileageAs(db: Firestore, householdId: string,
   const vehicleId = docIdOf(request.vehicleId);
   if (request.correction !== undefined && typeof request.correction !== 'boolean') throw invalid();
   if (typeof request.reading !== 'number') throw invalid();
-  return db.runTransaction(async (tx): Promise<MileageResult> => {
+  const startedReal = Date.now();
+  const outcome = await db.runTransaction(async (tx): Promise<{ result: MileageResult; appliedAtMs?: number }> => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return replay.summary.result as MileageResult;
+    if (replay) return { result: replay.summary.result as MileageResult };
     const ref = house.collection('vehicles').doc(vehicleId);
     const [home, member, ledger, vehicle] = await tx.getAll(house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), ref);
     const { today } = householdDay(home, ctx.now);
     const stored = replayOf(ledger, 'update_mileage', ctx);
     if (stored) {
       const result = stored as MileageResult;
-      return result.status === 'updated' ? { ...result, replay: true } : result;
+      return { result: result.status === 'updated' ? { ...result, replay: true } : result, appliedAtMs: appliedAtOf(ledger) };
     }
-    if (!vehicle.exists) return { status: 'gone' };
+    if (!vehicle.exists) return { result: { status: 'gone' } };
     const plan = planMileageUpdate({
       vehicle: { currentMileage: vehicle.get('currentMileage'), mileageUpdatedAt: vehicle.get('mileageUpdatedAt') },
       reading: request.reading,
       correction: request.correction === true,
       today,
     });
-    if (plan.kind === 'refused') return { status: 'refused', reason: plan.reason };
+    if (plan.kind === 'refused') return { result: { status: 'refused', reason: plan.reason } };
     if (Object.keys(plan.patch).length > 0) tx.update(ref, { ...toUpdate(plan.patch), updatedAt: ctx.now.toISOString() });
     const result: MileageResult = { status: 'updated', opId, currentMileage: plan.currentMileage, mileageUpdatedAt: today, replay: false };
     tx.set(ledgerRef(house, opId), {
@@ -716,8 +719,10 @@ export async function updateVehicleMileageAs(db: Firestore, householdId: string,
       result,
     });
     ctx.hooks?.finalize(tx, { targetPath: ref.path, summary: { result } });
-    return result;
+    return { result, appliedAtMs: ctx.now.getTime() };
   });
+  if (outcome.result.status !== 'updated') return outcome.result;
+  return { ...outcome.result, undoMs: undoRemainingMs(outcome.appliedAtMs, ctx.now, startedReal) };
 }
 
 /**
@@ -784,20 +789,21 @@ export async function renewVehicleDocumentAs(db: Firestore, householdId: string,
   const field = request.field;
   const seen = seenExpirationOf(request.seen);
 
-  return db.runTransaction(async (tx): Promise<RenewResult> => {
+  const startedReal = Date.now();
+  const outcome = await db.runTransaction(async (tx): Promise<{ result: RenewResult; appliedAtMs?: number }> => {
     const { replay } = (await ctx.hooks?.precheck(tx)) ?? {};
-    if (replay) return replay.summary.result as RenewResult;
+    if (replay) return { result: replay.summary.result as RenewResult };
     const vehicleRef = house.collection('vehicles').doc(vehicleId);
     const [home, member, ledger, vehicle] = await tx.getAll(house, house.collection('members').doc(ctx.actor.uid), ledgerRef(house, opId), vehicleRef);
     const { today } = householdDay(home, ctx.now);
     const stored = replayOf(ledger, 'renew', ctx);
     if (stored) {
       const result = stored as RenewResult;
-      return result.status === 'renewed' ? { ...result, replay: true } : result;
+      return { result: result.status === 'renewed' ? { ...result, replay: true } : result, appliedAtMs: appliedAtOf(ledger) };
     }
-    if (!vehicle.exists) return { status: 'gone' };
+    if (!vehicle.exists) return { result: { status: 'gone' } };
     const plan = planRenewal({ field, current: vehicle.get(field), seen, today });
-    if (plan.kind === 'changed') return { status: 'changed' };
+    if (plan.kind === 'changed') return { result: { status: 'changed' } };
     tx.update(vehicleRef, { [field]: plan.expiration, updatedAt: ctx.now.toISOString() });
     const result: RenewResult = { status: 'renewed', opId, field, expiration: plan.expiration, replay: false };
     tx.set(ledgerRef(house, opId), {
@@ -814,8 +820,10 @@ export async function renewVehicleDocumentAs(db: Firestore, householdId: string,
       result,
     });
     ctx.hooks?.finalize(tx, { targetPath: vehicleRef.path, summary: plain({ result }) });
-    return result;
+    return { result, appliedAtMs: ctx.now.getTime() };
   });
+  if (outcome.result.status !== 'renewed') return outcome.result;
+  return { ...outcome.result, undoMs: undoRemainingMs(outcome.appliedAtMs, ctx.now, startedReal) };
 }
 
 /** Undoes a renewal within the Undo window: the field goes back only while it still holds the renewed date. */

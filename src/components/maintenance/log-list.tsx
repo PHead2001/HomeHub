@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { doneByLine, legacyReceiptHref, logDateLabel, shouldOfferAiSummary } from '@/lib/maintenance/display';
+import { storedSummaryOf } from '@/lib/maintenance/summary';
 import { cn } from '@/lib/utils';
 import { AttachmentPanel } from './attachment-panel';
 import { formatCurrency, getAttachmentsForTarget, getLogTitle, getLogType, getTargetName } from './page-model';
@@ -51,7 +52,8 @@ export function LogList({
   loadingSummaries: Record<string, boolean>;
   uploadingAttachmentTarget?: string | null;
   deletingAttachmentId?: string | null;
-  onSummarize: (log: MaintenanceLog) => void;
+  /** `regenerate`: a new summary even though the stored one is current (MA-11d). */
+  onSummarize: (log: MaintenanceLog, regenerate?: boolean) => void;
   onEdit: (log: MaintenanceLog) => void;
   onDelete: (log: MaintenanceLog) => void;
   onUploadAttachment: (targetType: MaintenanceAttachmentTargetType, targetId: string, category: MaintenanceAttachmentCategory, file: File) => void;
@@ -81,6 +83,10 @@ export function LogList({
         const doneBy = doneByLine(log);
         const receipt = legacyReceiptHref(log.receiptUrl);
         const panelId = `maintenance-log-files-${log.id}`;
+        // MA-11d: the summary stored on the log while its notes are unchanged, else this session's.
+        const stored = storedSummaryOf(log);
+        const summary = stored.state === 'current' ? stored.summary : summaries[log.id];
+        const staleSummary = !summary && stored.state === 'stale' ? stored.summary : null;
         return (
           <Card
             key={log.id}
@@ -140,13 +146,19 @@ export function LogList({
                 </a>
               )}
 
-              {summaries[log.id] && (
-                <div className="mt-4 rounded-md border border-primary/20 bg-primary/10 p-3">
+              {summary && (
+                <div className="mt-4 rounded-md border border-primary/20 bg-primary/10 p-3" data-testid="log-ai-summary">
                   <h4 className="mb-1 flex items-center gap-2 text-sm font-semibold text-primary">
                     <Sparkles className="h-4 w-4" />
                     AI Summary
                   </h4>
-                  <p className="text-sm">{summaries[log.id]}</p>
+                  <p className="text-sm">{summary}</p>
+                </div>
+              )}
+              {staleSummary && (
+                <div className="mt-4 rounded-md border border-dashed p-3 text-muted-foreground" data-testid="log-ai-summary-stale">
+                  <p className="text-xs font-medium">Earlier summary (the notes changed since):</p>
+                  <p className="text-sm">{staleSummary}</p>
                 </div>
               )}
 
@@ -155,11 +167,14 @@ export function LogList({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => onSummarize(log)}
+                    onClick={() => onSummarize(log, Boolean(summary))}
                     disabled={loadingSummaries[log.id]}
+                    aria-label={summary && !loadingSummaries[log.id] ? `Regenerate the AI summary of ${title}` : undefined}
                   >
                     {loadingSummaries[log.id] ? (
                       <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Generating...</>
+                    ) : summary ? (
+                      <><Sparkles className="mr-2 h-4 w-4" /> Regenerate</>
                     ) : (
                       <><Sparkles className="mr-2 h-4 w-4" /> Summarize with AI</>
                     )}

@@ -232,15 +232,15 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
     }
   });
 
-  // Needs the page wiring of UpdateMileageButton on the vehicle card/detail panel (owned by the
-  // page/cards change); remove fixme once it is wired.
-  test.fixme('MA-19: Update mileage from a vehicle with the lower-reading correction and Undo', async ({ page }, testInfo) => {
+  test('MA-19: Update mileage from a vehicle with the lower-reading correction and Undo', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     const suv = household.collection('vehicles').doc('family-suv');
     const before = (await suv.get()).data()!;
     try {
       await open(page, '/maintenance?vehicle=family-suv');
-      await page.getByRole('button', { name: /^Update mileage for / }).first().click();
+      // Under the vehicle card and in the detail panel (MA-19).
+      await expect(page.getByTestId('vehicle-card-wrap-family-suv').getByTestId('mileage-freshness')).toBeVisible();
+      await page.getByTestId('vehicle-mileage').getByRole('button', { name: /^Update mileage for / }).click();
       const dialog = page.getByTestId('update-mileage-dialog');
       await expect(dialog.getByLabel('Odometer (miles)')).toHaveValue(String(before.currentMileage));
       await dialog.getByLabel('Odometer (miles)').fill(String(before.currentMileage - 100));
@@ -249,7 +249,9 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
       await dialog.getByRole('button', { name: 'Save correction' }).click();
       await expect(dialog).toHaveCount(0);
       await expect.poll(async () => (await suv.get()).get('currentMileage')).toBe(before.currentMileage - 100);
-      await page.getByRole('button', { name: /^Undo the mileage update/ }).click();
+      // The toast's Undo (offered for what is left of the window, undoMs).
+      await expect(page.getByText('Mileage updated', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Undo', exact: true }).click();
       await expect.poll(async () => (await suv.get()).get('currentMileage')).toBe(before.currentMileage);
     } finally {
       await suv.update({ currentMileage: before.currentMileage, mileageUpdatedAt: before.mileageUpdatedAt ?? null });

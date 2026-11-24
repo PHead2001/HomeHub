@@ -21,7 +21,6 @@ import type { MarkDoneResult } from './reminder-list';
 import { formatDate, getScheduleCompletionName, trimOptional, type SaveNoticeState } from './page-model';
 import { useStableHandler } from './use-stable-handler';
 import { createPendingRequests, undoOfferMs } from '@/lib/maintenance/action-call';
-import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { commitStagedReceipts, savedLogIdOf } from './receipt-staging';
 
 /** An unanswered request kept for the next press: same op id, same call, same handling. */
@@ -202,10 +201,18 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
     try {
       await runOp(`renew:${vehicle.id}:${field}`, renew.opId, context => renewVehicleDocument({ ...context, renew }), (result) => {
         if (result.status === 'renewed') {
+          const title = `${label} renewed`;
+          const description = `${vehicle.nickname}'s ${label.toLowerCase()} now expires ${formatDate(result.expiration)}.`;
+          // Undo only for what is left of the window (a replayed or slow answer offers less, or none).
+          const offer = undoOfferMs(result.undoMs);
+          if (offer === null) {
+            toast({ title, description });
+            return;
+          }
           const handle = toast({
-            title: `${label} renewed`,
-            description: `${vehicle.nickname}'s ${label.toLowerCase()} now expires ${formatDate(result.expiration)}.`,
-            duration: UNDO_WINDOW_MS,
+            title,
+            description,
+            duration: offer,
             action: (
               <ToastAction altText={`Undo renewing the ${label.toLowerCase()}`} onClick={() => { handle.dismiss(); void undoRenewal(result.opId); }}>
                 Undo

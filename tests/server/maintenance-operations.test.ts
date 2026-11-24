@@ -426,7 +426,7 @@ describe('renewing a registration or inspection (MA-33a)', () => {
     await vehicles().doc('car').update({ registrationExpiration: '2026-03-20', inspectionExpiration: '2026-04-02' });
     const input = renew();
     const result = await renewVehicleDocumentAs(adminDb, HOUSE, input, ctx(SAM));
-    assert.deepEqual(result, { status: 'renewed', opId: input.opId, field: 'registrationExpiration', expiration: '2027-03-20', replay: false });
+    assert.deepEqual({ ...result, undoMs: undefined }, { status: 'renewed', opId: input.opId, field: 'registrationExpiration', expiration: '2027-03-20', replay: false, undoMs: undefined });
     const renewed = await car();
     assert.equal(renewed.registrationExpiration, '2027-03-20');
     assert.equal(renewed.inspectionExpiration, '2026-04-02', 'the other document is untouched');
@@ -447,6 +447,18 @@ describe('renewing a registration or inspection (MA-33a)', () => {
     assert.deepEqual(await undoVehicleRenewalAs(adminDb, HOUSE, { opId: input.opId }, ctx(SAM)), { status: 'undone', kept: [] });
     assert.equal((await car()).registrationExpiration, '2026-03-20');
     assert.deepEqual(await undoVehicleRenewalAs(adminDb, HOUSE, { opId: input.opId }, ctx(SAM)), { status: 'already_undone' });
+  });
+
+  test('a renewal carries what is left of the Undo window; a late replay carries none', async () => {
+    await vehicles().doc('car').update({ registrationExpiration: '2026-03-20' });
+    const input = renew();
+    const fresh = await renewVehicleDocumentAs(adminDb, HOUSE, input, ctx(SAM));
+    assert.ok(fresh.status === 'renewed');
+    assert.ok(typeof fresh.undoMs === 'number' && fresh.undoMs > 8000 && fresh.undoMs <= 10_000, `fresh undoMs ${fresh.undoMs}`);
+    // The same press retried 12 s later (the first answer was lost): the stored result, no Undo left.
+    const late = await renewVehicleDocumentAs(adminDb, HOUSE, input, ctx(SAM, new Date(NOW.getTime() + 12_000)));
+    assert.ok(late.status === 'renewed' && late.replay);
+    assert.equal(late.status === 'renewed' ? late.undoMs : -1, 0);
   });
 
   test('long expired or missing: one year from the household day', async () => {

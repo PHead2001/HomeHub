@@ -16,6 +16,7 @@ import { humanizeLabel } from './page-model';
 import type { HealthTargets, Vehicle } from './tab-types';
 import { useWideLayout } from './use-wide-layout';
 import { VehicleCard } from './vehicle-card';
+import { UpdateMileageButton } from './update-mileage';
 import { VehicleDetail, type VehicleDetailProps } from './vehicle-detail';
 
 type VehiclesTabProps = Omit<VehicleDetailProps, 'vehicle' | 'health' | 'style' | 'className'> & {
@@ -71,7 +72,7 @@ export const VehiclesTab = React.memo(function VehiclesTab(props: VehiclesTabPro
   const renderVehicleCard = (vehicle: Vehicle, inactive: boolean) => {
     const morph = sharedId('vehicle', vehicle.id);
     const selected = selectedVehicle?.id === vehicle.id;
-    return (
+    const card = (
       <VehicleCard
         vehicle={vehicle}
         photo={pickVehiclePhoto(props.attachments, vehicle.id)}
@@ -82,6 +83,14 @@ export const VehiclesTab = React.memo(function VehiclesTab(props: VehiclesTabPro
         style={wide ? morphStyle(detailMorph.morphName === morph && !selected ? morph : null) : undefined}
         onSelect={(event) => select(vehicle, event)}
       />
+    );
+    if (inactive) return card;
+    // MA-19: Update mileage and "last updated" sit under the card (a button cannot nest in the card's button).
+    return (
+      <div className="flex w-full min-w-0 flex-col gap-2" data-testid={`vehicle-card-wrap-${vehicle.id}`}>
+        {card}
+        <UpdateMileageButton vehicle={vehicle} today={props.today} showFreshness variant="ghost" className="px-1" />
+      </div>
     );
   };
 

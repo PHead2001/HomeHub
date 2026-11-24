@@ -17,6 +17,7 @@ import { DetailActions, missingCount, vehicleFields } from './detail-panel';
 import { DetailSection, LabelSection, ScheduleRow, useScrollToSchedule } from './detail-parts';
 import { HealthRing } from './health-ring';
 import { LogList } from './log-list';
+import { UpdateMileageButton } from './update-mileage';
 import { DetailGrid } from './page-parts';
 import { formatDate, getAttachmentsForTarget, type LogPreset } from './page-model';
 import type { LogListShared, MaintenanceLog, Vehicle } from './tab-types';
@@ -91,6 +92,11 @@ export const VehicleDetail = React.memo(function VehicleDetail({
       </CardHeader>
       <CardContent className="space-y-5">
         <DetailGrid fields={gridFields} />
+        {vehicle.status !== 'sold' && vehicle.status !== 'retired' && (
+          <DetailSection title="Mileage" testId="vehicle-mileage">
+            <UpdateMileageButton vehicle={vehicle} today={today} showFreshness />
+          </DetailSection>
+        )}
         {documents.length > 0 && (
           <DetailSection title="Registration and inspection" testId="vehicle-documents">
             {canEdit && <p className="text-sm text-muted-foreground">Renewed moves the expiry date one year on. You can undo it for 10 seconds.</p>}

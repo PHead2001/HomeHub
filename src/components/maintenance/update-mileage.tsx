@@ -17,7 +17,7 @@ import { useToast } from '@/hooks/use-toast';
 import { mileageFreshness } from '@/lib/maintenance/mileage-freshness';
 import { parseMileageInput } from '@/lib/maintenance/mileage-freshness';
 import { mileageWarning } from '@/lib/maintenance/operations';
-import { UNDO_WINDOW_MS } from '@/lib/undo-window';
+import { undoOfferMs } from '@/lib/maintenance/action-call';
 import { cn } from '@/lib/utils';
 import type { Vehicle } from '@/lib/types';
 import {
@@ -172,10 +172,18 @@ function UpdateMileageBody({ vehicle, today, busyRef, close, onOpenChange }: {
         return;
       }
       onOpenChange(false);
+      const title = 'Mileage updated';
+      const description = `${vehicle.nickname} is at ${mi(result.currentMileage)}.`;
+      // Undo only for what is left of the window, as for completions (undoMs from the server).
+      const offer = undoOfferMs(result.undoMs);
+      if (offer === null) {
+        toast({ title, description });
+        return;
+      }
       const handle = toast({
-        title: 'Mileage updated',
-        description: `${vehicle.nickname} is at ${mi(result.currentMileage)}.`,
-        duration: UNDO_WINDOW_MS,
+        title,
+        description,
+        duration: offer,
         action: (
           <ToastAction altText={`Undo the mileage update for ${vehicle.nickname}`} onClick={() => { handle.dismiss(); void undo(result.opId); }}>Undo</ToastAction>
         ),

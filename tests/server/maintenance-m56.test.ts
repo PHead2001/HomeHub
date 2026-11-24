@@ -153,11 +153,21 @@ describe('Update mileage (MA-19) and its Undo', () => {
   test('a higher reading is written with today; a replay writes nothing more', async () => {
     const input = update(48750);
     const first = await updateVehicleMileageAs(adminDb, HOUSE, input, ctx(SAM));
-    assert.deepEqual({ ...first, opId: undefined }, { status: 'updated', opId: undefined, currentMileage: 48750, mileageUpdatedAt: '2026-11-24', replay: false });
+    assert.deepEqual({ ...first, opId: undefined, undoMs: undefined }, { status: 'updated', opId: undefined, currentMileage: 48750, mileageUpdatedAt: '2026-11-24', replay: false, undoMs: undefined });
     const again = await updateVehicleMileageAs(adminDb, HOUSE, input, ctx(SAM));
     assert.ok(again.status === 'updated' && again.replay);
     assert.equal((await car()).currentMileage, 48750);
     await assert.rejects(updateVehicleMileageAs(adminDb, HOUSE, input, ctx(ALEX)), (error: unknown) => error instanceof MaintenanceOperationError && error.code === 'conflict');
+  });
+
+  test('a result carries what is left of the Undo window; a late replay carries none', async () => {
+    const input = update(49100);
+    const fresh = await updateVehicleMileageAs(adminDb, HOUSE, input, ctx(SAM));
+    assert.ok(fresh.status === 'updated');
+    assert.ok(typeof fresh.undoMs === 'number' && fresh.undoMs > 8000 && fresh.undoMs <= 10_000, `fresh undoMs ${fresh.undoMs}`);
+    const late = await updateVehicleMileageAs(adminDb, HOUSE, input, ctx(SAM, new Date(NOW.getTime() + 12_000)));
+    assert.ok(late.status === 'updated' && late.replay);
+    assert.equal(late.status === 'updated' ? late.undoMs : -1, 0);
   });
 
   test('a lower reading needs the explicit correction', async () => {
