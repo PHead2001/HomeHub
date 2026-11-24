@@ -692,7 +692,7 @@ function TabletFrame(props: {
     const policy = policyOf(request.capability);
     const sendable = canSend(request.capability);
     if (policy.levelClass === 'not_on_tablets' || policy.levelClass === 'never' || (!request.execute && !sendable)) {
-      // Not offered on tablets (what the tablet can't send yet, e.g. maintenance until M8b; pet create and photos too), as on the server.
+      // Not offered on tablets (shopping, pet create and photos, maintenance attachments, renewals and Update mileage, ...), as on the server.
       message('not_on_tablets');
       return { ok: false };
     }

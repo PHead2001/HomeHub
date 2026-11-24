@@ -54,8 +54,8 @@ export type DeviceMaintenanceOptions = { clock?: () => Date; clientAddress?: str
 
 /** A face action's request (ids, a cycle, a few fields of text): the gate's 16 KB. */
 const FACE_MAX_BYTES = DEVICE_REQUEST_MAX_BYTES;
-/** Editing schedules carries up to 100 schedules twice (what the form opened with and its values), as the personal action allows. */
-const SCHEDULES_MAX_BYTES = 96 * 1024;
+/** Editing schedules carries up to 100 schedules twice (what the form opened with and its values): the personal edit budget (2 x 96 KB + 16 KB). */
+const SCHEDULES_MAX_BYTES = 2 * 96 * 1024 + 16 * 1024;
 
 const sized = (input: unknown, max: number) => {
   if (!input || typeof input !== 'object' || exceedsPayloadBudget(input, max)) throw new DeviceActionError('invalid_input');

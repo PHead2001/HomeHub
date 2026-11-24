@@ -18,6 +18,10 @@ export const UNDO_CAPABILITY_OF: Partial<Record<DeviceCapability, DeviceCapabili
   'pets.dose.give.old': 'pets.dose.undo',
   'pets.note.add': 'pets.note.undo',
   'pets.weight.add': 'pets.weight.undo',
+  // Maintenance (M8b): Done, Log service and Snooze.
+  'maintenance.complete': 'maintenance.complete.undo',
+  'maintenance.log': 'maintenance.log.undo',
+  'maintenance.snooze': 'maintenance.snooze.undo',
 };
 
 /**
@@ -32,7 +36,50 @@ export const SENDABLE_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<Devi
   'pets.note.pin', 'pets.note.unpin', 'pets.note.editPinned', 'pets.note.delete', 'pets.log.delete', 'pets.log.correctTime',
   'pets.course.finish', 'pets.course.resume', 'pets.course.edit', 'pets.medication.confirmLegacy',
   'pets.slots.edit', 'pets.profile.edit', 'pets.pet.delete',
+  // Maintenance (M8b): face actions with their Undo, and the PIN-level schedule edit and deletes.
+  'maintenance.complete', 'maintenance.complete.undo', 'maintenance.log', 'maintenance.log.undo', 'maintenance.snooze', 'maintenance.snooze.undo',
+  'maintenance.editSchedules', 'maintenance.log.delete', 'maintenance.record.delete',
 ]);
+
+/** The PIN-level maintenance actions (M8a): no Undo of their own. */
+export const MAINTENANCE_PIN_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>([
+  'maintenance.editSchedules', 'maintenance.log.delete', 'maintenance.record.delete',
+]);
+
+/** Why a maintenance completion was refused (the personal dialog's meaning, in tablet words). */
+export const MAINTENANCE_REFUSAL_COPY: Record<string, string> = {
+  invalid_date: 'That date is not valid.',
+  future_date: 'Pick a day that has already come.',
+  invalid_mileage: 'That mileage is not valid.',
+  mileage_required: 'Enter the mileage to mark this done.',
+  next_due_required: 'This needs a next due date. Set one on a phone.',
+  invalid_next_due: 'That next due date is not valid.',
+  next_due_mileage_low: 'The next due mileage must be above the reading.',
+  not_snoozable: "This can't be snoozed.",
+};
+
+/** Plain words for a maintenance answer that changed nothing (also the queue's drop notice). */
+const maintenanceNoop = (result: Record<string, unknown>): string => {
+  switch (result.status) {
+    case 'already_done': {
+      const by = publicDisplayName(str(result.byName), '');
+      return by ? `Already done by ${by}.` : 'Already done.';
+    }
+    case 'changed':
+      return 'This changed since it was shown. The latest is shown now.';
+    case 'gone':
+      return 'That was removed meanwhile.';
+    case 'refused':
+      return MAINTENANCE_REFUSAL_COPY[str(result.reason)] ?? "Couldn't save. Try again.";
+    case 'too_many_schedules':
+      return 'A record can have at most 100 maintenance items. Remove one on a phone first.';
+    default:
+      return "Couldn't save. Try again.";
+  }
+};
+
+/** The maintenance Undo answers that leave nothing to do (`already_undone`: the server's word for "already"). */
+const MAINTENANCE_UNDONE = ['undone', 'already_undone', 'not_applied'];
 
 const DOSE_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>(['pets.dose.give', 'pets.dose.give.old']);
 export const isDoseCapability = (capability: DeviceCapability): boolean => DOSE_CAPABILITIES.has(capability);
@@ -187,6 +234,20 @@ export function choreAnswerMeaning(capability: DeviceCapability, data: unknown, 
     if (value.status === 'already') return { undoable: false, notice: true, message: 'Nothing to change.' };
     return { undoable: false, notice: true, message: PET_PIN_REFUSAL_COPY[str(value.reason)] ?? "Couldn't save. Try again." };
   }
+  if (capability === 'maintenance.complete' || capability === 'maintenance.log' || capability === 'maintenance.snooze') {
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'completed') return { undoable: true, message: `${label}: done.` };
+    if (result.status === 'saved') return { undoable: true, message: `${label}: logged.` };
+    if (result.status === 'snoozed') return { undoable: true, message: `${label}: snoozed a week.` };
+    return { undoable: false, notice: true, message: maintenanceNoop(result) };
+  }
+  if (MAINTENANCE_PIN_CAPABILITIES.has(capability)) {
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'saved' || result.status === 'deleted') return { undoable: false, message: `${label}.` };
+    if (result.status === 'finishing') return { undoable: false, message: `${label}. Its files are still being removed.` };
+    if (result.status === 'already') return { undoable: false, notice: true, message: 'That was removed meanwhile.' };
+    return { undoable: false, notice: true, message: maintenanceNoop(result) };
+  }
   if (capability === 'chores.complete') {
     const outcome = (value.outcome ?? {}) as Record<string, unknown>;
     if (outcome.status === 'completed') return { undoable: true, message: `${label}: done.` };
@@ -250,6 +311,16 @@ export function queuedSendResult(capability: DeviceCapability, answer: { ok: tru
   if (capability === 'pets.note.add' || capability === 'pets.weight.add') {
     if (value.status === 'added') return { ok: true };
     return { ok: false, code: 'invalid_input', reason: capability === 'pets.note.add' ? 'that note could not be saved.' : 'that weight could not be saved.' };
+  }
+  if (capability === 'maintenance.complete' || capability === 'maintenance.log' || capability === 'maintenance.snooze') {
+    // A queued Done or Snooze whose cycle moved (`changed`), done elsewhere, or a record gone: dropped with a notice that says why.
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'completed' || result.status === 'saved' || result.status === 'snoozed') return { ok: true };
+    const why = maintenanceNoop(result);
+    return { ok: false, code: result.status === 'already_done' ? 'conflict' : 'invalid_input', reason: `${why.charAt(0).toLowerCase()}${why.slice(1)}` };
+  }
+  if (capability === 'maintenance.complete.undo' || capability === 'maintenance.log.undo' || capability === 'maintenance.snooze.undo') {
+    return MAINTENANCE_UNDONE.includes(str(value.status)) ? { ok: true } : { ok: false, code: 'changed_since' };
   }
   if (capability === 'chores.complete.undo' || capability === 'chores.take.undo' || capability === 'pets.feed.undo' || capability === 'pets.care.undo'
     || capability === 'pets.dose.undo' || capability === 'pets.note.undo' || capability === 'pets.weight.undo') {
