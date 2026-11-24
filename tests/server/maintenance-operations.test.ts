@@ -261,7 +261,7 @@ describe('snooze', () => {
     assert.ok(result.status === 'snoozed');
     assert.equal(result.nextDueDate, '2026-03-12');
     const snoozed = await filterOf();
-    assert.deepEqual({ next: snoozed.nextDueDate, until: snoozed.snoozedUntil, name: snoozed.scheduleName }, { next: '2026-03-12', until: '2026-03-12', name: 'Replace filter' });
+    assert.deepEqual({ next: snoozed.nextDueDate, until: snoozed.snoozedUntil, from: snoozed.snoozedFrom, name: snoozed.scheduleName }, { next: '2026-03-12', until: '2026-03-12', from: '2026-03-05', name: 'Replace filter' });
     // Snoozing the same cycle again (a stale card) is "changed".
     assert.deepEqual(await snoozeMaintenanceScheduleAs(adminDb, HOUSE, { opId: randomUUID(), ownerType: 'home_asset', ownerId: 'hvac', scheduleId: 'filter', seen }, ctx(SAM)), { status: 'changed' });
     const undo = await undoMaintenanceSnoozeAs(adminDb, HOUSE, { opId }, ctx(SAM));
@@ -269,6 +269,24 @@ describe('snooze', () => {
     const back = await filterOf();
     assert.equal(back.nextDueDate, '2026-03-05');
     assert.equal('snoozedUntil' in back, false);
+    assert.equal('snoozedFrom' in back, false);
+  });
+
+  test('completing a snoozed schedule removes snoozedUntil and snoozedFrom; an unrelated edit keeps them', async () => {
+    const snoozedFilter = { ...FILTER, nextDueDate: '2026-03-08', snoozedUntil: '2026-03-08', snoozedFrom: '2026-03-01' };
+    await assets().doc('hvac').update({ schedules: [snoozedFilter, COILS] });
+    const base = { ...(await asset()), schedules: [snoozedFilter, { ...COILS, id: 'legacy-1-clean-coils' }] };
+    await saveHomeAssetAs(adminDb, HOUSE, { opId: randomUUID(), id: 'hvac', base, values: { ...base, name: 'Main HVAC' } }, ctx(SAM));
+    assert.deepEqual({ until: (await filterOf()).snoozedUntil, from: (await filterOf()).snoozedFrom }, { until: '2026-03-08', from: '2026-03-01' });
+    const done = await completeMaintenanceScheduleAs(adminDb, HOUSE, complete({ seen: { nextDueDate: '2026-03-08', nextDueMileage: null } }), ctx(SAM));
+    assert.ok(done.status === 'completed');
+    const completed = await filterOf();
+    assert.equal('snoozedUntil' in completed, false);
+    assert.equal('snoozedFrom' in completed, false);
+    const log = (await logs().doc(done.logId).get()).data()!;
+    assert.equal(log.completion.before.snoozedFrom, '2026-03-01');
+    assert.equal((await undoMaintenanceCompletionAs(adminDb, HOUSE, { opId: done.opId }, ctx(SAM))).status, 'undone');
+    assert.equal((await filterOf()).snoozedFrom, '2026-03-01');
   });
 
   test('a mileage-due service cannot be snoozed', async () => {

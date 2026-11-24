@@ -126,6 +126,7 @@ export type AssetScheduleForm = {
   nextDueDate: string;
   /** Not editable: kept so saving unrelated edits does not cancel a snooze. */
   snoozedUntil: string;
+  snoozedFrom: string;
 };
 
 export type VehicleScheduleForm = {
@@ -140,6 +141,7 @@ export type VehicleScheduleForm = {
   nextDueDate: string;
   /** Not editable: kept so saving unrelated edits does not cancel a snooze. */
   snoozedUntil: string;
+  snoozedFrom: string;
 };
 
 export const emptyAssetForm: AssetFormValues = {
@@ -214,6 +216,7 @@ export const assetScheduleToForm = (schedule?: HomeAssetSchedule, index = -1): A
   lastCompletedDate: schedule?.lastCompletedDate || '',
   nextDueDate: schedule?.nextDueDate || '',
   snoozedUntil: schedule?.snoozedUntil || '',
+  snoozedFrom: schedule?.snoozedFrom || '',
 });
 
 export const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule, index = -1): VehicleScheduleForm => ({
@@ -227,6 +230,7 @@ export const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule, index =
   nextDueMileage: schedule?.nextDueMileage?.toString() || '',
   nextDueDate: schedule?.nextDueDate || '',
   snoozedUntil: schedule?.snoozedUntil || '',
+  snoozedFrom: schedule?.snoozedFrom || '',
 });
 
 export const toNumber = (value?: string) => {
@@ -286,6 +290,7 @@ export const assetValuesOf = (values: AssetFormValues, schedules: AssetScheduleF
     // Carried through unchanged (never sent as a change): it only applies while it
     // equals nextDueDate, so editing the due date ends the snooze on its own.
     snoozedUntil: trimOptional(schedule.snoozedUntil),
+    snoozedFrom: trimOptional(schedule.snoozedFrom),
   })),
 });
 
@@ -316,6 +321,7 @@ export const vehicleValuesOf = (values: VehicleFormValues, schedules: VehicleSch
     nextDueMileage: toNumber(schedule.nextDueMileage),
     nextDueDate: trimOptional(schedule.nextDueDate),
     snoozedUntil: trimOptional(schedule.snoozedUntil),
+    snoozedFrom: trimOptional(schedule.snoozedFrom),
   })),
 });
 

@@ -581,7 +581,7 @@ export async function snoozeMaintenanceScheduleAs(
   return { ...outcome.result, cleanup: await runCleanup(db, householdId, outcome.cleanup, ctx, options, outcome.name ?? publicDisplayName(ctx.actor.name)) };
 }
 
-/** Undoes a snooze (compare-and-revert of nextDueDate and snoozedUntil). */
+/** Undoes a snooze (compare-and-revert of nextDueDate, snoozedUntil and snoozedFrom). */
 export async function undoMaintenanceSnoozeAs(db: Firestore, householdId: string, input: { opId: unknown }, ctx: OperationContext): Promise<UndoResult> {
   const house = householdRef(db, householdId);
   const opId = opIdOf(recordOf(input).opId);
@@ -701,6 +701,7 @@ const ASSET_SCHEDULE_SPECS: Record<string, FieldSpec> = {
   lastCompletedDate: { kind: 'day' },
   nextDueDate: { kind: 'day' },
   snoozedUntil: { kind: 'day' },
+  snoozedFrom: { kind: 'day' },
 };
 const VEHICLE_SCHEDULE_SPECS: Record<string, FieldSpec> = {
   mode: MODE,
@@ -712,6 +713,7 @@ const VEHICLE_SCHEDULE_SPECS: Record<string, FieldSpec> = {
   nextDueMileage: { kind: 'number', min: 0, max: 2_000_000, integer: true },
   nextDueDate: { kind: 'day' },
   snoozedUntil: { kind: 'day' },
+  snoozedFrom: { kind: 'day' },
 };
 
 const LOG_SPECS: Record<string, FieldSpec> = {

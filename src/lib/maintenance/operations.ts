@@ -62,12 +62,12 @@ export const MILEAGE_JUMP_WARNING = 20_000;
 
 /** Schedule fields a completion may change. */
 export const COMPLETION_SCHEDULE_FIELDS = [
-  'nextDueDate', 'nextDueMileage', 'lastCompletedDate', 'lastCompletedMileage', 'snoozedUntil', 'lastCompletion',
+  'nextDueDate', 'nextDueMileage', 'lastCompletedDate', 'lastCompletedMileage', 'snoozedUntil', 'snoozedFrom', 'lastCompletion',
 ] as const;
 /** Vehicle fields a completion (or a vehicle log) may change. */
 export const COMPLETION_VEHICLE_FIELDS = ['currentMileage', 'mileageUpdatedAt'] as const;
 /** Schedule fields a snooze changes. */
-export const SNOOZE_FIELDS = ['nextDueDate', 'snoozedUntil'] as const;
+export const SNOOZE_FIELDS = ['nextDueDate', 'snoozedUntil', 'snoozedFrom'] as const;
 
 export const scheduleListField = (ownerType: MaintenanceOwnerType) =>
   ownerType === 'home_asset' ? 'schedules' : 'serviceSchedules';
@@ -295,6 +295,7 @@ export const planCompletion = (input: {
     nextDueMileage: next.nextDueMileage,
     // Completing always ends a snooze, even if the new cycle lands on the snoozed date.
     snoozedUntil: null,
+    snoozedFrom: null,
     lastCompletion,
   };
   // Vehicle services keep the reading they were done at (none: removed, as before M1).
@@ -424,12 +425,17 @@ export const planSnooze = (input: {
   const reminder = single.find(entry => entry.group === 'scheduled' || entry.group === 'vehicle_service');
   if (!reminder || !canSnoozeReminder(reminder)) return { kind: 'refused', reason: 'not_snoozable' };
   const nextDueDate = snoozedDueDate(typeof schedule.nextDueDate === 'string' ? schedule.nextDueDate : undefined, today);
-  const nextSchedule = applyPatch(schedule, { nextDueDate, snoozedUntil: nextDueDate });
+  // `snoozedFrom` (M3): the due date before the snooze, so a completion while it applies steps
+  // from the real due date. A snooze still in effect keeps the date it was first snoozed from.
+  const current = typeof schedule.nextDueDate === 'string' ? schedule.nextDueDate : null;
+  const stillSnoozed = typeof schedule.snoozedFrom === 'string' && schedule.snoozedUntil === schedule.nextDueDate;
+  const snoozedFrom = stillSnoozed ? schedule.snoozedFrom : current;
+  const nextSchedule = applyPatch(schedule, { nextDueDate, snoozedUntil: nextDueDate, snoozedFrom });
   const diff = changes(schedule, nextSchedule, SNOOZE_FIELDS);
   return { kind: 'apply', schedule: nextSchedule, before: diff.before, after: diff.after, nextDueDate };
 };
 
-/** Undo of a snooze: compare-and-revert of nextDueDate and snoozedUntil. */
+/** Undo of a snooze: compare-and-revert of nextDueDate, snoozedUntil and snoozedFrom. */
 export const planUndoSnooze = (schedule: StoredSchedule, before: FieldValues, after: FieldValues) => {
   const result = compareAndRevert(schedule, pick(before, SNOOZE_FIELDS), pick(after, SNOOZE_FIELDS));
   return { schedule: applyPatch(schedule, result.patch), kept: result.kept };
@@ -508,11 +514,11 @@ export const planRecordEdit = (input: {
 
 /** Editable schedule fields. */
 export const ASSET_SCHEDULE_FIELDS = [
-  'mode', 'scheduleName', 'frequencyType', 'intervalValue', 'lastCompletedDate', 'nextDueDate', 'snoozedUntil',
+  'mode', 'scheduleName', 'frequencyType', 'intervalValue', 'lastCompletedDate', 'nextDueDate', 'snoozedUntil', 'snoozedFrom',
 ] as const;
 export const VEHICLE_SCHEDULE_FIELDS = [
   'mode', 'serviceName', 'intervalMiles', 'intervalMonths', 'lastCompletedMileage', 'lastCompletedDate',
-  'nextDueMileage', 'nextDueDate', 'snoozedUntil',
+  'nextDueMileage', 'nextDueDate', 'snoozedUntil', 'snoozedFrom',
 ] as const;
 
 /** A short mileage warning for the UI, or null (MA-6d). */

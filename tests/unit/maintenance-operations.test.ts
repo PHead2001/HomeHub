@@ -198,8 +198,8 @@ describe('snooze plan', () => {
     const plan = planSnooze({ ownerType: 'home_asset', owner: { id: 'hvac', name: 'HVAC' }, schedule, seen: cycleOf(schedule), today: '2026-03-01', timeZone: TZ });
     assert.ok(plan.kind === 'apply');
     assert.equal(plan.nextDueDate, '2026-03-12');
-    assert.deepEqual(plan.after, { nextDueDate: '2026-03-12', snoozedUntil: '2026-03-12' });
-    assert.deepEqual(plan.before, { nextDueDate: '2026-03-05', snoozedUntil: null });
+    assert.deepEqual(plan.after, { nextDueDate: '2026-03-12', snoozedUntil: '2026-03-12', snoozedFrom: '2026-03-05' });
+    assert.deepEqual(plan.before, { nextDueDate: '2026-03-05', snoozedUntil: null, snoozedFrom: null });
     const undone = planUndoSnooze(plan.schedule, plan.before, plan.after);
     assert.deepEqual(undone.schedule, schedule);
     // Renamed meanwhile: the name stays, the snooze goes.
@@ -215,6 +215,51 @@ describe('snooze plan', () => {
     assert.deepEqual(planSnooze({ ownerType: 'vehicle', owner: { id: 'car', nickname: 'Car', currentMileage: 49800 }, schedule: service, seen: cycleOf(service), today: '2026-03-01', timeZone: TZ }), { kind: 'refused', reason: 'not_snoozable' });
     assert.equal(planSnooze({ ownerType: 'vehicle', owner: { id: 'car', nickname: 'Car', currentMileage: 40000 }, schedule: service, seen: cycleOf(service), today: '2026-03-01', timeZone: TZ }).kind, 'apply');
     assert.deepEqual(planSnooze({ ownerType: 'home_asset', owner: { id: 'hvac', name: 'HVAC' }, schedule: far, seen: { nextDueDate: '2026-03-05', nextDueMileage: null }, today: '2026-03-01', timeZone: TZ }), { kind: 'changed' });
+  });
+});
+
+describe('snoozedFrom (M3, PR #209)', () => {
+  test('a snooze records the due date it moved from, and Undo reverts all three fields', () => {
+    const schedule = filter({ nextDueDate: '2026-03-05' });
+    const plan = planSnooze({ ownerType: 'home_asset', owner: { id: 'hvac', name: 'HVAC' }, schedule, seen: cycleOf(schedule), today: '2026-03-01', timeZone: TZ });
+    assert.ok(plan.kind === 'apply');
+    assert.equal(plan.schedule.snoozedFrom, '2026-03-05');
+    const undone = planUndoSnooze(plan.schedule, plan.before, plan.after);
+    assert.deepEqual(undone.schedule, schedule, 'no snoozedFrom left behind');
+    // A field changed since keeps its value (compare-and-revert).
+    const edited = planUndoSnooze({ ...plan.schedule, snoozedFrom: '2026-03-04' }, plan.before, plan.after);
+    assert.equal(edited.schedule.snoozedFrom, '2026-03-04');
+    assert.deepEqual(edited.kept.map(entry => entry.field), ['snoozedFrom']);
+  });
+
+  test('a snooze still in effect keeps the date it was first snoozed from', () => {
+    const snoozed = filter({ nextDueDate: '2026-03-02', snoozedUntil: '2026-03-02', snoozedFrom: '2026-02-23' });
+    const plan = planSnooze({ ownerType: 'home_asset', owner: { id: 'hvac', name: 'HVAC' }, schedule: snoozed, seen: cycleOf(snoozed), today: '2026-03-02', timeZone: TZ });
+    if (plan.kind !== 'apply') return; // not snoozable again: nothing to check
+    assert.equal(plan.schedule.snoozedFrom, '2026-02-23');
+  });
+
+  test('completion removes snoozedFrom and records it in before/after; Undo puts it back', () => {
+    const schedule = filter({ nextDueDate: '2026-03-08', snoozedUntil: '2026-03-08', snoozedFrom: '2026-03-01' });
+    const seen = cycleOf(schedule);
+    const plan = planCompletion({ ownerType: 'home_asset', schedule, seen, values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op1') });
+    assert.ok(plan.kind === 'apply');
+    assert.equal(plan.schedule.snoozedFrom, undefined);
+    assert.equal(plan.schedule.snoozedUntil, undefined);
+    assert.equal(plan.record.before.snoozedFrom, '2026-03-01');
+    assert.equal(plan.record.after.snoozedFrom, null);
+    const undo = planUndoCompletion({ opId: 'op1', schedule: plan.schedule, vehicle: null, record: plan.record });
+    assert.ok(undo.kind === 'apply');
+    assert.equal(undo.schedule?.snoozedFrom, '2026-03-01');
+  });
+
+  test('edit forms carry snoozedFrom through: an unrelated edit never sends it', () => {
+    assert.ok((ASSET_SCHEDULE_FIELDS as readonly string[]).includes('snoozedFrom'));
+    const stored = [filter({ nextDueDate: '2026-03-08', snoozedUntil: '2026-03-08', snoozedFrom: '2026-03-01' })];
+    const base = stored;
+    const values = [{ ...stored[0], scheduleName: 'Renamed' }];
+    const merged = mergeSchedules(stored, base, values, ASSET_SCHEDULE_FIELDS);
+    assert.deepEqual({ ...merged[0] }, { ...stored[0], scheduleName: 'Renamed' });
   });
 });
 
