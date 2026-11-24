@@ -8,8 +8,9 @@
  *
  * Reusable by any module: `householdToday(tz, now)` is pure, `useHouseholdToday(tz)`
  * keeps it current with a timer to the next household midnight and re-checks when
- * the page becomes visible again, is restored from the back-forward cache
- * (`pageshow`) or comes back online (a tablet waking from sleep or a laptop lid).
+ * the page becomes visible again or its window regains focus, is restored from the
+ * back-forward cache (`pageshow`) or comes back online (a tablet waking from sleep or a
+ * laptop lid).
  */
 // A namespace import keeps this file importable from server code (server actions need the
 // same day; the react-server build has no useState), while the hook runs only on the client.
@@ -36,7 +37,7 @@ export function msUntilHouseholdMidnight(timeZone: string | null | undefined, no
 
 type DayEnvironment = {
   now: () => Date;
-  /** Receives `pageshow` and `online`. */
+  /** Receives `pageshow`, `focus` and `online`. */
   window?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
   /** Receives `visibilitychange`; `visibilityState` is read on each event. */
   document?: Pick<EventTarget, 'addEventListener' | 'removeEventListener'> & { visibilityState?: string };
@@ -50,8 +51,8 @@ const browserEnvironment = (): DayEnvironment => ({
 
 /**
  * Calls `onDay` whenever the household day changes: at the next household midnight
- * (a timer, capped at an hour), and on `visibilitychange` to visible, `pageshow` and
- * `online`. Returns a stop function. Framework-free, so it is unit tested with fake timers.
+ * (a timer, capped at an hour), and on `visibilitychange` to visible, `pageshow`, `focus`
+ * and `online`. Returns a stop function. Framework-free, so it is unit tested with fake timers.
  */
 export function watchHouseholdDay(
   timeZone: string | null | undefined,
@@ -83,12 +84,14 @@ export function watchHouseholdDay(
   schedule();
   environment.document?.addEventListener('visibilitychange', onVisibility);
   environment.window?.addEventListener('pageshow', check);
+  environment.window?.addEventListener('focus', check);
   environment.window?.addEventListener('online', check);
   return () => {
     stopped = true;
     clearTimeout(timer);
     environment.document?.removeEventListener('visibilitychange', onVisibility);
     environment.window?.removeEventListener('pageshow', check);
+    environment.window?.removeEventListener('focus', check);
     environment.window?.removeEventListener('online', check);
   };
 }

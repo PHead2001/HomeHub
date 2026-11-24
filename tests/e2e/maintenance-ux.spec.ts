@@ -204,6 +204,129 @@ test.describe('maintenance center UX', () => {
     }
   });
 
+  test('MA-2: changes made elsewhere appear on the open page without a reload', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=logs');
+    await expect(page.getByTestId('maintenance-log-oil-change')).toBeVisible();
+    // Written with the Admin SDK, as another device (or quick add) would: the page has no reload or refetch.
+    const logRef = household.collection('maintenance').doc('live-update-e2e');
+    try {
+      await logRef.set({
+        householdId, targetType: 'home_asset', assetId: 'hvac-main', title: 'Live update E2E', item: 'Live update E2E',
+        date: '2026-07-30', type: 'routine', createdAt: '2026-07-30T12:00:00.000Z', updatedAt: '2026-07-30T12:00:00.000Z',
+      });
+      const liveLog = page.getByTestId('maintenance-log-live-update-e2e');
+      await expect(liveLog).toContainText('Live update E2E');
+      await logRef.update({ title: 'Live update E2E edited' });
+      await expect(liveLog).toContainText('Live update E2E edited');
+
+      // A schedule changed elsewhere moves its reminder.
+      await page.getByRole('tab', { name: 'Reminders' }).click();
+      const overdueDishwasher = page.getByTestId('reminders-overdue').getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' });
+      await expect(overdueDishwasher).toHaveCount(0);
+      await household.collection('home-assets').doc('dishwasher').update({
+        schedules: [{ ...DISHWASHER_SCHEDULES[0], nextDueDate: '2026-07-01' }],
+      });
+      await expect(overdueDishwasher).toHaveCount(1);
+
+      await logRef.delete();
+      await page.getByRole('tab', { name: 'Logs' }).click();
+      await expect(page.getByTestId('maintenance-log-live-update-e2e')).toHaveCount(0);
+      await expect(page.getByTestId('maintenance-log-oil-change')).toBeVisible();
+    } finally {
+      await logRef.delete();
+    }
+  });
+
+  test('MA-1: the day rolls over at the household midnight on an open page', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // One minute before midnight on Aug 1 in the household's zone (the seed household has none,
+    // so the server default, America/Chicago: midnight is 05:00 UTC). The time is fixed, not
+    // installed, so the page's own timers and animations keep running in real time. The timer
+    // to the next household midnight is covered by tests/unit/household-day.test.ts; here the
+    // page is shown again after midnight (visibilitychange), the other way "today" is re-read.
+    await page.clock.setFixedTime(new Date('2026-08-02T04:59:00.000Z'));
+    await page.goto('/maintenance?tab=reminders');
+    await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
+    // The HVAC unit's own filter: other specs in the same shard can add another
+    // "Replace air filter" schedule to the seeded household.
+    const filterIn = (testId: string) => page.getByTestId(testId).getByRole('listitem')
+      .filter({ hasText: 'Replace air filter' }).filter({ hasText: 'Main HVAC System' });
+    // The HVAC filter is due Aug 1: due today, so in Due Soon.
+    await expect(filterIn('reminders-due-soon')).toHaveCount(1);
+    await expect(filterIn('reminders-overdue')).toHaveCount(0);
+
+    await page.clock.setFixedTime(new Date('2026-08-02T05:01:00.000Z'));
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    // Aug 2 in the household: overdue, without a reload or any data change.
+    await expect(filterIn('reminders-overdue')).toHaveCount(1);
+    await expect(filterIn('reminders-due-soon')).toHaveCount(0);
+  });
+
+  test('M1: Mark done offers Undo for 10 s, which puts the schedule back and removes the log', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=reminders');
+    const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
+    await filter.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
+    await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
+    const hvac = household.collection('home-assets').doc('hvac-main');
+    await expect.poll(async () => (await hvac.get()).get('schedules')?.[0]?.nextDueDate).toBe('2026-11-01');
+    const completion = (await household.collection('maintenance').where('title', '==', 'Replace air filter').where('date', '==', '2026-08-01').get()).docs;
+    expect(completion).toHaveLength(1);
+    // The server records who did it (never an email) and the completion it made.
+    expect(completion[0].get('doneByUid')).toBeTruthy();
+    expect(String(completion[0].get('doneByName'))).not.toContain('@');
+    expect(completion[0].get('completion')).toMatchObject({ scheduleId: 'asset-filter-e2e', cycle: { nextDueDate: '2026-08-01', nextDueMileage: null } });
+
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.getByText('Undone', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await hvac.get()).get('schedules')?.[0]).toMatchObject({ nextDueDate: '2026-08-01', lastCompletedDate: '2026-05-01' });
+    expect((await hvac.get()).get('schedules')?.[0]?.lastCompletion).toBeUndefined();
+    await expect.poll(async () => (await household.collection('maintenance').where('title', '==', 'Replace air filter').where('date', '==', '2026-08-01').get()).size)
+      .toBe(0);
+    // The reminder is back, unchecked, with its actions.
+    await expect(page.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' })).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('M1: Mark done on a service due by mileage asks for the odometer first', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=reminders');
+    const tires = page.getByRole('listitem').filter({ hasText: 'Tire rotation' }).first();
+    const check = tires.getByRole('checkbox', { name: 'Mark done: Tire rotation for Family SUV' });
+    await check.click();
+    const dialog = page.getByRole('dialog', { name: 'Confirm mileage' });
+    await expect(dialog).toBeVisible();
+    // Not drawn as done before the reading is confirmed. The open dialog hides the
+    // page behind it from role queries, so the check is found by its label.
+    // (The service can be listed twice, by status and by kind, until MA-13.)
+    await expect(page.locator('[role="checkbox"][aria-label="Mark done: Tire rotation for Family SUV"][aria-checked="false"]').first()).toBeAttached();
+    await expect(page.locator('[role="checkbox"][aria-label="Mark done: Tire rotation for Family SUV"][aria-checked="true"]')).toHaveCount(0);
+    const odometer = dialog.getByLabel('Odometer (miles)');
+    await expect(odometer).toHaveValue('48750');
+    await expect(odometer).toHaveAttribute('inputmode', 'numeric');
+
+    // A lower reading asks once before it can be saved.
+    await odometer.fill('40000');
+    await dialog.getByRole('button', { name: 'Mark done' }).click();
+    await expect(dialog.getByRole('alert')).toContainText('lower than the recorded 48,750 mi');
+    await expect(dialog.getByRole('button', { name: 'Save anyway' })).toBeVisible();
+    // A jump of more than 20,000 miles asks too.
+    await odometer.fill('80000');
+    await dialog.getByRole('button', { name: 'Save anyway' }).click();
+    await expect(dialog.getByRole('alert')).toContainText('more than 20,000 mi above');
+
+    await odometer.fill('48900');
+    await dialog.getByRole('button', { name: /^(Mark done|Save anyway)$/ }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
+    const suv = household.collection('vehicles').doc('family-suv');
+    await expect.poll(async () => (await suv.get()).get('serviceSchedules')?.[0]).toMatchObject({
+      lastCompletedMileage: 48900, nextDueMileage: 54900, lastCompletedDate: '2026-08-01',
+    });
+    expect((await suv.get()).get('currentMileage')).toBe(48900);
+    expect((await suv.get()).get('mileageUpdatedAt')).toBe('2026-08-01');
+  });
+
   test('D15: the detail panel hides empty fields and keeps one action row', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?asset=dishwasher');

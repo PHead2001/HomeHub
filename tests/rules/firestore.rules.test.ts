@@ -982,7 +982,8 @@ describe('notification reads and updates are limited by audience', () => {
       await put('asset-other', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-2:filter', audience: ['*'] });
       await put('asset-no-audience', { sourceType: 'maintenance_asset_schedule', sourceId: 'asset-1:filter', audience: undefined });
     });
-    // resolveMaintenanceNotifications: one sourceType, the schedule id plus legacy ids.
+    // The query shape of older pages' resolveMaintenanceNotifications (one sourceType, the schedule id plus
+    // legacy ids); completion and snooze now resolve on the server, record deletion still queries this way.
     const resolver = await assertSucceeds(getDocs(query(
       as(users.member), audienceOf(users.member),
       where('sourceType', '==', 'maintenance_asset_schedule'),
@@ -2716,7 +2717,8 @@ describe('content shapes: maintenance', () => {
   const col = (user: Identity, name: string) => collection(dbFor(user), 'households', householdA, name);
   const ref = (user: Identity, name: string, id: string) => doc(col(user, name), id);
   const nowIso = '2026-08-01T12:00:00.000Z';
-  // maintenance-log-client.tsx handleSaveLog (after cleanForFirestore) / applyScheduleCompletion / quick-add-writes.ts quickMaintenanceLog
+  // Shapes older pages wrote (handleSaveLog after cleanForFirestore, applyScheduleCompletion; now server actions,
+  // M1) and the palette still writes (quick-add-writes.ts quickMaintenanceLog); offline queues can still replay them.
   const formLog = (overrides: Record<string, unknown> = {}) => ({
     householdId: householdA, targetType: 'vehicle', vehicleId: 'car', title: 'Oil change', item: 'Oil change',
     date: '2026-08-01', type: 'routine', notes: 'Synthetic', cost: 79.99, partsUsed: 'Filter', serviceProvider: 'Shop',
@@ -2804,6 +2806,48 @@ describe('content shapes: maintenance', () => {
     await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { warrantyLifetime: true }));
     await assertFails(setDoc(ref(users.member, 'vehicles', 'x10'), vehicle({ year: '2019' })));
     await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { color: 'red' }));
+  });
+
+  test('server-owned completion fields cannot be forged by a client (M1)', async () => {
+    // Only the server (maintenance-operations.ts) records who did a log and the completion it made.
+    for (const forged of [
+      { doneByUid: users.member.uid }, { doneByName: 'Owner' }, { opId: 'op-1' },
+      { completion: { scheduleId: 's1' } }, { createdAtServer: Timestamp.now() },
+    ]) {
+      await assertFails(setDoc(ref(users.member, 'maintenance', 'forged'), formLog(forged)));
+      await assertFails(updateDoc(ref(users.member, 'maintenance', 'legacy'), forged));
+    }
+    await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { mileageUpdatedAt: '2026-08-01' }));
+  });
+
+  test('attachment metadata is created only for a record that exists (review of PR #210)', async () => {
+    const attachment = (targetType: string, targetId: string) => ({
+      householdId: householdA, targetType, targetId, category: 'receipt', fileName: 'r.pdf',
+      filePath: `households/${householdA}/maintenance/${targetType}/${targetId}/r.pdf`,
+      uploadedByUid: users.member.uid, createdAt: nowIso,
+    });
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance-attachments', 'a1'), attachment('maintenance_log', 'legacy')));
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance-attachments', 'a2'), attachment('home_asset', 'furnace')));
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance-attachments', 'a3'), attachment('vehicle', 'car')));
+    // A log an Undo deleted, or an asset or vehicle deleted meanwhile, takes no new files.
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a4'), attachment('maintenance_log', 'undone-log')));
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a5'), attachment('home_asset', 'gone')));
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a6'), attachment('vehicle', 'gone')));
+    // The target type names the collection: a vehicle id is not a log.
+    await assertFails(setDoc(ref(users.member, 'maintenance-attachments', 'a7'), attachment('maintenance_log', 'car')));
+  });
+
+  test('the maintenance op ledger is server-only (M1)', async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'maintenance-ops', 'op-1'), { kind: 'complete', actorUid: users.owner.uid });
+    });
+    for (const user of [users.owner, users.member]) {
+      await assertFails(getDoc(ref(user, 'maintenance-ops', 'op-1')));
+      await assertFails(getDocs(col(user, 'maintenance-ops')));
+      await assertFails(setDoc(ref(user, 'maintenance-ops', 'op-2'), { kind: 'complete', actorUid: user.uid }));
+      await assertFails(updateDoc(ref(user, 'maintenance-ops', 'op-1'), { undoneAt: Timestamp.now() }));
+      await assertFails(deleteDoc(ref(user, 'maintenance-ops', 'op-1')));
+    }
   });
 });
 
