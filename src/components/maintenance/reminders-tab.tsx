@@ -32,7 +32,7 @@ type RemindersTabProps = {
 const GROUP_HINTS: Record<ReminderGroupKey, string> = {
   overdue: 'Past their date or mileage, or expired.',
   due_today: 'Due or expiring today.',
-  due_soon: `Within ${REMINDER_DUE_SOON_DAYS} days or ${MILEAGE_DUE_SOON_THRESHOLD} miles; warranties, registrations and inspections within ${EXPIRY_WARNING_DAYS} days.`,
+  due_soon: `Due in the next ${REMINDER_DUE_SOON_DAYS} days or ${MILEAGE_DUE_SOON_THRESHOLD} miles; warranties, registrations and inspections expiring in the next ${EXPIRY_WARNING_DAYS} days.`,
   snoozed: 'Moved a week later. They come back on their new date.',
   upcoming: 'Later on. Nothing to do yet.',
 };

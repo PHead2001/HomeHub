@@ -190,7 +190,11 @@ test.describe('maintenance center UX', () => {
       .toBe(1);
     await expect.poll(async () => Boolean((await household.collection('notifications').doc(HVAC_NOTIFICATION).get()).get('resolvedAt')))
       .toBe(true);
-    await expect(list.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(0);
+    // It leaves the due groups; its next cycle (Nov 1) is listed once, under Upcoming, with the new date.
+    await expect(page.getByTestId('reminders-group-due_today')).toHaveCount(0);
+    const nextCycle = list.getByRole('listitem').filter({ hasText: 'Replace air filter' });
+    await expect(nextCycle).toHaveCount(1);
+    await expect(page.getByTestId('reminders-group-upcoming').getByRole('listitem').filter({ hasText: 'Replace air filter' })).toContainText('Due Nov 1, 2026');
     await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
 
     // Last: an unrelated edit of the snoozed asset keeps the snooze (the edit form rebuilds the
@@ -397,7 +401,10 @@ test.describe('maintenance center UX', () => {
     }).toEqual([{ assetId: 'hvac-main', cost: 42.5, serviceProvider: 'E2E Heating', type: 'routine' }]);
     await expect.poll(async () => Boolean((await household.collection('notifications').doc(HVAC_NOTIFICATION).get()).get('resolvedAt')))
       .toBe(true);
-    await expect(page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(0);
+    // Gone from the due groups; the next cycle (Nov 1) is listed once, under Upcoming.
+    await expect(page.getByTestId('reminders-group-due_today')).toHaveCount(0);
+    await expect(page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(1);
+    await expect(page.getByTestId('reminders-group-upcoming').getByRole('listitem').filter({ hasText: 'Replace air filter' })).toContainText('Due Nov 1, 2026');
   });
 
   test('H30: vehicle cards show their photo; brand logos and badges theme with the text', async ({ page }, testInfo) => {
@@ -644,9 +651,10 @@ test.describe('maintenance center M4: overview, reminders, filters, layout and i
     // Logs: files are not loaded per row; opening a log shows them.
     await page.goto('/maintenance?tab=logs');
     const log = page.getByTestId('maintenance-log-hvac-inspection');
-    await expect(log.getByText('sample-hvac-report.txt')).toHaveCount(0);
+    await expect(log.getByText('sample-hvac-report.txt', { exact: true })).toHaveCount(0);
     await log.getByRole('button', { name: 'Files for Summer HVAC inspection (1)' }).click();
-    await expect(log.getByText('sample-hvac-report.txt')).toBeVisible();
+    // Exact: the attachment row also has a screen-reader "Open attachment sample-hvac-report.txt".
+    await expect(log.getByText('sample-hvac-report.txt', { exact: true })).toBeVisible();
   });
 
   test('MA-11e/MA-20: an undated log is kept, last, as "Undated"; a server log says who did it', async ({ page }, testInfo) => {
