@@ -207,9 +207,14 @@ export type HomeAssetStatus = 'active' | 'needs_attention' | 'retired';
 
 export type MaintenanceScheduleMode = 'scheduled' | 'checklist';
 
+/** 'completion' (default): next due = completion + interval. 'calendar': next due keeps the schedule's calendar day. */
+export type MaintenanceScheduleAnchor = 'completion' | 'calendar';
+
 export type HomeAssetSchedule = {
   /** Set by Snooze to the due date it moved to; quiets the push until then (see functions/src/shared/maintenance-reminders.ts). */
   snoozedUntil?: string;
+  /** The due day the snooze moved away from (exact cycle for calendar anchoring; see functions/src/shared/maintenance-schedule.ts). */
+  snoozedFrom?: string;
   id?: string;
   mode?: MaintenanceScheduleMode;
   scheduleName?: string;
@@ -217,6 +222,12 @@ export type HomeAssetSchedule = {
   intervalValue?: number;
   lastCompletedDate?: string;
   nextDueDate?: string;
+  /** How completion advances the due date; absent = 'completion' (see functions/src/shared/maintenance-schedule.ts). */
+  anchor?: MaintenanceScheduleAnchor;
+  /** Calendar anchor month (1-12), e.g. 10 for gutters every October. */
+  anchorMonth?: number;
+  /** Calendar anchor day of month (1-31, clamped to short months). */
+  anchorDay?: number;
 };
 
 export type HomeAsset = {
@@ -232,6 +243,8 @@ export type HomeAsset = {
   purchasePrice?: number;
   warrantyExpiration?: string;
   warrantyProvider?: string;
+  /** A lifetime warranty: no expiry reminders; the warranty ring reads "Lifetime". */
+  warrantyLifetime?: boolean;
   status: HomeAssetStatus;
   notes?: string;
   schedules?: HomeAssetSchedule[];
@@ -244,6 +257,8 @@ export type VehicleStatus = 'active' | 'needs_attention' | 'retired' | 'sold';
 export type VehicleServiceSchedule = {
   /** Set by Snooze to the due date it moved to; quiets the push until then (see functions/src/shared/maintenance-reminders.ts). */
   snoozedUntil?: string;
+  /** The due day the snooze moved away from (exact cycle for calendar anchoring; see functions/src/shared/maintenance-schedule.ts). */
+  snoozedFrom?: string;
   id?: string;
   mode?: MaintenanceScheduleMode;
   serviceName?: string;
@@ -253,6 +268,10 @@ export type VehicleServiceSchedule = {
   lastCompletedDate?: string;
   nextDueMileage?: number;
   nextDueDate?: string;
+  /** How completion advances the due date; absent = 'completion'. */
+  anchor?: MaintenanceScheduleAnchor;
+  anchorMonth?: number;
+  anchorDay?: number;
 };
 
 export type Vehicle = {

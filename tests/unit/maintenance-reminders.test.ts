@@ -233,7 +233,7 @@ describe('maintenance display rules', () => {
 
 describe('maintenance components use tokens only', () => {
   it('has no raw color literals', () => {
-    for (const file of ['asset-card.tsx', 'health-panel.tsx', 'health-ring.tsx', 'reminder-list.tsx']) {
+    for (const file of ['asset-card.tsx', 'health-panel.tsx', 'health-ring.tsx', 'reminder-list.tsx', 'coming-up.tsx', 'warranty-claim-checklist.tsx', 'warranty-ring.tsx']) {
       const source = readFileSync(resolve(process.cwd(), 'src/components/maintenance', file), 'utf8');
       assert.doesNotMatch(source, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\((?!var)/i, file);
     }

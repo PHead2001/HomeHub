@@ -4,6 +4,7 @@
 import { add, format, isValid, parseISO } from 'date-fns';
 import { addDays, isDayString } from '../../../functions/src/shared/calendar';
 import { stableSlugify } from '../../../functions/src/shared/ids';
+import { nextDueDay } from '../../../functions/src/shared/maintenance-schedule';
 import {
   mileageStatus,
   type MaintenanceReminder,
@@ -58,6 +59,35 @@ export const calculateNextAssetDueDate = (schedule: HomeAssetSchedule, completed
 export const calculateNextVehicleDueDate = (schedule: VehicleServiceSchedule, completedDate: string) => {
   if (!schedule.intervalMonths) return undefined;
   return format(add(parseDay(completedDate), { months: schedule.intervalMonths }), 'yyyy-MM-dd');
+};
+
+/**
+ * The next due date after completing `schedule` on `completedDate`, for an
+ * asset schedule (frequencyType + intervalValue) or a vehicle service
+ * (intervalMonths), honoring its anchor: 'completion' (default) adds the
+ * interval to the completion day; 'calendar' keeps the schedule on its calendar
+ * day (gutters due Oct 1, done Nov 5 or Sep 20 2026: next Oct 1 2027). Pure
+ * household-day math shared with the server (`nextDueDay` in
+ * functions/src/shared/maintenance-schedule.ts). Undefined without an interval.
+ */
+export const nextDueAfterCompletion = (
+  schedule: HomeAssetSchedule | VehicleServiceSchedule,
+  completedDate: string,
+): string | undefined => {
+  const vehicle = 'intervalMonths' in schedule || 'serviceName' in schedule || 'intervalMiles' in schedule;
+  const asset = schedule as HomeAssetSchedule;
+  const unit = vehicle ? ((schedule as VehicleServiceSchedule).intervalMonths ? 'months' : undefined) : asset.frequencyType;
+  const value = vehicle ? (schedule as VehicleServiceSchedule).intervalMonths : asset.intervalValue;
+  return nextDueDay({
+    unit,
+    value,
+    anchor: schedule.anchor,
+    anchorMonth: schedule.anchorMonth,
+    anchorDay: schedule.anchorDay,
+    nextDueDate: schedule.nextDueDate,
+    snoozedUntil: schedule.snoozedUntil,
+    snoozedFrom: schedule.snoozedFrom,
+  }, completedDate);
 };
 
 export const calculateNextVehicleMileage = (schedule: VehicleServiceSchedule, completedMileage?: number) => {
@@ -155,9 +185,10 @@ export const reminderCycleKey = (reminder: Pick<MaintenanceReminder, 'id' | 'due
 
 /** The schedule after completion (same advancement as the completion dialog). */
 /** Completion always ends a snooze, even if the new cycle lands on the snoozed date. */
-const withoutSnooze = <T extends { snoozedUntil?: string }>(schedule: T): T => {
+const withoutSnooze = <T extends { snoozedUntil?: string; snoozedFrom?: string }>(schedule: T): T => {
   const copy = { ...schedule };
   delete copy.snoozedUntil;
+  delete copy.snoozedFrom;
   return copy;
 };
 

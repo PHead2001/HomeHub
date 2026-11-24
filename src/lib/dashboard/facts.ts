@@ -26,7 +26,8 @@ import {
   type ReminderStatus,
   type VehicleInput,
 } from '../../../functions/src/shared/maintenance-reminders';
-import { reminderDueDetail, reminderStatusLabel } from '../maintenance/reminder-copy';
+import { reminderBadgeLabel, reminderDueDetail } from '../maintenance/reminder-copy';
+import { reminderGroupKey, remindersByUrgency } from '../maintenance/reminder-groups';
 import { diffDays, localDay, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
 import { householdDayZone, householdToday } from '../household-day';
 import { normalizeRecurrence, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
@@ -188,8 +189,10 @@ export type MaintenanceItem = {
   status: ReminderStatus;
   /** What set the status: the due date, or the mileage threshold (vehicle services). */
   trigger: 'date' | 'mileage';
-  /** Maintenance's badge text: "Overdue", "Due today", "Expires soon"... (`reminderStatusLabel`). */
+  /** Maintenance's badge text: "Overdue", "Due today", "Expires soon", "Snoozed"... (`reminderBadgeLabel`). */
   statusLabel: string;
+  /** Snoozed by a member (MA-9): shown muted, never counted as due. */
+  snoozed: boolean;
   /** Maintenance's "when" line: "Due Aug 1, 2026", "At 49,000 mi · 250 mi over" (`reminderDueDetail`). */
   detail: string;
   overdue: boolean;
@@ -595,8 +598,11 @@ export function reminderTrigger(
  * Maintenance facts from the Maintenance module's own reminder rules
  * (`buildMaintenanceReminders`, shared with the Maintenance page and the hourly
  * reminders): retired assets and retired or sold vehicles are excluded, "soon"
- * means within 14 days or 500 miles, and deep links are the module's own.
- * An expired warranty is not a task and is left out.
+ * means within 14 days or 500 miles (30 days for registrations, inspections and
+ * warranties), and deep links are the module's own. An expired warranty is not a
+ * task and is left out. Order and counts come from Maintenance's `reminderGroups`
+ * (overdue, due today, due soon, snoozed, upcoming), so a snoozed reminder is
+ * never counted as due and nothing is counted twice.
  */
 export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], now: Date, timeZone?: string | null, limits: Readonly<FactLimits> = PREVIEW_LIMITS): MaintenanceFacts {
   const zone = safeTimeZone(timeZone);
@@ -604,15 +610,16 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
   const activeAssets = assets.filter((asset) => asset.status !== 'retired');
   const activeVehicles = vehicles.filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold');
   const assetsById = new Map(activeAssets.map((asset) => [asset.id, asset]));
-  const reminders = buildMaintenanceReminders(
+  const reminders = remindersByUrgency(buildMaintenanceReminders(
     activeAssets as unknown as AssetInput[],
     activeVehicles as unknown as VehicleInput[],
     today,
     zone,
-  ).filter((reminder) => !(reminder.group === 'warranty' && reminder.status === 'overdue'));
+  ).filter((reminder) => !(reminder.group === 'warranty' && reminder.status === 'overdue')));
 
   const items: MaintenanceItem[] = reminders.map((reminder) => {
     const dueDay = toDay(reminder.dueDate, zone);
+    const group = reminderGroupKey(reminder);
     const asset = reminder.targetType === 'home_asset' ? assetsById.get(reminder.targetId) : undefined;
     const label = reminder.group === 'warranty'
       ? `${reminder.relatedName} warranty ends`
@@ -626,10 +633,11 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
       days: dueDay ? diffDays(dueDay, today) : null,
       status: reminder.status,
       trigger: reminderTrigger(reminder, today, zone),
-      statusLabel: reminderStatusLabel(reminder.group, reminder.status),
+      statusLabel: reminderBadgeLabel(reminder),
+      snoozed: group === 'snoozed',
       detail: reminderDueDetail(reminder, today),
-      overdue: reminder.status === 'overdue',
-      dueSoon: reminder.status === 'due_today' || reminder.status === 'due_soon',
+      overdue: group === 'overdue',
+      dueSoon: group === 'due_today' || group === 'due_soon',
       href: reminder.deepLink,
     };
   });
@@ -641,7 +649,7 @@ export function computeMaintenanceFacts(assets: RawDoc[], vehicles: RawDoc[], no
     dueSoon: items.filter((item) => item.dueSoon).length,
     needsAttention: activeAssets.filter((asset) => asset.status === 'needs_attention').length
       + activeVehicles.filter((vehicle) => vehicle.status === 'needs_attention').length,
-    // Reminders arrive most urgent first (overdue, today, soon, upcoming; then by date).
+    // Most urgent first (overdue, today, soon, snoozed, upcoming; then by date).
     next: items[0] ?? null,
     items: items.slice(0, limits.maintenanceItems),
     vehicleDue: active.some((item) => item.kind === 'vehicle')

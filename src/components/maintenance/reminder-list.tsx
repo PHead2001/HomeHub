@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { DURATION, EASE } from '@/lib/motion';
-import { reminderDueDetail, reminderStatusLabel } from '@/lib/maintenance/reminder-copy';
+import { reminderBadgeLabel, reminderDueDetail, reminderSnoozeLabel } from '@/lib/maintenance/reminder-copy';
 import { canMarkReminderDone, canSnoozeReminder, reminderCycleKey, SNOOZE_DAYS } from '@/lib/maintenance/schedules';
 import { cn } from '@/lib/utils';
 
@@ -22,7 +22,8 @@ export type ReminderBusy = { id: string; action: 'done' | 'snooze' } | null;
 /** What Mark done did: completed in place, handed off to a dialog, or failed. */
 export type MarkDoneResult = 'done' | 'deferred' | 'failed';
 
-const badgeVariant = (status: MaintenanceReminder['status']) => {
+const badgeVariant = (status: MaintenanceReminder['status'], snoozed?: boolean) => {
+  if (snoozed && (status === 'upcoming' || status === 'due_soon')) return 'outline' as const;
   if (status === 'overdue') return 'destructive' as const;
   if (status === 'due_today') return 'default' as const;
   return 'secondary' as const;
@@ -123,6 +124,8 @@ export function ReminderList({
             const showSnooze = canSnooze && canSnoozeReminder(reminder);
             const detail = reminderDueDetail(reminder, today);
             const isChecked = checked.has(reminderCycleKey(reminder));
+            // MA-9: a snoozed reminder is muted and says until when; overdue work is never snoozed.
+            const snoozeLine = reminderSnoozeLabel(reminder);
             return (
               <motion.li
                 key={reminder.id}
@@ -133,7 +136,8 @@ export function ReminderList({
                   : { opacity: 0, scale: 0.98, transition: { duration: DURATION.ui, ease: EASE.exit, delay: isChecked ? DURATION.micro : 0 } }}
                 data-testid={`maintenance-reminder-${reminder.id}`}
                 data-done={isChecked ? 'true' : undefined}
-                className="rounded-lg border bg-card p-4 shadow-raised"
+                data-snoozed={snoozeLine ? 'true' : undefined}
+                className={cn('rounded-lg border p-4', snoozeLine ? 'bg-muted/40 text-muted-foreground' : 'bg-card shadow-raised')}
               >
                 <div className="flex items-start gap-2">
                   {showDone && (
@@ -152,11 +156,12 @@ export function ReminderList({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className={cn('font-headline text-base font-semibold transition-ui', isChecked && 'text-muted-foreground line-through')}>{reminder.title}</h3>
-                      <Badge variant={badgeVariant(reminder.status)}>{reminderStatusLabel(reminder.group, reminder.status)}</Badge>
+                      <Badge variant={badgeVariant(reminder.status, reminder.snoozed)}>{reminderBadgeLabel(reminder)}</Badge>
                       {isBusy && busy?.action === 'done' && <Loader2 role="status" aria-label="Saving" className="h-4 w-4 animate-spin text-muted-foreground" />}
                     </div>
                     <p className="mt-1 text-sm">{reminder.relatedName}</p>
                     {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
+                    {snoozeLine && <p className="mt-1 text-xs text-muted-foreground">{snoozeLine}</p>}
                   </div>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">

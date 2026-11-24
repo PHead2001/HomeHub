@@ -18,6 +18,16 @@ export const reminderStatusLabel = (group: ReminderGroup, status: ReminderStatus
   return { overdue: 'Overdue', due_today: 'Due today', due_soon: 'Due soon', upcoming: 'Upcoming' }[status];
 };
 
+/**
+ * Badge text for a reminder card: "Snoozed" while a snooze quiets it (the
+ * builder only snoozes an upcoming or due-soon date, never overdue work),
+ * otherwise `reminderStatusLabel`.
+ */
+export const reminderBadgeLabel = (reminder: Pick<MaintenanceReminder, 'group' | 'status' | 'snoozed'>) =>
+  (reminder.snoozed && (reminder.status === 'upcoming' || reminder.status === 'due_soon')
+    ? 'Snoozed'
+    : reminderStatusLabel(reminder.group, reminder.status));
+
 const plural = (count: number, word: string) => `${count.toLocaleString('en-US')} ${word}${count === 1 ? '' : 's'}`;
 
 /** "3 days", "5 weeks", "4 months": coarse enough to read at a glance. */
@@ -30,6 +40,13 @@ export const spanLabel = (days: number) => {
 };
 
 const shortDate = (day: string) => format(new Date(`${day}T12:00:00`), 'MMM d, yyyy');
+
+/** "Snoozed until Nov 12, 2026" while a reminder is snoozed; null otherwise. */
+export const reminderSnoozeLabel = (reminder: Pick<MaintenanceReminder, 'snoozed' | 'snoozedUntil'>) => {
+  if (!reminder.snoozed || !reminder.snoozedUntil) return null;
+  const day = reminder.snoozedUntil.slice(0, 10);
+  return isDayString(day) ? `Snoozed until ${shortDate(day)}` : null;
+};
 
 /**
  * One line of "when" for a reminder card, e.g. "Due Aug 1, 2026 · 2 weeks ago",

@@ -2772,6 +2772,12 @@ describe('content shapes: maintenance', () => {
     await assertSucceeds(setDoc(ref(users.member, 'home-assets', 'furnace'), { ...asset(), legacyTag: 'x', updatedAt: '2026-08-02T00:00:00.000Z' }));
     await assertSucceeds(updateDoc(ref(users.member, 'home-assets', 'furnace'), { schedules: [{ id: 's1', nextDueDate: '2026-09-08', snoozedUntil: '2026-09-08' }], updatedAt: nowIso }));
     await assertSucceeds(updateDoc(ref(users.member, 'vehicles', 'car'), { serviceSchedules: [], updatedAt: nowIso }));
+    // M3: a lifetime warranty flag, and calendar anchors inside the (unvalidated) schedule list.
+    await assertSucceeds(updateDoc(ref(users.member, 'home-assets', 'furnace'), { warrantyLifetime: true, updatedAt: nowIso }));
+    await assertSucceeds(setDoc(ref(users.member, 'home-assets', 'gutters'), asset({
+      name: 'Gutters', warrantyLifetime: false,
+      schedules: [{ id: 'g1', mode: 'scheduled', scheduleName: 'Clean gutters', frequencyType: 'years', intervalValue: 1, anchor: 'calendar', anchorMonth: 10, anchorDay: 1, nextDueDate: '2027-10-01' }],
+    })));
     await assertSucceeds(setDoc(ref(users.member, 'vehicles', 'car'), vehicle({ currentMileage: 43000 })));
     // A negative or zero cost typed into the form has always been stored.
     await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'refund'), formLog({ cost: -10 })));
@@ -2793,6 +2799,9 @@ describe('content shapes: maintenance', () => {
     await assertFails(setDoc(ref(users.member, 'maintenance', 'x7'), formLog({ title: 'x'.repeat(1001) })));
     await assertFails(setDoc(ref(users.member, 'home-assets', 'x8'), asset({ status: 'broken' })));
     await assertFails(setDoc(ref(users.member, 'home-assets', 'x9'), asset({ schedules: 'monthly' })));
+    await assertFails(setDoc(ref(users.member, 'home-assets', 'x11'), asset({ warrantyLifetime: 'yes' })));
+    await assertFails(updateDoc(ref(users.member, 'home-assets', 'furnace'), { warrantyLifetime: 1 }));
+    await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { warrantyLifetime: true }));
     await assertFails(setDoc(ref(users.member, 'vehicles', 'x10'), vehicle({ year: '2019' })));
     await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { color: 'red' }));
   });
