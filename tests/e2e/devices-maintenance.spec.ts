@@ -60,7 +60,8 @@ const pick = async (page: Page, uid: string) => {
   await page.getByTestId(`who-person-${uid}`).click();
 };
 
-const markDone = (page: Page, id: string, name: string) => page.getByRole('button', { name: `Mark done: Filter ${id} for ${name}` });
+// The completion check is a checkbox (CompletionCheck), as on the personal page.
+const markDone = (page: Page, id: string, name: string) => page.getByRole('checkbox', { name: `Mark done: Filter ${id} for ${name}` });
 
 test.beforeAll(async () => {
   await prepareHousehold();
