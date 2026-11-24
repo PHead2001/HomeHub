@@ -56,7 +56,8 @@ export const AssetsTab = React.memo(function AssetsTab(props: AssetsTabProps) {
   const [showRetired, setShowRetired] = React.useState(false);
 
   // A record link (deep link, Open from a reminder) opens the sheet on a phone.
-  const [handledRequest, setHandledRequest] = React.useState(detailRequest?.n ?? 0);
+  // Starts at 0: a link applied as the page first appears (a deep link) opens the sheet too.
+  const [handledRequest, setHandledRequest] = React.useState(0);
   if (detailRequest && detailRequest.n !== handledRequest) {
     setHandledRequest(detailRequest.n);
     if (detailRequest.kind === 'asset' && !wide) setSheetOpen(true);
@@ -92,6 +93,7 @@ export const AssetsTab = React.memo(function AssetsTab(props: AssetsTabProps) {
 
   const detail = selectedAsset ? (
     <AssetDetail
+      key={selectedAsset.id}
       {...props}
       asset={selectedAsset}
       health={health.targets[healthKey('home_asset', selectedAsset.id)]}

@@ -48,7 +48,8 @@ export const VehiclesTab = React.memo(function VehiclesTab(props: VehiclesTabPro
   const wide = useWideLayout();
   const [sheetOpen, setSheetOpen] = React.useState(false);
 
-  const [handledRequest, setHandledRequest] = React.useState(detailRequest?.n ?? 0);
+  // Starts at 0: a link applied as the page first appears (a deep link) opens the sheet too.
+  const [handledRequest, setHandledRequest] = React.useState(0);
   if (detailRequest && detailRequest.n !== handledRequest) {
     setHandledRequest(detailRequest.n);
     if (detailRequest.kind === 'vehicle' && !wide) setSheetOpen(true);
@@ -83,6 +84,7 @@ export const VehiclesTab = React.memo(function VehiclesTab(props: VehiclesTabPro
 
   const detail = selectedVehicle ? (
     <VehicleDetail
+      key={selectedVehicle.id}
       {...props}
       vehicle={selectedVehicle}
       health={health.targets[healthKey('vehicle', selectedVehicle.id)]}

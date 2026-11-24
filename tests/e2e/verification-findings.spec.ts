@@ -362,7 +362,9 @@ test.describe('verification finding regressions', () => {
     await page.getByRole('option', { name: 'Unscheduled checklist' }).click();
     await expect(item.getByText('Next Due', { exact: true })).toHaveCount(0);
     await dialog.getByRole('button', { name: 'Save Asset' }).click();
-    await expect(page.getByText('Unscheduled checklist item', { exact: true })).toBeVisible();
+    // MA-24: a checklist item says it has no due date and offers to add one.
+    await expect(page.getByTestId('asset-detail').getByText('No due date yet. Add one to get reminders.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add a due date: Incomplete scheduled item' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Edit' }).first().click();
     dialog = page.getByRole('dialog', { name: 'Edit Home Asset' });
