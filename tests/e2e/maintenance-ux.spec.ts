@@ -209,6 +209,67 @@ test.describe('maintenance center UX', () => {
     }
   });
 
+  test('M1: Mark done offers Undo for 10 s, which puts the schedule back and removes the log', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=reminders');
+    const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
+    await filter.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
+    await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
+    const hvac = household.collection('home-assets').doc('hvac-main');
+    await expect.poll(async () => (await hvac.get()).get('schedules')?.[0]?.nextDueDate).toBe('2026-11-01');
+    const completion = (await household.collection('maintenance').where('title', '==', 'Replace air filter').where('date', '==', '2026-08-01').get()).docs;
+    expect(completion).toHaveLength(1);
+    // The server records who did it (never an email) and the completion it made.
+    expect(completion[0].get('doneByUid')).toBeTruthy();
+    expect(String(completion[0].get('doneByName'))).not.toContain('@');
+    expect(completion[0].get('completion')).toMatchObject({ scheduleId: 'asset-filter-e2e', cycle: { nextDueDate: '2026-08-01', nextDueMileage: null } });
+
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.getByText('Undone', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await hvac.get()).get('schedules')?.[0]).toMatchObject({ nextDueDate: '2026-08-01', lastCompletedDate: '2026-05-01' });
+    expect((await hvac.get()).get('schedules')?.[0]?.lastCompletion).toBeUndefined();
+    await expect.poll(async () => (await household.collection('maintenance').where('title', '==', 'Replace air filter').where('date', '==', '2026-08-01').get()).size)
+      .toBe(0);
+    // The reminder is back, unchecked, with its actions.
+    await expect(page.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' })).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('M1: Mark done on a service due by mileage asks for the odometer first', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=reminders');
+    const tires = page.getByRole('listitem').filter({ hasText: 'Tire rotation' }).first();
+    const check = tires.getByRole('checkbox', { name: 'Mark done: Tire rotation for Family SUV' });
+    await check.click();
+    const dialog = page.getByRole('dialog', { name: 'Confirm mileage' });
+    await expect(dialog).toBeVisible();
+    // Not drawn as done before the reading is confirmed.
+    await expect(check).toHaveAttribute('aria-checked', 'false');
+    const odometer = dialog.getByLabel('Odometer (miles)');
+    await expect(odometer).toHaveValue('48750');
+    await expect(odometer).toHaveAttribute('inputmode', 'numeric');
+
+    // A lower reading asks once before it can be saved.
+    await odometer.fill('40000');
+    await dialog.getByRole('button', { name: 'Mark done' }).click();
+    await expect(dialog.getByRole('alert')).toContainText('lower than the recorded 48,750 mi');
+    await expect(dialog.getByRole('button', { name: 'Save anyway' })).toBeVisible();
+    // A jump of more than 20,000 miles asks too.
+    await odometer.fill('80000');
+    await dialog.getByRole('button', { name: 'Save anyway' }).click();
+    await expect(dialog.getByRole('alert')).toContainText('more than 20,000 mi above');
+
+    await odometer.fill('48900');
+    await dialog.getByRole('button', { name: /^(Mark done|Save anyway)$/ }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
+    const suv = household.collection('vehicles').doc('family-suv');
+    await expect.poll(async () => (await suv.get()).get('serviceSchedules')?.[0]).toMatchObject({
+      lastCompletedMileage: 48900, nextDueMileage: 54900, lastCompletedDate: '2026-08-01',
+    });
+    expect((await suv.get()).get('currentMileage')).toBe(48900);
+    expect((await suv.get()).get('mileageUpdatedAt')).toBe('2026-08-01');
+  });
+
   test('D15: the detail panel hides empty fields and keeps one action row', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?asset=dishwasher');

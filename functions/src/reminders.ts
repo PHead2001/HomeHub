@@ -58,6 +58,15 @@ export const NOTIFICATION_TTL_DAYS = 7;
  */
 export const REFRESH_BEFORE_EXPIRY_MS = 2 * 86400000;
 export const COMPLETED_CHORE_RETENTION_DAYS = 90;
+/** Source types of the maintenance reminders (shared builder). */
+export const MAINTENANCE_SOURCE_TYPES = [
+  "maintenance_asset_schedule", "maintenance_asset_warranty",
+  "maintenance_vehicle_service", "maintenance_vehicle_registration",
+  "maintenance_vehicle_inspection",
+] as const;
+const maintenanceCycle = (
+  sourceType: string, sourceId: string, stateKey: string,
+): string => `${sourceType}|${sourceId}|${stateKey}`;
 export const RECURRING_LOOKAHEAD = 30;
 const APPROVED = new Set(["owner", "admin", "member", "child", "guest"]);
 
@@ -556,6 +565,49 @@ export const runHouseholdReminders = async (
         stateKey: r.stateKey,
       });
     if (!kept) return result;
+  }
+  // A maintenance reminder resolves once it is no longer actionable with the
+  // same state: its schedule was completed, snoozed, edited or removed, or
+  // its record retired or deleted. This is the durable retry of the
+  // Maintenance Center's own cleanup after a completion or snooze (which is
+  // best effort), mirroring the medication pass below.
+  const liveMaintenance = new Set(reminders.map((r) =>
+    maintenanceCycle(r.sourceType, r.sourceId, r.stateKey)));
+  const openMaintenance = (await house.collection("notifications")
+    .where("sourceType", "in", [...MAINTENANCE_SOURCE_TYPES]).get()).docs
+    .filter((note) => !note.get("resolvedAt") &&
+      typeof note.get("sourceId") === "string" &&
+      typeof note.get("stateKey") === "string" &&
+      !liveMaintenance.has(maintenanceCycle(note.get("sourceType"),
+        note.get("sourceId"), note.get("stateKey"))));
+  for (const note of openMaintenance) {
+    const sourceType: string = note.get("sourceType");
+    const vehicle = sourceType.startsWith("maintenance_vehicle");
+    const status = await db.runTransaction(async (tx) => {
+      const [home, snap, records] = await Promise.all([
+        tx.get(house), tx.get(note.ref),
+        tx.get(house.collection(vehicle ? "vehicles" : "home-assets")),
+      ]);
+      if (!home.exists || home.get("deletingAt")) return "stopped";
+      if (!snap.exists || snap.get("resolvedAt")) return "skipped";
+      // Revalidate inside the transaction: an Undo or an edit since this
+      // run read the records may have made the reminder actionable again.
+      const items = records.docs.map((d) => ({id: d.id, ...d.data()}));
+      const current = actionableReminders(vehicle ?
+        buildMaintenanceReminders([], items as VehicleInput[], today,
+          timeZone) :
+        buildMaintenanceReminders(items as AssetInput[], [], today,
+          timeZone));
+      const still = current.some((r) =>
+        maintenanceCycle(r.sourceType, r.sourceId, r.stateKey) ===
+        maintenanceCycle(sourceType, snap.get("sourceId"),
+          snap.get("stateKey")));
+      if (still) return "skipped";
+      tx.update(note.ref, {resolvedAt: ts(now)});
+      return "resolved";
+    });
+    if (status === "stopped") return result;
+    if (status === "resolved") result.resolvedNotifications++;
   }
 
   // Pet medication reminders (household-wide, like maintenance): one per

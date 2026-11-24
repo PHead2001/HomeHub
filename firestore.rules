@@ -1745,6 +1745,9 @@ service cloud.firestore {
         (!('receiptUrl' in keys) || boundedString(data.receiptUrl, 2048));
     }
 
+    // Schedule entries (`schedules`, `serviceSchedules`) are an unvalidated list: only their
+    // count is bounded. The Maintenance Center writes them through the server
+    // (src/lib/server/maintenance-operations.ts), which owns `lastCompletion` (M1).
     function validHomeAssetFields(data, keys) {
       return keys.hasOnly([
           'householdId', 'name', 'category', 'location', 'brand', 'model', 'serialNumber', 'purchaseDate',
@@ -2260,6 +2263,13 @@ service cloud.firestore {
           householdIdMatchesPath(householdId) &&
           validMaintenanceLogFields(request.resource.data, writtenKeys());
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
+      }
+
+      // The maintenance op ledger (one entry per completion, snooze or save, keyed by the
+      // client's op id): replay, Undo and attribution. Written and read only by the server
+      // (src/lib/server/maintenance-operations.ts, Admin SDK); no client may touch it.
+      match /maintenance-ops/{opId} {
+        allow read, write: if false;
       }
 
       // Home Assistant credentials hold a long-lived token. No client may read or

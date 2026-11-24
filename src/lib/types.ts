@@ -217,6 +217,18 @@ export type HomeAssetSchedule = {
   intervalValue?: number;
   lastCompletedDate?: string;
   nextDueDate?: string;
+  /** Written only by the server's completion (src/lib/server/maintenance-operations.ts). */
+  lastCompletion?: MaintenanceLastCompletion;
+};
+
+/** Who completed which cycle of a schedule, and when (M1; server-written). */
+export type MaintenanceLastCompletion = {
+  opId: string;
+  byUid: string;
+  byName: string;
+  completedDate: string;
+  at: string;
+  cycle: { nextDueDate: string | null; nextDueMileage: number | null };
 };
 
 export type HomeAsset = {
@@ -253,6 +265,8 @@ export type VehicleServiceSchedule = {
   lastCompletedDate?: string;
   nextDueMileage?: number;
   nextDueDate?: string;
+  /** Written only by the server's completion. */
+  lastCompletion?: MaintenanceLastCompletion;
 };
 
 export type Vehicle = {
@@ -266,6 +280,8 @@ export type Vehicle = {
   vin?: string;
   licensePlate?: string;
   currentMileage?: number;
+  /** Household day of the reading that set currentMileage (server-written). */
+  mileageUpdatedAt?: string;
   purchaseDate?: string;
   purchasePrice?: number;
   insuranceProvider?: string;
@@ -310,6 +326,22 @@ export type MaintenanceLog = {
   updatedAt?: string;
   summary?: string;
   receiptUrl?: string;
+  /** Server-written (M1): who saved or completed it, never an email. */
+  doneByUid?: string;
+  doneByName?: string;
+  /** Server time the log was written (a Firestore Timestamp). */
+  createdAtServer?: unknown;
+  /** The op id of the request that wrote it. */
+  opId?: string;
+  /** On a completion's log: what the completion changed (see maintenance-operations.ts). */
+  completion?: {
+    scheduleId: string;
+    ownerType: 'home_asset' | 'vehicle';
+    ownerId: string;
+    cycle: { nextDueDate: string | null; nextDueMileage: number | null };
+    before: Record<string, unknown>;
+    after: Record<string, unknown>;
+  };
 };
 
 export type MaintenanceAttachmentTargetType = 'home_asset' | 'vehicle' | 'maintenance_log';

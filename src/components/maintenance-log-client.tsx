@@ -29,7 +29,6 @@ import { summarizeMaintenanceLog } from '@/ai/flows/summarize-maintenance-log';
 import { AiClientError, getAiActionContext, unwrapAiActionResult } from '@/ai/client';
 import type {
   HomeAsset,
-  HomeAssetCategory,
   HomeAssetSchedule,
   MaintenanceAttachment,
   MaintenanceAttachmentCategory,
@@ -82,6 +81,7 @@ import {
 } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -98,20 +98,43 @@ import {
   calculateNextAssetDueDate,
   calculateNextVehicleDueDate,
   calculateNextVehicleMileage,
-  completedAssetSchedule,
-  completedVehicleSchedule,
   findReminderSchedule,
   getAssetScheduleMode,
   getVehicleScheduleMode,
   quickCompletionValues,
+  reminderCycleKey,
   serviceCompletionValues,
   scheduleKeyFor,
-  snoozedDueDate,
   type ScheduleCompletionTarget,
 } from '@/lib/maintenance/schedules';
-import { cn, slugify, stableSlugify } from '@/lib/utils';
+import { cn, stableSlugify } from '@/lib/utils';
+import { ToastAction } from '@/components/ui/toast';
+import { UNDO_WINDOW_MS } from '@/lib/undo-window';
+import {
+  completeMaintenanceSchedule,
+  saveHomeAsset,
+  saveMaintenanceLog,
+  saveVehicle as saveVehicleAction,
+  snoozeMaintenanceSchedule,
+  undoMaintenanceCompletion,
+  undoMaintenanceSnooze,
+  type MaintenanceActionResult,
+} from '@/app/maintenance/actions';
+import {
+  CHANGED_MESSAGE,
+  NO_ANSWER_MESSAGE,
+  OFFLINE_MESSAGE,
+  alreadyDoneMessage,
+  callMaintenanceAction,
+  keptMessage,
+  mileageWarningMessage,
+  newOpId,
+  refusalField,
+  refusalMessage,
+} from '@/components/maintenance/maintenance-action-client';
+import { MAX_MILEAGE, cycleOf, mileageWarning, scheduleRef, type CompletionRefusal, type StoredSchedule } from '@/lib/maintenance/operations';
 import { publicDisplayName } from '@/lib/member-directory';
-import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 
@@ -313,8 +336,10 @@ const emptyScheduleCompletionForm = (): ScheduleCompletionFormValues => ({
 
 const createLocalId = () => Math.random().toString(36).slice(2, 10);
 
-const assetScheduleToForm = (schedule?: HomeAssetSchedule): AssetScheduleForm => ({
-  id: schedule?.id || createLocalId(),
+// A stored schedule keeps its id; one without an id is named by its legacy key, which
+// the server assigns as its id on save (M1), so the form and the server agree.
+const assetScheduleToForm = (schedule?: HomeAssetSchedule, index = -1): AssetScheduleForm => ({
+  id: schedule ? scheduleRef(schedule as StoredSchedule, index, 'home_asset') : createLocalId(),
   mode: schedule ? getAssetScheduleMode(schedule) : 'scheduled',
   scheduleName: schedule?.scheduleName || '',
   frequencyType: schedule?.frequencyType || '',
@@ -324,8 +349,8 @@ const assetScheduleToForm = (schedule?: HomeAssetSchedule): AssetScheduleForm =>
   snoozedUntil: schedule?.snoozedUntil || '',
 });
 
-const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule): VehicleScheduleForm => ({
-  id: schedule?.id || createLocalId(),
+const vehicleScheduleToForm = (schedule?: VehicleServiceSchedule, index = -1): VehicleScheduleForm => ({
+  id: schedule ? scheduleRef(schedule as StoredSchedule, index, 'vehicle') : createLocalId(),
   mode: schedule ? getVehicleScheduleMode(schedule) : 'scheduled',
   serviceName: schedule?.serviceName || '',
   intervalMiles: schedule?.intervalMiles?.toString() || '',
@@ -367,6 +392,83 @@ const removeUndefinedValues = (value: unknown): unknown => {
 const cleanForFirestore = <T extends Record<string, unknown>>(data: T) => {
   return removeUndefinedValues(data) as T;
 };
+
+// The values a form sends to the server (and, built from the record when the form
+// opens, the `base` it is compared with): only fields that differ are written.
+const assetValuesOf = (values: AssetFormValues, schedules: AssetScheduleForm[]) => ({
+  name: values.name.trim(),
+  category: values.category,
+  location: trimOptional(values.location),
+  brand: trimOptional(values.brand),
+  model: trimOptional(values.model),
+  serialNumber: trimOptional(values.serialNumber),
+  purchaseDate: trimOptional(values.purchaseDate),
+  purchasePrice: toNumber(values.purchasePrice),
+  warrantyExpiration: trimOptional(values.warrantyExpiration),
+  warrantyProvider: trimOptional(values.warrantyProvider),
+  status: values.status,
+  notes: trimOptional(values.notes),
+  schedules: schedules.filter(schedule => schedule.scheduleName.trim()).map(schedule => ({
+    id: schedule.id,
+    mode: schedule.mode,
+    scheduleName: schedule.scheduleName.trim(),
+    frequencyType: schedule.frequencyType || undefined,
+    intervalValue: toNumber(schedule.intervalValue),
+    lastCompletedDate: trimOptional(schedule.lastCompletedDate),
+    nextDueDate: trimOptional(schedule.nextDueDate),
+    // Carried through unchanged (never sent as a change): it only applies while it
+    // equals nextDueDate, so editing the due date ends the snooze on its own.
+    snoozedUntil: trimOptional(schedule.snoozedUntil),
+  })),
+});
+
+const vehicleValuesOf = (values: VehicleFormValues, schedules: VehicleScheduleForm[]) => ({
+  nickname: values.nickname.trim(),
+  year: toNumber(values.year),
+  make: trimOptional(values.make),
+  model: trimOptional(values.model),
+  trim: trimOptional(values.trim),
+  vin: trimOptional(values.vin),
+  licensePlate: trimOptional(values.licensePlate),
+  currentMileage: toNumber(values.currentMileage),
+  purchaseDate: trimOptional(values.purchaseDate),
+  purchasePrice: toNumber(values.purchasePrice),
+  insuranceProvider: trimOptional(values.insuranceProvider),
+  registrationExpiration: trimOptional(values.registrationExpiration),
+  inspectionExpiration: trimOptional(values.inspectionExpiration),
+  status: values.status,
+  notes: trimOptional(values.notes),
+  serviceSchedules: schedules.filter(schedule => schedule.serviceName.trim()).map(schedule => ({
+    id: schedule.id,
+    mode: schedule.mode,
+    serviceName: schedule.serviceName.trim(),
+    intervalMiles: toNumber(schedule.intervalMiles),
+    intervalMonths: toNumber(schedule.intervalMonths),
+    lastCompletedMileage: toNumber(schedule.lastCompletedMileage),
+    lastCompletedDate: trimOptional(schedule.lastCompletedDate),
+    nextDueMileage: toNumber(schedule.nextDueMileage),
+    nextDueDate: trimOptional(schedule.nextDueDate),
+    snoozedUntil: trimOptional(schedule.snoozedUntil),
+  })),
+});
+
+const logValuesOf = (values: LogFormValues) => ({
+  targetType: values.targetType,
+  assetId: values.targetType === 'home_asset' ? values.assetId || undefined : undefined,
+  vehicleId: values.targetType === 'vehicle' ? values.vehicleId || undefined : undefined,
+  title: values.title.trim(),
+  date: values.date,
+  type: values.type,
+  notes: trimOptional(values.notes),
+  cost: toNumber(values.cost),
+  partsUsed: trimOptional(values.partsUsed),
+  serviceProvider: trimOptional(values.serviceProvider),
+  mileage: values.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
+});
+
+type AssetValues = ReturnType<typeof assetValuesOf>;
+type VehicleValues = ReturnType<typeof vehicleValuesOf>;
+type LogValues = ReturnType<typeof logValuesOf>;
 
 const formatCurrency = (value?: number) => {
   if (typeof value !== 'number') return 'Not recorded';
@@ -446,6 +548,89 @@ const getAttachmentsForTarget = (
   return attachments.filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId);
 };
 
+
+const assetFormFromRecord = (asset: HomeAsset): AssetFormValues => ({
+  name: asset.name,
+  category: asset.category,
+  location: asset.location || '',
+  brand: asset.brand || '',
+  model: asset.model || '',
+  serialNumber: asset.serialNumber || '',
+  purchaseDate: asset.purchaseDate || '',
+  purchasePrice: asset.purchasePrice?.toString() || '',
+  warrantyExpiration: asset.warrantyExpiration || '',
+  warrantyProvider: asset.warrantyProvider || '',
+  status: asset.status,
+  notes: asset.notes || '',
+  scheduleName: '',
+  frequencyType: undefined,
+  intervalValue: '',
+  lastCompletedDate: '',
+  nextDueDate: '',
+});
+
+const vehicleFormFromRecord = (vehicle: Vehicle): VehicleFormValues => ({
+  nickname: vehicle.nickname,
+  year: vehicle.year?.toString() || '',
+  make: vehicle.make || '',
+  model: vehicle.model || '',
+  trim: vehicle.trim || '',
+  vin: vehicle.vin || '',
+  licensePlate: vehicle.licensePlate || '',
+  currentMileage: vehicle.currentMileage?.toString() || '',
+  purchaseDate: vehicle.purchaseDate || '',
+  purchasePrice: vehicle.purchasePrice?.toString() || '',
+  insuranceProvider: vehicle.insuranceProvider || '',
+  registrationExpiration: vehicle.registrationExpiration || '',
+  inspectionExpiration: vehicle.inspectionExpiration || '',
+  status: vehicle.status,
+  notes: vehicle.notes || '',
+  serviceName: '',
+  intervalMiles: '',
+  intervalMonths: '',
+  lastCompletedMileage: '',
+  lastCompletedDate: '',
+  nextDueMileage: '',
+  nextDueDate: '',
+});
+
+const logFormFromRecord = (log: MaintenanceLog): LogFormValues => ({
+  targetType: getLogTargetType(log),
+  assetId: log.assetId || '',
+  vehicleId: log.vehicleId || '',
+  title: getLogTitle(log),
+  date: dateInputValue(log.date),
+  type: getLogType(log),
+  notes: log.notes || '',
+  cost: log.cost?.toString() || '',
+  partsUsed: log.partsUsed || '',
+  serviceProvider: log.serviceProvider || '',
+  mileage: log.mileage?.toString() || '',
+});
+
+type SaveNoticeState = { message: string; retry?: () => void };
+
+/** A dialog's offline or no-answer note; Retry resends the same request (same op id). */
+function SaveNotice({ notice, busy }: { notice?: SaveNoticeState; busy: boolean }) {
+  if (!notice) return null;
+  return (
+    <div role="status" className="flex flex-wrap items-center gap-2 border-t bg-muted/40 px-6 py-3 text-sm">
+      <span className="min-w-0 flex-1">{notice.message}</span>
+      {notice.retry && (
+        <Button type="button" size="sm" variant="outline" disabled={busy} onClick={notice.retry}>
+          {busy && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+          Retry
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** The one-time warning before saving an unusual odometer reading. */
+function MileageWarning({ message }: { message?: string }) {
+  if (!message) return null;
+  return <p role="alert" className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground sm:col-span-2">{message}</p>;
+}
 
 function SummaryCard({
   title,
@@ -824,6 +1009,26 @@ export function MaintenanceLogClient() {
   const [deletingAttachmentId, setDeletingAttachmentId] = useState<string | null>(null);
   const [summaries, setSummaries] = useState<Record<string, string>>({});
   const [loadingSummaries, setLoadingSummaries] = useState<Record<string, boolean>>({});
+  // What each edit form showed when it opened (`base`): the server writes only what differs.
+  const [assetBase, setAssetBase] = useState<AssetValues | null>(null);
+  const [vehicleBase, setVehicleBase] = useState<VehicleValues | null>(null);
+  const [logBase, setLogBase] = useState<LogValues | null>(null);
+  // Requests in flight, by form or card action: their buttons are disabled with a spinner.
+  const [inFlight, setInFlight] = useState<Record<string, boolean>>({});
+  const inFlightRef = useRef(new Set<string>());
+  // Offline / no answer / failure notes shown inside a dialog (with Retry when unknown).
+  const [notices, setNotices] = useState<Record<string, SaveNoticeState | undefined>>({});
+  const setNotice = useCallback((key: string, notice: SaveNoticeState) => setNotices(previous => ({ ...previous, [key]: notice })), []);
+  const clearNotice = useCallback((key: string) => setNotices(previous => (previous[key] ? { ...previous, [key]: undefined } : previous)), []);
+  // A reading lower than, or far above, the vehicle's asks once before it is saved (MA-6d).
+  const [mileageCheck, setMileageCheck] = useState<{ key: string; reading: number; message: string } | null>(null);
+  // Confirm mileage (MA-6a): Mark done on a service due by mileage asks for the odometer.
+  const [mileageTarget, setMileageTarget] = useState<Extract<ScheduleCompletionTarget, { targetType: 'vehicle' }> | null>(null);
+  const [mileageInput, setMileageInput] = useState('');
+  const [mileageInputError, setMileageInputError] = useState<string | null>(null);
+  // Bumped by a successful Undo: the reminder lists start over, so the reopened cycle's
+  // card (same cycle key as the one that was checked) shows unchecked with its actions.
+  const [reminderListEpoch, setReminderListEpoch] = useState(0);
 
   const assetForm = useForm<AssetFormValues>({
     resolver: zodResolver(assetSchema),
@@ -1156,29 +1361,6 @@ export function MaintenanceLogClient() {
     }
   };
 
-  const resolveMaintenanceNotifications = async (sourceType: string, sourceId: string, legacySourceId?: string) => {
-    if (!currentUser?.householdId || !currentUser.uid) return;
-    const notificationsCollection = getCollectionRef('notifications');
-    if (!notificationsCollection) return;
-
-    const action = createNotificationAction(currentUser);
-    // Maintenance reminders are household-wide (audience ['*']), so the
-    // audience-constrained query finds every one of them for any member.
-    const sourceIds = [
-      sourceId,
-      ...(legacySourceId ? (['due_soon', 'due_today', 'overdue'] as const).map((status) => `${legacySourceId}:${status}`) : []),
-    ];
-    const notificationSnap = await getDocs(notificationsBySourceQuery(notificationsCollection, currentUser.uid, [sourceType], sourceIds));
-    const matchingNotifications = notificationSnap.docs.filter((notificationDoc) => !notificationDoc.data().resolvedAt);
-
-    await Promise.all(matchingNotifications.map(async (notificationDoc) => {
-      await updateDoc(notificationDoc.ref, {
-        resolvedAt: new Date(),
-        resolvedBy: action,
-      });
-    }));
-  };
-
   const summary = useMemo(() => {
     const recentCutoff = subDays(new Date(), 30);
     const recentLogs = logs.filter((log) => isAfter(parseLogDate(log.date), recentCutoff));
@@ -1195,77 +1377,38 @@ export function MaintenanceLogClient() {
 
   const openAssetDialog = (asset?: HomeAsset) => {
     setEditingAsset(asset || null);
-    assetForm.reset(asset ? {
-      name: asset.name,
-      category: asset.category,
-      location: asset.location || '',
-      brand: asset.brand || '',
-      model: asset.model || '',
-      serialNumber: asset.serialNumber || '',
-      purchaseDate: asset.purchaseDate || '',
-      purchasePrice: asset.purchasePrice?.toString() || '',
-      warrantyExpiration: asset.warrantyExpiration || '',
-      warrantyProvider: asset.warrantyProvider || '',
-      status: asset.status,
-      notes: asset.notes || '',
-      scheduleName: '',
-      frequencyType: undefined,
-      intervalValue: '',
-      lastCompletedDate: '',
-      nextDueDate: '',
-    } : emptyAssetForm);
-    setAssetScheduleForms(asset?.schedules?.map(assetScheduleToForm) || []);
+    const form = asset ? assetFormFromRecord(asset) : emptyAssetForm;
+    const scheduleForms = asset?.schedules?.map(assetScheduleToForm) || [];
+    assetForm.reset(form);
+    setAssetScheduleForms(scheduleForms);
+    // What the form showed when it opened: only fields that differ from it are saved (MA-3c).
+    setAssetBase(asset ? assetValuesOf(form, scheduleForms) : null);
     setAssetScheduleErrors({});
+    clearNotice('asset');
     setAssetDialogOpen(true);
   };
 
   const openVehicleDialog = (vehicle?: Vehicle) => {
     setEditingVehicle(vehicle || null);
-    vehicleForm.reset(vehicle ? {
-      nickname: vehicle.nickname,
-      year: vehicle.year?.toString() || '',
-      make: vehicle.make || '',
-      model: vehicle.model || '',
-      trim: vehicle.trim || '',
-      vin: vehicle.vin || '',
-      licensePlate: vehicle.licensePlate || '',
-      currentMileage: vehicle.currentMileage?.toString() || '',
-      purchaseDate: vehicle.purchaseDate || '',
-      purchasePrice: vehicle.purchasePrice?.toString() || '',
-      insuranceProvider: vehicle.insuranceProvider || '',
-      registrationExpiration: vehicle.registrationExpiration || '',
-      inspectionExpiration: vehicle.inspectionExpiration || '',
-      status: vehicle.status,
-      notes: vehicle.notes || '',
-      serviceName: '',
-      intervalMiles: '',
-      intervalMonths: '',
-      lastCompletedMileage: '',
-      lastCompletedDate: '',
-      nextDueMileage: '',
-      nextDueDate: '',
-    } : emptyVehicleForm);
-    setVehicleScheduleForms(vehicle?.serviceSchedules?.map(vehicleScheduleToForm) || []);
+    const form = vehicle ? vehicleFormFromRecord(vehicle) : emptyVehicleForm;
+    const scheduleForms = vehicle?.serviceSchedules?.map(vehicleScheduleToForm) || [];
+    vehicleForm.reset(form);
+    setVehicleScheduleForms(scheduleForms);
+    setVehicleBase(vehicle ? vehicleValuesOf(form, scheduleForms) : null);
     setVehicleScheduleErrors({});
+    clearNotice('vehicle');
+    setMileageCheck(null);
     setVehicleDialogOpen(true);
   };
 
   const openLogDialog = (preset?: LogPreset, log?: MaintenanceLog, schedule: ScheduleCompletionTarget | null = null) => {
     setEditingLog(log || null);
     setLogScheduleTarget(log ? null : schedule);
-    logForm.reset(log ? {
-      targetType: getLogTargetType(log),
-      assetId: log.assetId || '',
-      vehicleId: log.vehicleId || '',
-      title: getLogTitle(log),
-      date: dateInputValue(log.date),
-      type: getLogType(log),
-      notes: log.notes || '',
-      cost: log.cost?.toString() || '',
-      partsUsed: log.partsUsed || '',
-      serviceProvider: log.serviceProvider || '',
-      mileage: log.mileage?.toString() || '',
-    } : emptyLogForm(preset));
+    const form = log ? logFormFromRecord(log) : emptyLogForm(preset);
+    logForm.reset(form);
+    setLogBase(log ? logValuesOf(form) : null);
+    clearNotice('log');
+    setMileageCheck(null);
     setLogDialogOpen(true);
   };
 
@@ -1355,6 +1498,8 @@ export function MaintenanceLogClient() {
         : '',
       notes: '',
     });
+    setMileageCheck(null);
+    clearNotice('complete');
     setScheduleCompletionTarget(target);
   };
 
@@ -1364,13 +1509,176 @@ export function MaintenanceLogClient() {
     requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-schedule-name="${kind}-${CSS.escape(scheduleId)}"]`)?.focus());
   };
 
+  /* ------------------------------------------------------------------------ */
+  /* Server operations (M1): every save, completion and snooze goes through    */
+  /* src/app/maintenance/actions.ts. One op id per press; Retry reuses it.      */
+  /* ------------------------------------------------------------------------ */
+
+  const runOp = async <T, R>(
+    key: string,
+    opId: string,
+    call: (context: { idToken: string; householdId: string }) => Promise<MaintenanceActionResult<T>>,
+    handle: (data: T) => Promise<R> | R,
+    surface: 'dialog' | 'toast',
+  ): Promise<{ kind: 'ok'; value: R } | { kind: 'failed' | 'offline' | 'no_answer' | 'busy' }> => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return { kind: 'failed' };
+    // A second press while the first is in flight does nothing (the button is disabled too).
+    if (inFlightRef.current.has(key)) return { kind: 'busy' };
+    inFlightRef.current.add(key);
+    setInFlight(previous => ({ ...previous, [key]: true }));
+    clearNotice(key);
+    try {
+      const outcome = await callMaintenanceAction(householdId, call);
+      if (outcome.kind === 'ok') return { kind: 'ok', value: await handle(outcome.data) };
+      if (outcome.kind === 'failed') {
+        if (surface === 'dialog') setNotice(key, { message: outcome.message });
+        else toast({ variant: 'destructive', title: outcome.message });
+        return { kind: 'failed' };
+      }
+      if (outcome.kind === 'offline') {
+        if (surface === 'dialog') setNotice(key, { message: OFFLINE_MESSAGE });
+        else toast({ title: OFFLINE_MESSAGE });
+        return { kind: 'offline' };
+      }
+      // No answer: it may have been saved. Retry sends the same request with the same op id.
+      const retry = () => { void runOp(key, opId, call, handle, surface); };
+      if (surface === 'dialog') setNotice(key, { message: NO_ANSWER_MESSAGE, retry });
+      else {
+        const handleToast = toast({
+          title: NO_ANSWER_MESSAGE,
+          action: (
+            <ToastAction altText="Retry" onClick={() => { handleToast.dismiss(); retry(); }}>Retry</ToastAction>
+          ),
+        });
+      }
+      return { kind: 'no_answer' };
+    } finally {
+      inFlightRef.current.delete(key);
+      setInFlight(previous => ({ ...previous, [key]: false }));
+    }
+  };
+
+  /** Blocks closing a dialog while its request is in flight (the outcome must be known). */
+  const closable = (key: string) => !inFlightRef.current.has(key);
+
+  const ownerIdOf = (target: ScheduleCompletionTarget) => (target.targetType === 'home_asset' ? target.asset.id : target.vehicle.id);
+  const ownerNameOf = (target: ScheduleCompletionTarget) => (target.targetType === 'home_asset' ? target.asset.name : target.vehicle.nickname);
+
+  /** Asks once before saving an unusual reading; returns true when it may be saved. */
+  const mileageConfirmed = (key: string, reading: number | undefined, current: number | undefined) => {
+    const warning = mileageWarning(reading, current);
+    if (!warning || typeof reading !== 'number' || typeof current !== 'number') return true;
+    if (mileageCheck?.key === key && mileageCheck.reading === reading) return true;
+    setMileageCheck({ key, reading, message: mileageWarningMessage(warning, current) });
+    return false;
+  };
+
+  const undoCompletion = async (opId: string, title: string) => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return;
+    const outcome = await callMaintenanceAction(householdId, context => undoMaintenanceCompletion({ ...context, opId }));
+    if (outcome.kind !== 'ok') {
+      toast({ variant: 'destructive', title: "Couldn't undo", description: outcome.kind === 'failed' ? outcome.message : outcome.kind === 'offline' ? OFFLINE_MESSAGE : NO_ANSWER_MESSAGE });
+    } else if (outcome.data.status === 'undone') {
+      setReminderListEpoch(epoch => epoch + 1);
+      const kept = keptMessage(outcome.data.kept, 'marked it done');
+      toast({ title: 'Undone', description: kept || `${title} is no longer marked done.` });
+    } else if (outcome.data.status === 'superseded') {
+      toast({ title: "Can't undo", description: 'It was marked done again since, so it stays done.' });
+    } else if (outcome.data.status === 'expired') {
+      toast({ title: "Can't undo", description: 'The time to undo has passed.' });
+    }
+    await refreshMaintenanceData();
+  };
+
+  const undoSnooze = async (opId: string) => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return;
+    const outcome = await callMaintenanceAction(householdId, context => undoMaintenanceSnooze({ ...context, opId }));
+    if (outcome.kind !== 'ok') {
+      toast({ variant: 'destructive', title: "Couldn't undo", description: outcome.kind === 'failed' ? outcome.message : outcome.kind === 'offline' ? OFFLINE_MESSAGE : NO_ANSWER_MESSAGE });
+    } else if (outcome.data.status === 'undone') {
+      toast({ title: 'Snooze undone', description: keptMessage(outcome.data.kept, 'snoozed it') || undefined });
+    } else if (outcome.data.status === 'expired') {
+      toast({ title: "Can't undo", description: 'The time to undo has passed.' });
+    }
+    await refreshMaintenanceData();
+  };
+
+  /** The "done" toast with a 10 s Undo (the shared window). */
+  const completedToast = (title: string, description: string, opId: string, undoLabel: string) => {
+    const handle = toast({
+      title,
+      description,
+      duration: UNDO_WINDOW_MS,
+      action: (
+        <ToastAction altText={`Undo marking ${undoLabel} done`} onClick={() => { handle.dismiss(); void undoCompletion(opId, undoLabel); }}>
+          Undo
+        </ToastAction>
+      ),
+    });
+  };
+
+  /**
+   * Completes one cycle of a schedule on the server: one log, the schedule advanced by
+   * its id, the vehicle's mileage (max rule) and the reminder resolved. The request names
+   * the cycle this page showed, so a second session (or a double tap) cannot complete it
+   * twice. Shared by the completion dialog, Log service, Mark done and Confirm mileage.
+   */
+  const completeSchedule = (
+    key: string,
+    target: ScheduleCompletionTarget,
+    values: { completedDate: string; mileage?: number; nextDueDate?: string; nextDueMileage?: number; notes?: string },
+    options: {
+      details?: Pick<MaintenanceLog, 'title' | 'type' | 'cost' | 'partsUsed' | 'serviceProvider'>;
+      surface: 'dialog' | 'toast';
+      /** Runs once the outcome is final (closes the dialog). */
+      settled?: () => void;
+      onRefused: (reason: CompletionRefusal) => void;
+      toastTitle: string;
+    },
+  ) => {
+    const opId = newOpId();
+    const completion = {
+      opId,
+      ownerType: target.targetType,
+      ownerId: ownerIdOf(target),
+      scheduleId: scheduleRef(target.schedule as StoredSchedule, target.scheduleIndex, target.targetType),
+      seen: cycleOf(target.schedule as StoredSchedule),
+      completedDate: values.completedDate,
+      mileage: values.mileage,
+      nextDueDate: values.nextDueDate,
+      nextDueMileage: values.nextDueMileage,
+      notes: trimOptional(values.notes),
+      details: options.details,
+    };
+    const name = getScheduleCompletionName(target);
+    return runOp(key, opId, context => completeMaintenanceSchedule({ ...context, completion }), async (result): Promise<MarkDoneResult> => {
+      if (result.status === 'refused') {
+        options.onRefused(result.reason);
+        return 'failed';
+      }
+      options.settled?.();
+      if (target.targetType === 'home_asset') setSelectedAssetId(target.asset.id);
+      else setSelectedVehicleId(target.vehicle.id);
+      if (result.status === 'completed') {
+        playFeedback('complete');
+        const next = result.next.nextDueDate ? ` Next due ${formatDate(result.next.nextDueDate)}.` : '';
+        completedToast(options.toastTitle, `${name} for ${ownerNameOf(target)} is logged.${next}`, result.opId, name);
+        if (result.cleanup === 'pending') console.info('Reminder cleanup is pending; the hourly upkeep finishes it.');
+      } else if (result.status === 'already_done') {
+        toast({ title: alreadyDoneMessage(result) });
+      } else {
+        toast({ title: CHANGED_MESSAGE });
+      }
+      await refreshMaintenanceData();
+      return result.status === 'completed' || result.status === 'already_done' ? 'done' : 'failed';
+    }, options.surface);
+  };
+
   const saveAsset = async (values: AssetFormValues) => {
     if (!currentUser?.householdId) return;
-    const assetsCollection = getCollectionRef('home-assets');
-    if (!assetsCollection) return;
-
-    const now = new Date().toISOString();
-    const assetId = editingAsset?.id || slugify(values.name);
     const nextAssetScheduleErrors = Object.fromEntries(assetScheduleForms.flatMap((schedule) => {
       if (!schedule.scheduleName.trim()) return [[schedule.id, 'Enter a name for this maintenance item.']];
       if (schedule.mode === 'checklist') return [];
@@ -1384,62 +1692,22 @@ export function MaintenanceLogClient() {
       focusScheduleField('asset', Object.keys(nextAssetScheduleErrors)[0]);
       return;
     }
-    const schedules = assetScheduleForms.reduce<HomeAssetSchedule[]>((nextSchedules, schedule) => {
-      const scheduleName = trimOptional(schedule.scheduleName);
-      if (!scheduleName) return nextSchedules;
-
-      nextSchedules.push({
-        id: schedule.id,
-        mode: schedule.mode,
-        scheduleName,
-        frequencyType: schedule.frequencyType || undefined,
-        intervalValue: toNumber(schedule.intervalValue),
-        lastCompletedDate: trimOptional(schedule.lastCompletedDate),
-        nextDueDate: trimOptional(schedule.nextDueDate),
-        // Carried through unchanged. It only applies while it equals nextDueDate,
-        // so editing the due date here ends the snooze on its own.
-        snoozedUntil: trimOptional(schedule.snoozedUntil),
-      });
-      return nextSchedules;
-    }, []);
-    const assetData: Omit<HomeAsset, 'id'> = {
-      householdId: currentUser.householdId,
-      name: values.name.trim(),
-      category: values.category as HomeAssetCategory,
-      location: trimOptional(values.location),
-      brand: trimOptional(values.brand),
-      model: trimOptional(values.model),
-      serialNumber: trimOptional(values.serialNumber),
-      purchaseDate: trimOptional(values.purchaseDate),
-      purchasePrice: toNumber(values.purchasePrice),
-      warrantyExpiration: trimOptional(values.warrantyExpiration),
-      warrantyProvider: trimOptional(values.warrantyProvider),
-      status: values.status,
-      notes: trimOptional(values.notes),
-      schedules,
-      createdAt: editingAsset?.createdAt || now,
-      updatedAt: now,
+    const editing = editingAsset;
+    const save: { opId: string; id?: string; base?: AssetValues; values: AssetValues } = {
+      opId: newOpId(),
+      ...(editing ? { id: editing.id, base: assetBase ?? undefined } : {}),
+      values: assetValuesOf(values, assetScheduleForms),
     };
-
-    try {
-      await setDoc(doc(assetsCollection, assetId), cleanForFirestore(assetData));
+    await runOp('asset', save.opId, context => saveHomeAsset({ ...context, save }), async (result) => {
       setAssetDialogOpen(false);
-      setSelectedAssetId(assetId);
-      toast({ title: editingAsset ? 'Asset updated' : 'Asset added' });
+      setSelectedAssetId(result.id);
+      toast({ title: editing ? 'Asset updated' : 'Asset added' });
       await refreshMaintenanceData();
-    } catch (saveError) {
-      console.error('Error saving asset:', saveError);
-      toastError(saveError, 'Could not save the home asset');
-    }
+    }, 'dialog');
   };
 
   const saveVehicle = async (values: VehicleFormValues) => {
     if (!currentUser?.householdId) return;
-    const vehiclesCollection = getCollectionRef('vehicles');
-    if (!vehiclesCollection) return;
-
-    const now = new Date().toISOString();
-    const vehicleId = editingVehicle?.id || slugify(values.nickname);
     const nextVehicleScheduleErrors = Object.fromEntries(vehicleScheduleForms.flatMap((schedule) => {
       if (!schedule.serviceName.trim()) return [[schedule.id, 'Enter a name for this service item.']];
       if (schedule.mode === 'checklist') return [];
@@ -1457,64 +1725,27 @@ export function MaintenanceLogClient() {
       focusScheduleField('vehicle', Object.keys(nextVehicleScheduleErrors)[0]);
       return;
     }
-    const serviceSchedules = vehicleScheduleForms.reduce<VehicleServiceSchedule[]>((schedules, schedule) => {
-      const serviceName = trimOptional(schedule.serviceName);
-      if (!serviceName) return schedules;
-
-      schedules.push({
-        id: schedule.id,
-        mode: schedule.mode,
-        serviceName,
-        intervalMiles: toNumber(schedule.intervalMiles),
-        intervalMonths: toNumber(schedule.intervalMonths),
-        lastCompletedMileage: toNumber(schedule.lastCompletedMileage),
-        lastCompletedDate: trimOptional(schedule.lastCompletedDate),
-        nextDueMileage: toNumber(schedule.nextDueMileage),
-        nextDueDate: trimOptional(schedule.nextDueDate),
-        // Carried through unchanged. It only applies while it equals nextDueDate,
-        // so editing the due date here ends the snooze on its own.
-        snoozedUntil: trimOptional(schedule.snoozedUntil),
-      });
-      return schedules;
-    }, []);
-    const vehicleData: Omit<Vehicle, 'id'> = {
-      householdId: currentUser.householdId,
-      nickname: values.nickname.trim(),
-      year: toNumber(values.year),
-      make: trimOptional(values.make),
-      model: trimOptional(values.model),
-      trim: trimOptional(values.trim),
-      vin: trimOptional(values.vin),
-      licensePlate: trimOptional(values.licensePlate),
-      currentMileage: toNumber(values.currentMileage),
-      purchaseDate: trimOptional(values.purchaseDate),
-      purchasePrice: toNumber(values.purchasePrice),
-      insuranceProvider: trimOptional(values.insuranceProvider),
-      registrationExpiration: trimOptional(values.registrationExpiration),
-      inspectionExpiration: trimOptional(values.inspectionExpiration),
-      status: values.status,
-      notes: trimOptional(values.notes),
-      serviceSchedules,
-      createdAt: editingVehicle?.createdAt || now,
-      updatedAt: now,
+    const editing = editingVehicle;
+    const vehicleValues = vehicleValuesOf(values, vehicleScheduleForms);
+    // An edited odometer below (or far above) the recorded one asks first.
+    if (editing && vehicleValues.currentMileage !== editing.currentMileage
+      && !mileageConfirmed('vehicle', vehicleValues.currentMileage, editing.currentMileage)) return;
+    const save: { opId: string; id?: string; base?: VehicleValues; values: VehicleValues } = {
+      opId: newOpId(),
+      ...(editing ? { id: editing.id, base: vehicleBase ?? undefined } : {}),
+      values: vehicleValues,
     };
-
-    try {
-      await setDoc(doc(vehiclesCollection, vehicleId), cleanForFirestore(vehicleData));
+    await runOp('vehicle', save.opId, context => saveVehicleAction({ ...context, save }), async (result) => {
       setVehicleDialogOpen(false);
-      setSelectedVehicleId(vehicleId);
-      toast({ title: editingVehicle ? 'Vehicle updated' : 'Vehicle added' });
+      setMileageCheck(null);
+      setSelectedVehicleId(result.id);
+      toast({ title: editing ? 'Vehicle updated' : 'Vehicle added' });
       await refreshMaintenanceData();
-    } catch (saveError) {
-      console.error('Error saving vehicle:', saveError);
-      toastError(saveError, 'Could not save the vehicle');
-    }
+    }, 'dialog');
   };
 
   const saveLog = async (values: LogFormValues) => {
     if (!currentUser?.householdId) return;
-    const logsCollection = getCollectionRef('maintenance');
-    if (!logsCollection) return;
 
     // Field problems are shown under the field (FormMessage), never as a toast.
     if (values.targetType === 'home_asset' && !values.assetId) {
@@ -1526,6 +1757,15 @@ export function MaintenanceLogClient() {
       logForm.setError('vehicleId', { message: 'Choose a vehicle or switch the log to general.' }, { shouldFocus: true });
       return;
     }
+
+    const reading = values.targetType === 'vehicle' ? toNumber(values.mileage) : undefined;
+    if (typeof reading === 'number' && (!Number.isInteger(reading) || reading < 0 || reading > MAX_MILEAGE)) {
+      logForm.setError('mileage', { message: 'Enter the mileage as a whole number.' }, { shouldFocus: true });
+      return;
+    }
+    const logVehicle = values.targetType === 'vehicle' ? vehicles.find(vehicle => vehicle.id === values.vehicleId) : undefined;
+    const readingChanged = !editingLog || reading !== editingLog.mileage;
+    if (readingChanged && !mileageConfirmed('log', reading, logVehicle?.currentMileage)) return;
 
     // Log service: a new log for the reminder's own asset or vehicle also
     // completes that schedule cycle. Switching the form to another target makes it
@@ -1539,186 +1779,100 @@ export function MaintenanceLogClient() {
       // Never write a schedule without a next due: the advanced values must be
       // computable from the log (Log service opens only for such schedules, so
       // the only way to miss is a cleared mileage on a mileage-interval service).
-      const completion = serviceCompletionValues(
-        linked,
-        values.date,
-        linked.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
-      );
+      const completion = serviceCompletionValues(linked, values.date, linked.targetType === 'vehicle' ? reading : undefined);
       if (!completion) {
         logForm.setError('mileage', { message: 'Enter the mileage so the next service can be scheduled.' }, { shouldFocus: true });
         return;
       }
-      try {
-        const done = await applyScheduleCompletion(linked, { ...completion, notes: values.notes }, {
+      await completeSchedule('log', linked, { ...completion, notes: values.notes }, {
+        details: {
           title: values.title.trim(),
           type: values.type,
           cost: toNumber(values.cost),
           partsUsed: trimOptional(values.partsUsed),
           serviceProvider: trimOptional(values.serviceProvider),
-        });
-        if (!done) return;
-        setLogDialogOpen(false);
-        setLogScheduleTarget(null);
-        playFeedback('complete');
-        toast({ title: 'Service logged', description: `${getScheduleCompletionName(linked)} is marked done.` });
-        await refreshMaintenanceData();
-      } catch (saveError) {
-        console.error('Error logging service:', saveError);
-        toastError(saveError, 'Could not log the service');
-      }
+        },
+        surface: 'dialog',
+        toastTitle: 'Service logged',
+        settled: () => {
+          setLogDialogOpen(false);
+          setLogScheduleTarget(null);
+          setMileageCheck(null);
+        },
+        onRefused: reason => {
+          const field = refusalField(reason);
+          logForm.setError(field === 'completedDate' ? 'date' : 'mileage', { message: refusalMessage(reason) }, { shouldFocus: true });
+        },
+      });
       return;
     }
 
-    const now = new Date().toISOString();
-    const logId = editingLog?.id || slugify(values.title);
-    const logData: Omit<MaintenanceLog, 'id'> = {
-      householdId: currentUser.householdId,
-      targetType: values.targetType,
-      assetId: values.targetType === 'home_asset' ? values.assetId : undefined,
-      vehicleId: values.targetType === 'vehicle' ? values.vehicleId : undefined,
-      title: values.title.trim(),
-      item: values.title.trim(),
-      date: values.date,
-      type: values.type,
-      notes: trimOptional(values.notes),
-      cost: toNumber(values.cost),
-      partsUsed: trimOptional(values.partsUsed),
-      serviceProvider: trimOptional(values.serviceProvider),
-      mileage: values.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
-      createdAt: editingLog?.createdAt || now,
-      updatedAt: now,
-      summary: editingLog?.summary,
-      receiptUrl: editingLog?.receiptUrl,
+    const editing = editingLog;
+    const save: { opId: string; id?: string; base?: LogValues; values: LogValues } = {
+      opId: newOpId(),
+      ...(editing ? { id: editing.id, base: logBase ?? undefined } : {}),
+      values: logValuesOf(values),
     };
-
-    try {
-      await setDoc(doc(logsCollection, logId), cleanForFirestore(logData));
+    await runOp('log', save.opId, context => saveMaintenanceLog({ ...context, save }), async () => {
       setLogDialogOpen(false);
       setEditingLog(null);
-      toast({ title: editingLog ? 'Maintenance log updated' : 'Maintenance log added' });
+      setMileageCheck(null);
+      toast({ title: editing ? 'Maintenance log updated' : 'Maintenance log added' });
       await refreshMaintenanceData();
-    } catch (saveError) {
-      console.error('Error saving maintenance log:', saveError);
-      toastError(saveError, 'Could not save the maintenance log');
-    }
-  };
-
-  const scheduleSourceFor = (target: ScheduleCompletionTarget) => {
-    const ownerId = target.targetType === 'home_asset' ? target.asset.id : target.vehicle.id;
-    return {
-      sourceType: target.targetType === 'home_asset' ? 'maintenance_asset_schedule' : 'maintenance_vehicle_service',
-      sourceId: scheduleKeyFor(ownerId, target.schedule, target.scheduleIndex, target.targetType),
-      legacySourceId: `${ownerId}-${target.scheduleIndex}`,
-    };
-  };
-
-  /**
-   * Records a completion: a routine log, the advanced schedule, and the current
-   * reminder cycle resolved (the server then creates the next cycle's reminder
-   * when it comes due). Shared by the completion dialog and one-tap Mark done.
-   */
-  const applyScheduleCompletion = async (
-    target: ScheduleCompletionTarget,
-    values: { completedDate: string; mileage?: number; nextDueDate?: string; nextDueMileage?: number; notes?: string },
-    /** Details from the full log form (Log service); a quick completion has none. */
-    details?: Pick<MaintenanceLog, 'title' | 'type' | 'cost' | 'partsUsed' | 'serviceProvider'>,
-  ) => {
-    const householdId = currentUser?.householdId;
-    const logsCollection = getCollectionRef('maintenance');
-    const assetsCollection = getCollectionRef('home-assets');
-    const vehiclesCollection = getCollectionRef('vehicles');
-    if (!householdId || !logsCollection || !assetsCollection || !vehiclesCollection) return false;
-
-    const now = new Date().toISOString();
-    const scheduleName = details?.title || getScheduleCompletionName(target);
-    const logId = `${slugify(`${scheduleName}-${values.completedDate}`)}-${Date.now()}`;
-    const logData: Omit<MaintenanceLog, 'id'> = {
-      householdId,
-      targetType: target.targetType,
-      assetId: target.targetType === 'home_asset' ? target.asset.id : undefined,
-      vehicleId: target.targetType === 'vehicle' ? target.vehicle.id : undefined,
-      title: scheduleName,
-      item: scheduleName,
-      date: values.completedDate,
-      type: details?.type || 'routine',
-      notes: trimOptional(values.notes),
-      cost: details?.cost,
-      partsUsed: details?.partsUsed,
-      serviceProvider: details?.serviceProvider,
-      mileage: target.targetType === 'vehicle' ? values.mileage : undefined,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const source = scheduleSourceFor(target);
-
-    if (target.targetType === 'home_asset') {
-      const { asset, scheduleIndex, schedule } = target;
-      const { id, ...assetFields } = asset;
-      const schedules = [...(asset.schedules || [])];
-      schedules[scheduleIndex] = completedAssetSchedule(schedule, values);
-      await Promise.all([
-        setDoc(doc(logsCollection, logId), cleanForFirestore(logData)),
-        setDoc(doc(assetsCollection, id), cleanForFirestore({
-          ...assetFields,
-          householdId,
-          schedules,
-          updatedAt: now,
-        })),
-        resolveMaintenanceNotifications(source.sourceType, source.sourceId, source.legacySourceId),
-      ]);
-    } else {
-      const { vehicle, scheduleIndex, schedule } = target;
-      const { id, ...vehicleFields } = vehicle;
-      const schedules = [...(vehicle.serviceSchedules || [])];
-      schedules[scheduleIndex] = completedVehicleSchedule(schedule, values);
-      await Promise.all([
-        setDoc(doc(logsCollection, logId), cleanForFirestore(logData)),
-        setDoc(doc(vehiclesCollection, id), cleanForFirestore({
-          ...vehicleFields,
-          householdId,
-          currentMileage: typeof values.mileage === 'number' ? values.mileage : vehicle.currentMileage,
-          serviceSchedules: schedules,
-          updatedAt: now,
-        })),
-        resolveMaintenanceNotifications(source.sourceType, source.sourceId, source.legacySourceId),
-      ]);
-    }
-    return true;
+    }, 'dialog');
   };
 
   const completeScheduledMaintenance = async (values: ScheduleCompletionFormValues) => {
     if (!scheduleCompletionTarget) return;
     const target = scheduleCompletionTarget;
-    try {
-      const done = await applyScheduleCompletion(target, {
-        completedDate: values.completedDate,
-        mileage: target.targetType === 'vehicle' ? toNumber(values.mileage) : undefined,
-        nextDueDate: trimOptional(values.nextDueDate),
-        nextDueMileage: toNumber(values.nextDueMileage),
-        notes: values.notes,
-      });
-      if (!done) return;
-      if (target.targetType === 'home_asset') setSelectedAssetId(target.asset.id);
-      else setSelectedVehicleId(target.vehicle.id);
-      setScheduleCompletionTarget(null);
-      scheduleCompletionForm.reset(emptyScheduleCompletionForm());
-      playFeedback('complete');
-      toast({ title: 'Scheduled maintenance completed' });
-      await refreshMaintenanceData();
-    } catch (saveError) {
-      console.error('Error completing scheduled maintenance:', saveError);
-      toastError(saveError, 'Could not complete maintenance');
+    const mileage = target.targetType === 'vehicle' ? toNumber(values.mileage) : undefined;
+    if (typeof mileage === 'number' && (!Number.isInteger(mileage) || mileage < 0 || mileage > MAX_MILEAGE)) {
+      scheduleCompletionForm.setError('mileage', { message: 'Enter the mileage as a whole number.' }, { shouldFocus: true });
+      return;
     }
+    if (target.targetType === 'vehicle' && !mileageConfirmed('complete', mileage, target.vehicle.currentMileage)) return;
+    await completeSchedule('complete', target, {
+      completedDate: values.completedDate,
+      mileage,
+      nextDueDate: trimOptional(values.nextDueDate),
+      nextDueMileage: toNumber(values.nextDueMileage),
+      notes: values.notes,
+    }, {
+      surface: 'dialog',
+      toastTitle: 'Scheduled maintenance completed',
+      settled: () => {
+        setScheduleCompletionTarget(null);
+        scheduleCompletionForm.reset(emptyScheduleCompletionForm());
+        setMileageCheck(null);
+      },
+      onRefused: reason => scheduleCompletionForm.setError(refusalField(reason), { message: refusalMessage(reason) }, { shouldFocus: true }),
+    });
   };
 
   /**
+   * A vehicle service with a mileage interval asks for the odometer first (MA-6a). One with
+   * only a set due mileage and no interval opens the completion dialog instead, where the
+   * next due is typed (the server refuses it without a reading: `mileage_required`).
+   */
+  const needsMileageReading = (target: ScheduleCompletionTarget) =>
+    target.targetType === 'vehicle' && Boolean(target.schedule.intervalMiles);
+
+  /**
    * One-tap Mark done from a reminder card. When the next due date or mileage
-   * cannot be worked out (no interval, or no recorded mileage), the completion
-   * dialog opens instead so nothing is guessed.
+   * cannot be worked out (no interval), the completion dialog opens instead so
+   * nothing is guessed; a service due by mileage opens Confirm mileage.
    */
   const reminderCompletesInPlace = (reminder: MaintenanceReminder) => {
     const target = findReminderSchedule(reminder, assets, vehicles);
-    return Boolean(target && quickCompletionValues(target, today));
+    return Boolean(target && !needsMileageReading(target) && quickCompletionValues(target, today));
+  };
+
+  const openMileageConfirm = (target: Extract<ScheduleCompletionTarget, { targetType: 'vehicle' }>) => {
+    setMileageCheck(null);
+    clearNotice('mileage');
+    setMileageInput(typeof target.vehicle.currentMileage === 'number' ? String(target.vehicle.currentMileage) : '');
+    setMileageInputError(null);
+    setMileageTarget(target);
   };
 
   const markReminderDone = async (reminder: MaintenanceReminder): Promise<MarkDoneResult> => {
@@ -1728,6 +1882,10 @@ export function MaintenanceLogClient() {
       openReminderTarget(reminder);
       return 'deferred';
     }
+    if (target.targetType === 'vehicle' && needsMileageReading(target)) {
+      openMileageConfirm(target);
+      return 'deferred';
+    }
     const values = quickCompletionValues(target, today);
     if (!values) {
       openScheduleCompletionDialog(target);
@@ -1735,22 +1893,41 @@ export function MaintenanceLogClient() {
     }
     setReminderBusy({ id: reminder.id, action: 'done' });
     try {
-      const done = await applyScheduleCompletion(target, values);
-      if (!done) return 'failed';
-      playFeedback('complete');
-      toast({
-        title: 'Marked done',
-        description: `${reminder.title} for ${reminder.relatedName} is logged.${values.nextDueDate ? ` Next due ${formatDate(values.nextDueDate)}.` : ''}`,
+      const outcome = await completeSchedule(`done:${reminderCycleKey(reminder)}`, target, values, {
+        surface: 'toast',
+        toastTitle: 'Marked done',
+        onRefused: reason => toast({ variant: 'destructive', title: refusalMessage(reason) }),
       });
-      await refreshMaintenanceData();
-      return 'done';
-    } catch (saveError) {
-      console.error('Error completing maintenance from a reminder:', saveError);
-      toastError(saveError, 'Could not mark it done');
-      return 'failed';
+      return outcome.kind === 'ok' ? outcome.value : 'failed';
     } finally {
       setReminderBusy(null);
     }
+  };
+
+  const submitMileageConfirm = async () => {
+    const target = mileageTarget;
+    if (!target) return;
+    const reading = Number(mileageInput.trim());
+    if (!mileageInput.trim() || !Number.isInteger(reading) || reading < 0 || reading > MAX_MILEAGE) {
+      setMileageInputError('Enter the odometer reading as a whole number.');
+      return;
+    }
+    setMileageInputError(null);
+    if (!mileageConfirmed('mileage', reading, target.vehicle.currentMileage)) return;
+    const values = serviceCompletionValues(target, today, reading);
+    if (!values) {
+      setMileageInputError('Enter the odometer reading so the next service can be scheduled.');
+      return;
+    }
+    await completeSchedule('mileage', target, values, {
+      surface: 'dialog',
+      toastTitle: 'Marked done',
+      settled: () => {
+        setMileageTarget(null);
+        setMileageCheck(null);
+      },
+      onRefused: reason => setMileageInputError(refusalMessage(reason)),
+    });
   };
 
   /**
@@ -1766,7 +1943,7 @@ export function MaintenanceLogClient() {
     // Like Mark done: a schedule whose next due cannot be advanced from its
     // interval (an explicit date or mileage with no repeat) is completed in the
     // completion dialog, where the next due values are entered.
-    if (target && canComplete && !quickCompletionValues(target, today)) {
+    if (target && canComplete && !quickCompletionValues(target, today) && !needsMileageReading(target)) {
       openScheduleCompletionDialog(target);
       return;
     }
@@ -1782,39 +1959,42 @@ export function MaintenanceLogClient() {
 
   /**
    * Snooze moves the schedule's next due date a week past the later of today and
-   * the current due date. It is an ordinary schedule edit (maintenance.edit), so
-   * the hourly server job and every device see the new date; the current
-   * reminder cycle is resolved like a completion.
+   * the current due date, on the server, by the schedule's id and only while it is
+   * still the cycle this card shows; the reminder is resolved after it. Undo for 10 s.
    */
   const snoozeReminder = async (reminder: MaintenanceReminder) => {
     if (reminderBusy || !canEdit) return;
     const target = findReminderSchedule(reminder, assets, vehicles);
-    const assetsCollection = getCollectionRef('home-assets');
-    const vehiclesCollection = getCollectionRef('vehicles');
-    if (!target || !assetsCollection || !vehiclesCollection) return;
-    const nextDueDate = snoozedDueDate(target.schedule.nextDueDate, today);
-    const now = new Date().toISOString();
+    if (!target) return;
+    const opId = newOpId();
+    const snooze = {
+      opId,
+      ownerType: target.targetType,
+      ownerId: ownerIdOf(target),
+      scheduleId: scheduleRef(target.schedule as StoredSchedule, target.scheduleIndex, target.targetType),
+      seen: cycleOf(target.schedule as StoredSchedule),
+    };
     setReminderBusy({ id: reminder.id, action: 'snooze' });
     try {
-      if (target.targetType === 'home_asset') {
-        const schedules = [...(target.asset.schedules || [])];
-        schedules[target.scheduleIndex] = { ...target.schedule, nextDueDate, snoozedUntil: nextDueDate };
-        await updateDoc(doc(assetsCollection, target.asset.id), cleanForFirestore({ schedules, updatedAt: now }));
-      } else {
-        const serviceSchedules = [...(target.vehicle.serviceSchedules || [])];
-        serviceSchedules[target.scheduleIndex] = { ...target.schedule, nextDueDate, snoozedUntil: nextDueDate };
-        await updateDoc(doc(vehiclesCollection, target.vehicle.id), cleanForFirestore({ serviceSchedules, updatedAt: now }));
-      }
-      const source = scheduleSourceFor(target);
-      // Best effort: the schedule change is what matters, and the new due date
-      // has its own reminder identity anyway.
-      await resolveMaintenanceNotifications(source.sourceType, source.sourceId, source.legacySourceId)
-        .catch((resolveError) => console.error('Could not resolve snoozed reminder notifications:', resolveError));
-      toast({ title: 'Snoozed for a week', description: `${reminder.title} for ${reminder.relatedName} is now due ${formatDate(nextDueDate)}.` });
-      await refreshMaintenanceData();
-    } catch (snoozeError) {
-      console.error('Error snoozing maintenance reminder:', snoozeError);
-      toastError(snoozeError, 'Could not snooze');
+      await runOp(`snooze:${reminderCycleKey(reminder)}`, opId, context => snoozeMaintenanceSchedule({ ...context, snooze }), async (result) => {
+        if (result.status === 'snoozed') {
+          const handle = toast({
+            title: 'Snoozed for a week',
+            description: `${reminder.title} for ${reminder.relatedName} is now due ${formatDate(result.nextDueDate)}.`,
+            duration: UNDO_WINDOW_MS,
+            action: (
+              <ToastAction altText={`Undo snoozing ${reminder.title}`} onClick={() => { handle.dismiss(); void undoSnooze(result.opId); }}>
+                Undo
+              </ToastAction>
+            ),
+          });
+        } else if (result.status === 'refused') {
+          toast({ title: "This can't be snoozed", description: 'Only date-driven reminders that are due soon or overdue can be snoozed.' });
+        } else {
+          toast({ title: CHANGED_MESSAGE });
+        }
+        await refreshMaintenanceData();
+      }, 'toast');
     } finally {
       setReminderBusy(null);
     }
@@ -2624,6 +2804,7 @@ export function MaintenanceLogClient() {
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    key={reminderListEpoch}
                     {...reminderListProps}
                     reminders={dueSoonReminders}
                     emptyTitle="Nothing due soon"
@@ -2639,6 +2820,7 @@ export function MaintenanceLogClient() {
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    key={reminderListEpoch}
                     {...reminderListProps}
                     reminders={overdueReminders}
                     emptyTitle="Nothing overdue"
@@ -2654,6 +2836,7 @@ export function MaintenanceLogClient() {
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    key={reminderListEpoch}
                     {...reminderListProps}
                     reminders={warrantyReminders}
                     emptyTitle="No warranty reminders"
@@ -2669,6 +2852,7 @@ export function MaintenanceLogClient() {
                 </CardHeader>
                 <CardContent>
                   <ReminderList
+                    key={reminderListEpoch}
                     {...reminderListProps}
                     reminders={vehicleServiceReminders}
                     emptyTitle="No vehicle reminders"
@@ -2694,6 +2878,7 @@ export function MaintenanceLogClient() {
       </div>
 
       <Dialog open={assetDialogOpen} onOpenChange={(open) => {
+        if (!open && !closable('asset')) return;
         setAssetDialogOpen(open);
         if (!open) setAssetScheduleForms([]);
       }}>
@@ -2853,15 +3038,20 @@ export function MaintenanceLogClient() {
                 </div>
               </div>
               <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" onClick={() => setAssetDialogOpen(false)}>Cancel</Button>
-                <Button type="submit">Save Asset</Button>
+                <Button type="button" variant="secondary" disabled={Boolean(inFlight.asset)} onClick={() => setAssetDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={Boolean(inFlight.asset)}>
+                  {inFlight.asset && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+                  Save Asset
+                </Button>
               </DialogFooter>
+              <SaveNotice notice={notices.asset} busy={Boolean(inFlight.asset)} />
             </form>
           </Form>
         </DialogContent>
       </Dialog>
 
       <Dialog open={vehicleDialogOpen} onOpenChange={(open) => {
+        if (!open && !closable('vehicle')) return;
         setVehicleDialogOpen(open);
         if (!open) setVehicleScheduleForms([]);
       }}>
@@ -3048,16 +3238,26 @@ export function MaintenanceLogClient() {
                   )}
                 </div>
               </div>
+              {mileageCheck?.key === 'vehicle' && (
+                <div className="px-6 pb-3">
+                  <MileageWarning message={mileageCheck.message} />
+                </div>
+              )}
               <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" onClick={() => setVehicleDialogOpen(false)}>Cancel</Button>
-                <Button type="submit">Save Vehicle</Button>
+                <Button type="button" variant="secondary" disabled={Boolean(inFlight.vehicle)} onClick={() => setVehicleDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={Boolean(inFlight.vehicle)}>
+                  {inFlight.vehicle && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+                  {mileageCheck?.key === 'vehicle' ? 'Save anyway' : 'Save Vehicle'}
+                </Button>
               </DialogFooter>
+              <SaveNotice notice={notices.vehicle} busy={Boolean(inFlight.vehicle)} />
             </form>
           </Form>
         </DialogContent>
       </Dialog>
 
       <Dialog open={logDialogOpen} onOpenChange={(open) => {
+        if (!open && !closable('log')) return;
         setLogDialogOpen(open);
         if (!open) {
           setEditingLog(null);
@@ -3110,24 +3310,30 @@ export function MaintenanceLogClient() {
                 )} />
                 {logForm.watch('targetType') === 'vehicle' && (
                   <FormField control={logForm.control} name="mileage" render={({ field }) => (
-                    <FormItem><FormLabel>Mileage</FormLabel><FormControl><Input type="number" min="0" {...field} /></FormControl><FormMessage /></FormItem>
+                    <FormItem><FormLabel>Mileage</FormLabel><FormControl><Input type="number" inputMode="numeric" min="0" step="1" {...field} /></FormControl><FormMessage /></FormItem>
                   )} />
                 )}
+                <MileageWarning message={mileageCheck?.key === 'log' ? mileageCheck.message : undefined} />
                 <FormField control={logForm.control} name="notes" render={({ field }) => (
                   <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={4} placeholder="Describe what happened, what was done, and any follow-up needed." {...field} /></FormControl><FormMessage /></FormItem>
                 )} />
                 </div>
               </div>
               <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" onClick={() => setLogDialogOpen(false)}>Cancel</Button>
-                <Button type="submit">{editingLog ? 'Update Log' : 'Save Log'}</Button>
+                <Button type="button" variant="secondary" disabled={Boolean(inFlight.log)} onClick={() => setLogDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={Boolean(inFlight.log)}>
+                  {inFlight.log && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+                  {mileageCheck?.key === 'log' ? 'Save anyway' : editingLog ? 'Update Log' : 'Save Log'}
+                </Button>
               </DialogFooter>
+              <SaveNotice notice={notices.log} busy={Boolean(inFlight.log)} />
             </form>
           </Form>
         </DialogContent>
       </Dialog>
 
       <Dialog open={!!scheduleCompletionTarget} onOpenChange={(open) => {
+        if (!open && !closable('complete')) return;
         if (!open) {
           setScheduleCompletionTarget(null);
           scheduleCompletionForm.reset(emptyScheduleCompletionForm());
@@ -3184,7 +3390,9 @@ export function MaintenanceLogClient() {
                         <FormControl>
                           <Input
                             type="number"
+                            inputMode="numeric"
                             min="0"
+                            step="1"
                             {...field}
                             onChange={(event) => {
                               field.onChange(event);
@@ -3217,6 +3425,7 @@ export function MaintenanceLogClient() {
                       </FormItem>
                     )} />
                   )}
+                  <MileageWarning message={mileageCheck?.key === 'complete' ? mileageCheck.message : undefined} />
                   <FormField control={scheduleCompletionForm.control} name="notes" render={({ field }) => (
                     <FormItem className="sm:col-span-2">
                       <FormLabel>Log Notes</FormLabel>
@@ -3227,11 +3436,68 @@ export function MaintenanceLogClient() {
                 </div>
               </div>
               <DialogFooter className="border-t px-6 py-4">
-                <Button type="button" variant="secondary" onClick={() => setScheduleCompletionTarget(null)}>Cancel</Button>
-                <Button type="submit">Complete Maintenance</Button>
+                <Button type="button" variant="secondary" disabled={Boolean(inFlight.complete)} onClick={() => setScheduleCompletionTarget(null)}>Cancel</Button>
+                <Button type="submit" disabled={Boolean(inFlight.complete)}>
+                  {inFlight.complete && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+                  {mileageCheck?.key === 'complete' ? 'Save anyway' : 'Complete Maintenance'}
+                </Button>
               </DialogFooter>
+              <SaveNotice notice={notices.complete} busy={Boolean(inFlight.complete)} />
             </form>
           </Form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!mileageTarget} onOpenChange={(open) => {
+        if (!open && !closable('mileage')) return;
+        if (!open) {
+          setMileageTarget(null);
+          setMileageCheck(null);
+        }
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirm mileage</DialogTitle>
+            <DialogDescription>
+              {mileageTarget
+                ? `${getScheduleCompletionName(mileageTarget)} for ${mileageTarget.vehicle.nickname}: the odometer reading now, so the next service is scheduled from it.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitMileageConfirm();
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="maintenance-confirm-mileage">Odometer (miles)</Label>
+              <Input
+                id="maintenance-confirm-mileage"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                value={mileageInput}
+                aria-invalid={Boolean(mileageInputError)}
+                aria-describedby={mileageInputError ? 'maintenance-confirm-mileage-error' : undefined}
+                onChange={(event) => {
+                  setMileageInput(event.target.value.replace(/[^0-9]/g, ''));
+                  setMileageInputError(null);
+                }}
+              />
+              {mileageInputError && <p id="maintenance-confirm-mileage-error" className="text-sm font-medium text-destructive">{mileageInputError}</p>}
+            </div>
+            <MileageWarning message={mileageCheck?.key === 'mileage' ? mileageCheck.message : undefined} />
+            <DialogFooter>
+              <Button type="button" variant="secondary" disabled={Boolean(inFlight.mileage)} onClick={() => { setMileageTarget(null); setMileageCheck(null); }}>Cancel</Button>
+              <Button type="submit" disabled={Boolean(inFlight.mileage)}>
+                {inFlight.mileage && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+                {mileageCheck?.key === 'mileage' ? 'Save anyway' : 'Mark done'}
+              </Button>
+            </DialogFooter>
+          </form>
+          <SaveNotice notice={notices.mileage} busy={Boolean(inFlight.mileage)} />
         </DialogContent>
       </Dialog>
 

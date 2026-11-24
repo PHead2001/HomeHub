@@ -234,6 +234,31 @@ describe('household upkeep', () => {
     assert.equal((await ref.get()).data()!.resolvedAt, null);
   });
 
+  test('a maintenance reminder that is no longer actionable is resolved (M1: the durable cleanup retry)', async () => {
+    const now = new Date('2026-11-05T15:00:00Z');
+    await run(now);
+    const overdue = (await house().collection('notifications').where('category', '==', 'maintenance').get()).docs[0].ref;
+    // A completion the app could not clean up after: the schedule moved on.
+    await house().collection('home-assets').doc('hvac').update({ schedules: [{ id: 's1', scheduleName: 'Replace filter', nextDueDate: '2027-02-01' }] });
+    // A reminder of a record deleted meanwhile, and one with no stateKey (left alone).
+    const orphan = house().collection('notifications').doc('orphan');
+    await orphan.set({ householdId: HOUSE, category: 'maintenance', title: 'x', message: 'x', sourceType: 'maintenance_vehicle_service', sourceId: 'gone:oil', stateKey: 'overdue|2026-10-01', audience: ['*'], readBy: {}, dismissedBy: {} });
+    const noState = house().collection('notifications').doc('no-state');
+    await noState.set({ householdId: HOUSE, category: 'maintenance', title: 'x', message: 'x', sourceType: 'maintenance_asset_schedule', sourceId: 'hvac:s1', audience: ['*'], readBy: {}, dismissedBy: {} });
+    const later = await run(new Date('2026-11-05T16:00:00Z'));
+    assert.equal(later.resolvedNotifications >= 2, true);
+    assert.ok((await overdue.get()).get('resolvedAt'), 'the completed cycle is resolved');
+    assert.ok((await orphan.get()).get('resolvedAt'), 'the deleted record is resolved');
+    assert.equal((await noState.get()).get('resolvedAt'), undefined);
+    // Idempotent, and a still-actionable reminder is never resolved.
+    await house().collection('home-assets').doc('hvac').update({ schedules: [{ id: 's1', scheduleName: 'Replace filter', nextDueDate: '2026-11-01' }] });
+    await run(new Date('2026-11-05T17:00:00Z'));
+    const open = (await house().collection('notifications').where('sourceId', '==', 'hvac:s1').get()).docs
+      .filter(doc => doc.get('stateKey') === 'overdue|2026-11-01');
+    assert.equal(open.length, 1);
+    assert.equal(open[0].get('resolvedAt'), undefined);
+  });
+
   test('a still-overdue reminder is refreshed before TTL could delete it, keeping its state', async () => {
     const now = new Date('2026-11-05T15:00:00Z');
     await run(now);
