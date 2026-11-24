@@ -147,8 +147,9 @@ export function HouseholdManagementClient() {
     ownEmail: currentUser?.email ?? null,
   });
   const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
-  // Invite expiry by the server's clock, moving on while a code can still expire (HO-8).
-  const inviteNow = useServerNow(reads.invites && canManageInvites, inviteLiveKey(invites));
+  // Invite expiry by the server's clock, moving on while a code is still active (HO-8);
+  // once the last one has expired the clock stops.
+  const inviteNow = useServerNow(reads.invites && canManageInvites, (now) => inviteLiveKey(invites, now));
   // Wall tablets: kid profiles and tablet PINs (owners and admins, devices flag on).
   const tablet = useMemberTabletControls({ householdId: household?.id, currentMember, members });
   // Kid profiles are managed by role (owner or admin), as the server enforces.

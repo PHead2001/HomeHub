@@ -12,10 +12,11 @@ const TICK_MS = 15_000;
  * device clock nor freezes at the first render). While `enabled`, the offset is
  * learned once from `householdServerTimeAction`; until it answers, or if it
  * fails, the device clock is used. The time moves on every 15 seconds while
- * `liveKey` is not empty (something can still expire), and at once when
- * `liveKey` changes, so a newly created invite is measured against a fresh time.
+ * `liveKeyAt(now)` is not empty (something is still live at the current time),
+ * and at once when that key changes, so a newly created invite is measured against
+ * a fresh time; once nothing is live the clock stops.
  */
-export function useServerNow(enabled: boolean, liveKey: string): Date {
+export function useServerNow(enabled: boolean, liveKeyAt: (now: Date) => string): Date {
   const [offsetMs, setOffsetMs] = useState(0);
   const [tick, setTick] = useState(() => Date.now());
   const learned = useRef(false);
@@ -43,6 +44,9 @@ export function useServerNow(enabled: boolean, liveKey: string): Date {
     return () => { cancelled = true; };
   }, [enabled]);
 
+  const now = useMemo(() => new Date(tick + offsetMs), [tick, offsetMs]);
+  const liveKey = enabled ? liveKeyAt(now) : '';
+
   useEffect(() => {
     if (!enabled || !liveKey) return;
     const now = () => setTick(Date.now());
@@ -57,5 +61,5 @@ export function useServerNow(enabled: boolean, liveKey: string): Date {
     };
   }, [enabled, liveKey]);
 
-  return useMemo(() => new Date(tick + offsetMs), [tick, offsetMs]);
+  return now;
 }

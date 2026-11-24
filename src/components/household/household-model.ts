@@ -119,12 +119,16 @@ export function isActiveInvite(invite: Pick<InviteCode, 'revokedAt' | 'expiresAt
 }
 
 /**
- * Codes that can still change state with time alone (not revoked, not used up), as
- * one key. While it is not empty the Invite Codes list keeps its clock moving (HO-8).
+ * The codes still active at `now`, as one key. While it is not empty the Invite
+ * Codes list keeps its clock moving, so the last one ticks over to Expired and the
+ * clock then stops (HO-8).
  */
-export function inviteLiveKey(invites: readonly Pick<InviteCode, 'code' | 'revokedAt' | 'maxUses' | 'useCount'>[]): string {
+export function inviteLiveKey(
+  invites: readonly Pick<InviteCode, 'code' | 'revokedAt' | 'expiresAt' | 'maxUses' | 'useCount'>[],
+  now = new Date(),
+): string {
   return invites
-    .filter((invite) => !invite.revokedAt && (invite.useCount ?? 0) < (invite.maxUses ?? 1))
+    .filter((invite) => isActiveInvite(invite, now))
     .map((invite) => invite.code)
     .sort()
     .join('|');

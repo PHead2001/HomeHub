@@ -284,9 +284,17 @@ describe('Make owner warning (HO-8)', () => {
 
 describe('invite clock (HO-8)', () => {
   it('keeps the clock moving only while a code can still expire', () => {
-    const invite = (code: string, extra: Record<string, unknown> = {}) => ({ code, maxUses: 1, useCount: 0, ...extra });
-    assert.equal(inviteLiveKey([]), '');
-    assert.equal(inviteLiveKey([invite('B'), invite('A'), invite('R', { revokedAt: 'x' }), invite('U', { useCount: 1 })]), 'A|B');
+    const invite = (code: string, extra: Record<string, unknown> = {}) => ({ code, maxUses: 1, useCount: 0, expiresAt: '', ...extra });
+    const now = new Date('2026-08-01T12:00:00.000Z');
+    const live = { expiresAt: '2026-08-01T12:30:00.000Z' };
+    assert.equal(inviteLiveKey([], now), '');
+    assert.equal(inviteLiveKey([
+      invite('B', live), invite('A', live),
+      invite('R', { ...live, revokedAt: 'x' }), invite('U', { ...live, useCount: 1 }),
+      invite('E', { expiresAt: '2026-08-01T11:59:00.000Z' }),
+    ], now), 'A|B');
+    // Once the last code has expired the key is empty and the clock stops.
+    assert.equal(inviteLiveKey([invite('A', live)], new Date('2026-08-01T12:30:00.000Z')), '');
   });
 
   it('measures expiry against the time it is given, so a ticking clock flips the state', () => {

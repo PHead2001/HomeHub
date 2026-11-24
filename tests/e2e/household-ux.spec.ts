@@ -273,10 +273,11 @@ test.describe('invite expiry clock (HO-8)', () => {
       const row = page.getByRole('listitem').filter({ hasText: code });
       await expect(row.getByText('Active', { exact: true })).toBeVisible();
       // By the server's clock the code has about 30 minutes left (never a date months away).
-      await expect(row).toContainText(/expires in (29|30) min/);
+      // (The pinned clock read the server's time before the code was made: 30 or 31.)
+      await expect(row).toContainText(/expires in (30|31) min/);
 
-      // 31 minutes later on the device's (offset) clock, the open list flips on its own.
-      await page.clock.setFixedTime(new Date(fixedNow.getTime() + 31 * 60_000));
+      // 35 minutes later on the device's (offset) clock, the open list flips on its own.
+      await page.clock.setFixedTime(new Date(fixedNow.getTime() + 35 * 60_000));
       await expect(row.getByText('Expired', { exact: true })).toBeVisible({ timeout: 20_000 });
       await expect(row.getByRole('button', { name: `Revoke invite code ${code}` })).toHaveCount(0);
     } finally {
