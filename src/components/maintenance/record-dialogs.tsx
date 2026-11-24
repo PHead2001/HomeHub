@@ -12,7 +12,7 @@ import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/co
 import { Form, FormControl, FormField, FormItem, FormLabel } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { firstCalendarDue } from '@functions/shared/maintenance-schedule';
+import { applyScheduleRowEdit } from '@/lib/maintenance/schedule-form';
 import {
   detailsToggleLabel, emptyDetailFields, formIsDirty, visibleDetailFields,
 } from '@/lib/maintenance/form-sections';
@@ -40,16 +40,6 @@ function useFormToday(given?: string) {
   return given || householdToday;
 }
 
-/** A calendar-anchored schedule without a due day gets its first anchor day (M3 `firstCalendarDue`). */
-const withFirstCalendarDue = <S extends { anchor: string; anchorMonth: string; anchorDay: string; nextDueDate: string }>(
-  schedule: S, unit: 'days' | 'weeks' | 'months' | 'years' | undefined, value: number | undefined, today: string,
-): S => {
-  if (schedule.anchor !== 'calendar' || schedule.nextDueDate || !unit || !value) return schedule;
-  const due = firstCalendarDue({
-    unit, value, anchor: 'calendar', anchorMonth: toNumber(schedule.anchorMonth), anchorDay: toNumber(schedule.anchorDay),
-  }, today);
-  return due ? { ...schedule, nextDueDate: due } : schedule;
-};
 
 /**
  * Add or edit a home asset (MA-15): name, room, category, warranty (end date or Lifetime) and
@@ -119,14 +109,15 @@ function AssetDialogBody({ record, busy, notice, today: givenToday, onSave }: As
   const addPreset = (key: string) => {
     const draft = presetSchedulesFor(category, { today }).find(schedule => schedule.id?.startsWith(`${key}-`));
     if (!draft) return;
-    setAssetScheduleForms(prev => [...prev, assetScheduleToForm(draft)]);
+    // Its first due day is a suggestion: it follows later anchor and interval changes.
+    setAssetScheduleForms(prev => [...prev, { ...assetScheduleToForm(draft), nextDueGenerated: Boolean(draft.nextDueDate) }]);
   };
 
   const updateAssetSchedule = (id: string, patch: Partial<Omit<AssetScheduleForm, 'id'>>) => {
     setAssetScheduleForms(prev => prev.map(schedule => {
       if (schedule.id !== id) return schedule;
-      const next = { ...schedule, ...patch };
-      return withFirstCalendarDue(next, next.frequencyType || undefined, toNumber(next.intervalValue), today);
+      // A suggested due date follows the anchor and interval; a typed one is kept (PR #211 review).
+      return applyScheduleRowEdit<AssetScheduleForm>(schedule, patch as Partial<AssetScheduleForm>, row => ({ unit: row.frequencyType || undefined, value: toNumber(row.intervalValue) }), today);
     }));
     setAssetScheduleErrors(prev => ({ ...prev, [id]: '' }));
   };
@@ -401,14 +392,13 @@ function VehicleDialogBody({ record, busy, notice, mileageMessage, today: givenT
     const draft = presetSchedulesFor('Vehicle', { today, currentMileage: toNumber(values.currentMileage) })
       .find(schedule => schedule.id?.startsWith(`${key}-`));
     if (!draft) return;
-    setVehicleScheduleForms(prev => [...prev, vehicleScheduleToForm(draft)]);
+    setVehicleScheduleForms(prev => [...prev, { ...vehicleScheduleToForm(draft), nextDueGenerated: Boolean(draft.nextDueDate) }]);
   };
 
   const updateVehicleSchedule = (id: string, patch: Partial<Omit<VehicleScheduleForm, 'id'>>) => {
     setVehicleScheduleForms(prev => prev.map(schedule => {
       if (schedule.id !== id) return schedule;
-      const next = { ...schedule, ...patch };
-      return withFirstCalendarDue(next, toNumber(next.intervalMonths) ? 'months' : undefined, toNumber(next.intervalMonths), today);
+      return applyScheduleRowEdit<VehicleScheduleForm>(schedule, patch as Partial<VehicleScheduleForm>, row => ({ unit: toNumber(row.intervalMonths) ? 'months' : undefined, value: toNumber(row.intervalMonths) }), today);
     }));
     setVehicleScheduleErrors(prev => ({ ...prev, [id]: '' }));
   };

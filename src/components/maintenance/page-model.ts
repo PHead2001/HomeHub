@@ -134,6 +134,8 @@ export type ScheduleAnchorForm = {
   anchor: '' | 'completion' | 'calendar';
   anchorMonth: string;
   anchorDay: string;
+  /** The form suggested nextDueDate (a preset or a calendar anchor); never sent to the server. */
+  nextDueGenerated?: boolean;
 };
 
 export type VehicleScheduleForm = {

@@ -123,3 +123,13 @@ export const withReceiptReadDeadline = async <T,>(work: Promise<T>, ms = RECEIPT
     if (timer) clearTimeout(timer);
   }
 };
+
+/**
+ * How a picked image is prepared for the reader: `as_is` (a JPEG, PNG or WebP already small
+ * enough), `redraw` (one of those, too large: shrunk), `convert` (any other image, such as GIF,
+ * HEIC or AVIF: always re-encoded to JPEG, whatever its size, since the reader takes none of them).
+ */
+export const receiptImagePreparation = (contentType: string, bytes: number): 'as_is' | 'redraw' | 'convert' => {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(contentType)) return 'convert';
+  return bytes <= RECEIPT_READ_MAX_BYTES ? 'as_is' : 'redraw';
+};
