@@ -12,10 +12,11 @@ import { auth } from '@/lib/firebase';
 import { downscaleImage } from '@/lib/images/downscale';
 import {
   DISPLAY_MAX_EDGE, MAINTENANCE_FILE_MAX_BYTES, THUMBNAIL_MAX_EDGE, attachmentFolder, checkMaintenanceFile, derivedFilePaths,
+  originalFilePath,
 } from '@/lib/maintenance/attachments';
 import type { MaintenanceAttachment, MaintenanceAttachmentCategory, MaintenanceAttachmentTargetType } from '@/lib/types';
 import { OFFLINE_MESSAGE } from './maintenance-action-client';
-import { cleanForFirestore, createLocalId, sanitizeFileName } from './page-model';
+import { cleanForFirestore, createLocalId } from './page-model';
 
 /** No upload progress for this long: the upload is cancelled and reported (never hangs). */
 export const UPLOAD_STALL_MS = 30_000;
@@ -98,7 +99,8 @@ export async function uploadMaintenanceFile(input: {
 
   const attachmentId = `${Date.now()}-${createLocalId()}`;
   const folder = attachmentFolder(householdId, targetType, targetId);
-  const filePath = `${folder}${attachmentId}-${sanitizeFileName(file.name)}`;
+  // Never equal to a derived copy's path (`~display`/`~thumb`), whatever the file is called.
+  const filePath = originalFilePath(folder, attachmentId, file.name);
   const uploaded: string[] = [];
   try {
     await uploadWatched(filePath, file, check.contentType, uid);

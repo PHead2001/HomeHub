@@ -1,6 +1,8 @@
 // "Last updated N days ago" for a vehicle's odometer (MA-19, MA-6e), pure.
 import { differenceInCalendarDays, isValid, parseISO } from 'date-fns';
 import type { Vehicle } from '../types';
+import { mileageWarningMessage } from './action-call';
+import { mileageWarning } from './operations';
 
 /** A reading older than this many days gets a nudge to update it. */
 export const MILEAGE_STALE_DAYS = 30;
@@ -40,3 +42,34 @@ export const parseMileageInput = (raw: string): number | null => {
   const value = Number(text);
   return value <= 2_000_000 ? value : null;
 };
+
+export type MileageConfirmation = { reading: number; kind: 'lower' | 'jump'; message: string };
+
+/**
+ * What pressing Save in Update mileage does: ask once (a reading lower than the recorded mileage
+ * shows the correction copy, a jump of more than 20,000 asks too), or send, as a correction when
+ * the person confirmed a lower reading. `confirmed` is the question already on screen for this
+ * reading.
+ */
+export const planMileageSave = (reading: number, recorded: number | undefined, confirmed: MileageConfirmation | null):
+  | { kind: 'ask'; confirmation: MileageConfirmation }
+  | { kind: 'send'; correction: boolean } => {
+  const warning = mileageWarning(reading, recorded);
+  if (warning && typeof recorded === 'number' && confirmed?.reading !== reading) {
+    return { kind: 'ask', confirmation: { reading, kind: warning, message: mileageWarningMessage(warning, recorded, reading, 'correction') } };
+  }
+  return { kind: 'send', correction: warning === 'lower' || (confirmed?.reading === reading && confirmed.kind === 'lower') };
+};
+
+/**
+ * The server refused a reading as lower than the mileage recorded now (someone raised it while the
+ * dialog was open, PR #211 review): ask for the correction against that latest mileage, so the next
+ * Save sends it as a correction. Without the latest value the question names none.
+ */
+export const correctionAfterRefusal = (reading: number, latest: number | undefined): MileageConfirmation => ({
+  reading,
+  kind: 'lower',
+  message: typeof latest === 'number'
+    ? mileageWarningMessage('lower', latest, reading, 'correction')
+    : `The odometer was updated meanwhile to more than ${reading.toLocaleString('en-US')} mi. Saving corrects it down to ${reading.toLocaleString('en-US')} mi. Save anyway?`,
+});

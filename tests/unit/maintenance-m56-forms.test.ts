@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   MAINTENANCE_FILE_MAX_BYTES, MAINTENANCE_FILE_TYPES, attachmentThumbnailUrl, checkMaintenanceFile, defaultAttachmentCategory,
-  deleteActionLabel, derivedFilePaths, inferContentType,
+  deleteActionLabel, derivedFilePaths, inferContentType, originalFilePath,
 } from '../../src/lib/maintenance/attachments';
 import { pickTargetPhoto } from '../../src/lib/maintenance/display';
 import {
   DETAIL_FIELDS, detailsToggleLabel, emptyDetailFields, formIsDirty, visibleDetailFields,
 } from '../../src/lib/maintenance/form-sections';
-import { mileageFreshness, parseMileageInput } from '../../src/lib/maintenance/mileage-freshness';
+import { correctionAfterRefusal, mileageFreshness, parseMileageInput, planMileageSave } from '../../src/lib/maintenance/mileage-freshness';
 import {
   RECEIPT_READ_TIMEOUT, RECEIPT_TEXT_LIMITS, createReceiptReadGuard, withReceiptReadDeadline, receiptFieldsKept, receiptFillPatch, sanitizeReceiptFields,
 } from '../../src/lib/maintenance/receipt-fill';
@@ -63,11 +63,27 @@ describe('file checks (MA-11c): the same limits as storage.rules', () => {
     assert.equal(defaultAttachmentCategory('vehicle', null), 'manual');
   });
 
+  test('an original never shares a path with its derived copies, whatever it is called (PR #211 review)', () => {
+    const folder = maintenanceFileFolder('h1', 'home_asset', 'a1');
+    const { displayPath, thumbnailPath } = derivedFilePaths(folder, '123-abc');
+    const names = ['display.jpg', 'thumb.jpg', '~display.jpg', '~thumb.jpg', 'a~display.jpg', 'Display.JPG', 'thumb', '../thumb.jpg', 'photo.heic'];
+    for (let index = 0; index < 200; index += 1) {
+      names.push(Array.from({ length: 1 + (index % 14) }, (_, i) => '~-.ad_ishplythumb/\\ 9'[(index * 7 + i * 13) % 26]).join('') + '.jpg');
+    }
+    for (const name of names) {
+      const original = originalFilePath(folder, '123-abc', name);
+      assert.notEqual(original, displayPath, name);
+      assert.notEqual(original, thumbnailPath, name);
+      assert.ok(original.startsWith(folder) && !original.slice(folder.length).includes('/'), `${name}: one file name in the record folder`);
+    }
+    assert.equal(originalFilePath(folder, '123-abc', 'display.jpg'), `${folder}123-abc-display.jpg`);
+  });
+
   test('derived copies are siblings in the record folder; thumbnails never fall back to a HEIC file', () => {
     const folder = maintenanceFileFolder('h1', 'home_asset', 'a1');
     assert.deepEqual(derivedFilePaths(folder, '123-abc'), {
-      displayPath: 'households/h1/maintenance/home_asset/a1/123-abc-display.jpg',
-      thumbnailPath: 'households/h1/maintenance/home_asset/a1/123-abc-thumb.jpg',
+      displayPath: 'households/h1/maintenance/home_asset/a1/123-abc~display.jpg',
+      thumbnailPath: 'households/h1/maintenance/home_asset/a1/123-abc~thumb.jpg',
     });
     assert.equal(attachmentThumbnailUrl({ downloadUrl: 'u', contentType: 'image/heic' }), null);
     assert.equal(attachmentThumbnailUrl({ downloadUrl: 'u', displayUrl: 'd', contentType: 'image/heic' }), 'd');
@@ -199,6 +215,32 @@ describe('mileage freshness (MA-19)', () => {
     assert.ok(stale.state === 'stale' && stale.days === 31);
     assert.equal(mileageFreshness({ currentMileage: 100, mileageUpdatedAt: '2026-11-24' }, '2026-11-24').message, 'Mileage updated today.');
   });
+  test('Save asks once for a lower or jumping reading, then sends; a lower one as a correction', () => {
+    assert.deepEqual(planMileageSave(48_800, 48_750, null), { kind: 'send', correction: false });
+    const ask = planMileageSave(48_000, 48_750, null);
+    assert.ok(ask.kind === 'ask' && ask.confirmation.kind === 'lower' && /corrects the vehicle's odometer down to 48,000 mi/.test(ask.confirmation.message));
+    assert.deepEqual(planMileageSave(48_000, 48_750, ask.kind === 'ask' ? ask.confirmation : null), { kind: 'send', correction: true });
+    const jump = planMileageSave(80_000, 48_750, null);
+    assert.ok(jump.kind === 'ask' && jump.confirmation.kind === 'jump');
+    assert.deepEqual(planMileageSave(80_000, 48_750, jump.kind === 'ask' ? jump.confirmation : null), { kind: 'send', correction: false });
+    assert.deepEqual(planMileageSave(1200, undefined, null), { kind: 'send', correction: false });
+  });
+
+  test('a refusal after someone raised the mileage meanwhile becomes a correction question against the latest value (PR #211 review)', () => {
+    // Opened at 48,750; typed 49,000 (no question); the server now has 49,500 and refuses.
+    assert.deepEqual(planMileageSave(49_000, 48_750, null), { kind: 'send', correction: false });
+    const confirmation = correctionAfterRefusal(49_000, 49_500);
+    assert.equal(confirmation.kind, 'lower');
+    assert.match(confirmation.message, /lower than the recorded 49,500 mi.*down to 49,000 mi/);
+    // The next Save, against the latest value, sends the correction.
+    assert.deepEqual(planMileageSave(49_000, 49_500, confirmation), { kind: 'send', correction: true });
+    // Without the latest value, the confirmed question still sends a correction.
+    const blind = correctionAfterRefusal(49_000, undefined);
+    assert.deepEqual(planMileageSave(49_000, 48_750, blind), { kind: 'send', correction: true });
+    // Changing the reading clears the question (the dialog sets it to null) and asks again.
+    assert.equal(planMileageSave(49_100, 49_500, null).kind, 'ask');
+  });
+
   test('the numeric pad input', () => {
     assert.equal(parseMileageInput('48,750'), 48750);
     assert.equal(parseMileageInput(' 0 '), 0);

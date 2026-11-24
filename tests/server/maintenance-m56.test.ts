@@ -171,11 +171,20 @@ describe('Update mileage (MA-19) and its Undo', () => {
   });
 
   test('a lower reading needs the explicit correction', async () => {
-    assert.deepEqual(await updateVehicleMileageAs(adminDb, HOUSE, update(47000), ctx(SAM)), { status: 'refused', reason: 'lower_needs_correction' });
+    assert.deepEqual(await updateVehicleMileageAs(adminDb, HOUSE, update(47000), ctx(SAM)), { status: 'refused', reason: 'lower_needs_correction', currentMileage: 48000 });
     assert.equal((await car()).currentMileage, 48000);
     const corrected = await updateVehicleMileageAs(adminDb, HOUSE, update(47000, { correction: true }), ctx(SAM));
     assert.ok(corrected.status === 'updated');
     assert.equal((await car()).currentMileage, 47000);
+  });
+
+  test('a reading made lower by a concurrent update is refused with the latest mileage, then saved as a correction (PR #211 review)', async () => {
+    // The dialog opened at 48,000; someone else records 49,500; this person saves 49,000.
+    await updateVehicleMileageAs(adminDb, HOUSE, update(49500), ctx(ALEX));
+    assert.deepEqual(await updateVehicleMileageAs(adminDb, HOUSE, update(49000), ctx(SAM)), { status: 'refused', reason: 'lower_needs_correction', currentMileage: 49500 });
+    assert.equal((await car()).currentMileage, 49500);
+    const corrected = await updateVehicleMileageAs(adminDb, HOUSE, update(49000, { correction: true }), ctx(SAM));
+    assert.ok(corrected.status === 'updated' && corrected.currentMileage === 49000);
   });
 
   test('invalid input and a missing vehicle', async () => {
@@ -282,6 +291,20 @@ describe('delete with files (MA-22, MA-4c)', () => {
     await resumeMaintenanceDeletions(adminDb, healthy, later, ts, FieldValue.delete());
     assert.equal((await assets().doc('fridge').get()).exists, true);
     assert.equal((await house().collection('maintenance-deletions').get()).size, 0);
+  });
+
+  test('a log moved to another record meanwhile keeps its new target; only logs still linked become history (PR #211 review)', async () => {
+    const bucket = await seedAsset();
+    const outcome = await deleteMaintenanceRecordCascade(adminDb, bucket, input(), {
+      // After the history query read coil-log, someone moves it to the other fridge.
+      beforeRepoint: async () => {
+        await logs().doc('coil-log').update({ targetType: 'home_asset', assetId: 'fridge-10' });
+      },
+    });
+    assert.equal(outcome.logs, 1, 'only the legacy log was still linked');
+    const moved = (await logs().doc('coil-log').get()).data()!;
+    assert.deepEqual([moved.targetType, moved.assetId, moved.formerTargetType], ['home_asset', 'fridge-10', undefined]);
+    assert.equal((await logs().doc('legacy-log').get()).data()!.formerTargetName, 'Fridge');
   });
 
   test('a log is deleted with its own files only', async () => {
