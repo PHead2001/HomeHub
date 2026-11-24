@@ -14,6 +14,7 @@ import { publicDisplayName } from '@/lib/member-directory';
 import type {
   HomeAsset, MaintenanceAttachment, MaintenanceAttachmentCategory, MaintenanceAttachmentTargetType, MaintenanceLog, Vehicle,
 } from '@/lib/types';
+import { RECEIPT_ACCEPT, checkMaintenanceFile } from '@/lib/maintenance/attachments';
 import { uploadMaintenanceFile } from './attachment-upload';
 import { NO_ANSWER_MESSAGE, OFFLINE_MESSAGE, callMaintenanceAction } from './maintenance-action-client';
 import { getAttachmentsForTarget } from './page-model';
@@ -131,6 +132,32 @@ export function useMaintenanceRecords({ currentUser, attachments, setSelectedAss
     }
   };
   const stableAttachReceipts = useStableHandler(attachReceipts);
+
+  /**
+   * "Add photo" for the log-saved toast (MA-16): opens the camera/file picker (images and PDFs)
+   * and attaches what is picked to that log as receipts. A file that fails the storage.rules
+   * limits is reported and skipped.
+   */
+  const pickReceiptsFor = (logId: string) => {
+    if (typeof document === 'undefined') return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = RECEIPT_ACCEPT;
+    input.multiple = true;
+    input.onchange = () => {
+      const picked = Array.from(input.files ?? []);
+      const problems = picked.map(file => checkMaintenanceFile(file)).flatMap(check => (check.ok ? [] : [check.message]));
+      if (problems.length > 0) toast({ variant: 'destructive', title: 'Some files were not attached', description: problems.join(' ') });
+      const valid = picked.filter(file => checkMaintenanceFile(file).ok);
+      if (valid.length > 0) void attachReceipts(logId, valid);
+    };
+    input.click();
+  };
+  const stablePickReceiptsFor = useStableHandler(pickReceiptsFor);
+  /** The log-saved toast's action: `toast({ title, action: addPhotoAction(result.id) })`. */
+  const addPhotoAction = (logId: string) => (
+    <ToastAction altText="Add a receipt or photo to this log" onClick={() => stablePickReceiptsFor(logId)}>Add photo</ToastAction>
+  );
   useEffect(() => {
     receiptStaging.setUploader(stableAttachReceipts);
     return () => receiptStaging.setUploader(null);
@@ -303,5 +330,6 @@ export function useMaintenanceRecords({ currentUser, attachments, setSelectedAss
     deleteVehicle: useStableHandler(deleteVehicle),
     handleSummarize: useStableHandler(handleSummarize),
     fileCountFor: useStableHandler(fileCountFor),
+    addPhotoAction: useStableHandler(addPhotoAction),
   };
 }

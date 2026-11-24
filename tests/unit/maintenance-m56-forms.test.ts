@@ -88,7 +88,10 @@ describe('card picture (MA-11b): a receipt never becomes the card picture', () =
   test('a HEIC photo counts only with its display copy', () => {
     const heic = file('h', 'photo', '2026-11-01', { contentType: 'image/heic', fileName: 'h.heic' });
     assert.equal(pickTargetPhoto([heic], 'home_asset', 'a1'), null);
-    assert.equal(pickTargetPhoto([{ ...heic, displayUrl: 'https://x/h-display.jpg' }], 'home_asset', 'a1')?.id, 'h');
+    const shown = pickTargetPhoto([{ ...heic, displayUrl: 'https://x/h-display.jpg' }], 'home_asset', 'a1');
+    assert.equal(shown?.id, 'h');
+    // The card draws downloadUrl: it is the display copy.
+    assert.equal(shown?.downloadUrl, 'https://x/h-display.jpg');
   });
 });
 

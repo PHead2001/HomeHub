@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
 
 const projectId = 'demo-homehub-e2e';
@@ -47,7 +47,14 @@ async function cleanupShoppingItems() {
 async function restoreAiFixtures() {
   await Promise.all([
     ...Object.entries(originalPantry).map(([id, data]) => household.collection('pantry-inventory').doc(id).set(data)),
-    household.collection('maintenance').doc('hvac-inspection').update({ notes: originalMaintenanceNotes }),
+    household.collection('maintenance').doc('hvac-inspection').update({
+      notes: originalMaintenanceNotes,
+      // MA-11d: the summary is stored on the log; the seed has none.
+      summary: FieldValue.delete(),
+      summaryNotesHash: FieldValue.delete(),
+      summaryModel: FieldValue.delete(),
+      summaryAt: FieldValue.delete(),
+    }),
     cleanupShoppingItems(),
   ]);
 }
@@ -217,18 +224,18 @@ test.describe('OpenAI migration workflows', () => {
     await page.keyboard.press('Escape');
   });
 
-  test('maintenance summaries are transient and provider failures remain retryable', async ({ page }) => {
+  test('maintenance summaries are stored with their notes hash (MA-11d) and provider failures remain retryable', async ({ page }) => {
     await openAuthenticated(page, '/maintenance?log=hvac-inspection', 'Maintenance Center');
     let logCard = page.getByTestId('maintenance-log-hvac-inspection');
     await logCard.getByRole('button', { name: 'Summarize with AI' }).click();
     await expect(logCard.getByText('AI Summary')).toBeVisible();
     await expect(logCard.getByText(/Maintenance summary:/)).toBeVisible();
-    expect((await household.collection('maintenance').doc('hvac-inspection').get()).data()?.notes)
-      .toBe(originalMaintenanceNotes);
-
-    await page.reload();
-    logCard = page.getByTestId('maintenance-log-hvac-inspection');
-    await expect(logCard.getByText('AI Summary')).toHaveCount(0);
+    const stored = (await household.collection('maintenance').doc('hvac-inspection').get()).data();
+    expect(stored?.notes).toBe(originalMaintenanceNotes);
+    // Written by the server from the log's own notes, never over them.
+    expect(stored?.summary).toMatch(/^Maintenance summary:/);
+    expect(stored?.summaryNotesHash).toMatch(/^v1-/);
+    expect(stored?.summaryModel).toMatch(/^maintenance-summary@2\//);
 
     for (const [scenario, expectedMessage] of [
       ['timeout', 'AI took too long to respond. Please try again.'],

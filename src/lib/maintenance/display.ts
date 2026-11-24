@@ -1,6 +1,6 @@
 // Small presentation rules for the Maintenance Center, kept pure for unit tests.
 import type { MaintenanceAttachment } from '../types';
-import { PROOF_CATEGORIES } from './attachments';
+import { PROOF_CATEGORIES, attachmentImageUrl } from './attachments';
 
 /**
  * "Summarize with AI" only appears when there is something to summarize: notes
@@ -46,7 +46,10 @@ export const pickTargetPhoto = (
     .filter((attachment) => attachment.targetType === targetType && attachment.targetId === targetId
       && !PROOF_CATEGORIES.includes(attachment.category) && isImageAttachment(attachment))
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  return images.find((attachment) => attachment.category === 'photo') || images[0] || null;
+  const picked = images.find((attachment) => attachment.category === 'photo') || images[0] || null;
+  // Cards draw `downloadUrl`: give them the 1024 px display copy when there is one (MA-25d; the
+  // only drawable form of a HEIC photo).
+  return picked ? { ...picked, downloadUrl: attachmentImageUrl(picked) ?? picked.downloadUrl } : null;
 };
 
 export const pickAssetPhoto = (attachments: MaintenanceAttachment[], assetId: string) => pickTargetPhoto(attachments, 'home_asset', assetId);

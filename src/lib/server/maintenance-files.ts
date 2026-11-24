@@ -45,11 +45,12 @@ export async function cleanupOrphanUploadsAs(
   let refused = 0;
   for (const path of paths) {
     if (!isMaintenanceFilePath(householdId, path)) { refused += 1; continue; }
-    const linked = await attachments.where('filePath', '==', path).limit(1).get();
-    const linkedCopy = linked.empty
-      ? await attachments.where('displayPath', '==', path).limit(1).get()
-      : linked;
-    if (!linked.empty || !linkedCopy.empty) { refused += 1; continue; }
+    // Any attachment that points at it (the file, its display copy or its thumbnail) keeps it.
+    let pointedAt = false;
+    for (const field of ['filePath', 'displayPath', 'thumbnailPath']) {
+      if (!(await attachments.where(field, '==', path).limit(1).get()).empty) { pointedAt = true; break; }
+    }
+    if (pointedAt) { refused += 1; continue; }
     const object = bucket.file(path);
     let uploader: unknown;
     try {

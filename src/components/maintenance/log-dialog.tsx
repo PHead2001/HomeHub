@@ -79,18 +79,19 @@ function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today
     defaultValues: initial.form,
   });
   const targetType = useWatch({ control: logForm.control, name: 'targetType' });
+  const [expanded, setExpanded] = useState(false);
   const values = useWatch({ control: logForm.control }) as LogFormValues;
   const staged = useSyncExternalStore(receiptStaging.subscribe, receiptStaging.current, () => [] as readonly StagedReceipt[]);
-  const [expanded, setExpanded] = useState(false);
   useReportDirty(formIsDirty(initial.form, values) || staged.length > 0);
   // A new log's files go up after it is saved (own log: allowed with maintenance.createLogs);
   // files on an existing log need maintenance.edit, as in the attachment panel.
   const canAttach = !record || permissions['maintenance.edit'];
   const vehicleLog = targetType === 'vehicle';
-  // A preset (Log service) fills mileage: it is shown up front then.
-  const shown = useMemo(() => new Set(visibleDetailFields('log', { ...initial.form, mileage: vehicleLog ? initial.form.mileage : '' }, expanded, { vehicleLog })), [initial.form, expanded, vehicleLog]);
-  const emptyCount = emptyDetailFields('log', initial.form, { vehicleLog }).length;
-  const allDetails = visibleDetailFields('log', initial.form, true, { vehicleLog }).length;
+  // A vehicle log's mileage is always shown (the max rule and Log service need it; the page puts
+  // refusals under it), so it is not one of the hidden details here.
+  const shown = useMemo(() => new Set(visibleDetailFields('log', initial.form, expanded)), [initial.form, expanded]);
+  const emptyCount = emptyDetailFields('log', initial.form).length;
+  const allDetails = visibleDetailFields('log', initial.form, true).length;
 
   /** Fields the person changed since the form opened (a reading never overwrites them). */
   const editedFields = () => {
@@ -107,7 +108,11 @@ function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today
     if (patch.serviceProvider || patch.partsUsed) setExpanded(true);
   };
   const handle: LogFormHandle = {
-    setError: (field, message) => logForm.setError(field, { message }, { shouldFocus: true }),
+    setError: (field, message) => {
+      // A refusal for a detail field that is not shown opens the details first, so it is seen.
+      if (['type', 'serviceProvider', 'partsUsed', 'notes'].includes(field)) setExpanded(true);
+      logForm.setError(field, { message }, { shouldFocus: true });
+    },
   };
 
   const submit = async (values: LogFormValues) => {
@@ -164,7 +169,7 @@ function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today
             <FormField control={logForm.control} name="cost" render={({ field }) => (
               <FormItem><FormLabel>Cost</FormLabel><FormControl><Input type="number" inputMode="decimal" min="0" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
             )} />
-            {shown.has('mileage') && targetType === 'vehicle' && (
+            {vehicleLog && (
               <FormField control={logForm.control} name="mileage" render={({ field }) => (
                 <FormItem><FormLabel>Mileage</FormLabel><FormControl><Input type="number" inputMode="numeric" min="0" step="1" {...field} /></FormControl><FormMessage /></FormItem>
               )} />
