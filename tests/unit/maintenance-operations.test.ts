@@ -455,3 +455,28 @@ describe('calling the server (review of PR #210)', () => {
     assert.match(mileageWarningMessage('jump', 48750, 80000, 'correction'), /sets the vehicle's odometer to 80,000 mi/);
   });
 });
+
+describe('an explicit new due date starts a new occurrence (PR #210 review)', () => {
+  const seen: MaintenanceCycle = { nextDueDate: '2026-03-01', nextDueMileage: null };
+
+  test('editing the due date back to the completed cycle clears the completion marker', () => {
+    const first = planCompletion({ ownerType: 'home_asset', schedule: filter(), seen, values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op1') });
+    assert.ok(first.kind === 'apply');
+    const base = [first.schedule];
+    // The member explicitly schedules the same date again.
+    const values = [{ ...first.schedule, nextDueDate: '2026-03-01' }];
+    const [edited] = mergeSchedules([first.schedule], base, values, ASSET_SCHEDULE_FIELDS);
+    assert.equal('lastCompletion' in edited, false);
+    const again = planCompletion({ ownerType: 'home_asset', schedule: edited, seen, values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op2') });
+    assert.equal(again.kind, 'apply');
+  });
+
+  test('an edit that leaves the due values alone keeps the marker', () => {
+    const first = planCompletion({ ownerType: 'home_asset', schedule: filter(), seen, values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op1') });
+    assert.ok(first.kind === 'apply');
+    const values = [{ ...first.schedule, scheduleName: 'Replace HVAC filter' }];
+    const [edited] = mergeSchedules([first.schedule], [first.schedule], values, ASSET_SCHEDULE_FIELDS);
+    assert.deepEqual(edited.lastCompletion, first.schedule.lastCompletion);
+    assert.equal(edited.scheduleName, 'Replace HVAC filter');
+  });
+});

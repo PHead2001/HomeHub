@@ -477,7 +477,12 @@ export const mergeSchedules = (
     }
     const after = valuesById.get(id);
     if (!after) continue;
-    const patch = Object.fromEntries(changedFields(before, after, fields).map(field => [field, orNull(after[field])]));
+    const changed = changedFields(before, after, fields);
+    const patch: FieldValues = Object.fromEntries(changed.map(field => [field, orNull(after[field])]));
+    // An explicit new due date or mileage schedules a new occurrence, even when it equals
+    // the one last completed: the completion marker no longer describes the current cycle,
+    // so it must not make the next completion look "already done" (PR #210 review).
+    if (changed.includes('nextDueDate') || changed.includes('nextDueMileage')) patch.lastCompletion = null;
     merged.push(applyPatch(schedule, patch));
   }
   const storedIds = new Set(stored.map(schedule => String(schedule.id)));
