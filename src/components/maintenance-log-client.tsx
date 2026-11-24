@@ -10,16 +10,16 @@ import { isAfter, subDays } from 'date-fns';
 import {
   AlertCircle,
   CalendarDays,
-  Car,
-  ClipboardList,
-  DollarSign,
-  Edit,
-  FileText,
-  Home,
+  
+  
+  
+  
+  
+  
   Loader2,
-  PencilLine,
+  
   Plus,
-  Trash2,
+  
   Wrench,
 } from 'lucide-react';
 import { summarizeMaintenanceLog } from '@/ai/flows/summarize-maintenance-log';
@@ -39,16 +39,8 @@ import {
 } from '@/lib/notifications';
 import { EmptyState } from '@/components/empty-state';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
-import { AssetCard } from '@/components/maintenance/asset-card';
-import { HealthPanel } from '@/components/maintenance/health-panel';
-import { HealthRing } from '@/components/maintenance/health-ring';
-import { ReminderList, type MarkDoneResult, type ReminderBusy } from '@/components/maintenance/reminder-list';
-import { VehicleCard } from '@/components/maintenance/vehicle-card';
-import { BrandLogo } from '@/components/brand/brand-logo';
-import { PeekCard } from '@/components/dashboard/peek-card';
-import { Stagger, StaggerItem } from '@/components/motion/stagger';
+import {  type MarkDoneResult, type ReminderBusy } from '@/components/maintenance/reminder-list';
 import { useInPageMorph } from '@/components/shopping/use-in-page-morph';
-import { morphStyle, sharedId } from '@/lib/motion';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -60,7 +52,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent,  CardHeader } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -74,29 +66,27 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs,  TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { db } from '@/lib/firebase';
 import { notificationsBySourceQuery } from '@/app/notifications/notification-query';
 import { playFeedback } from '@/lib/feedback';
-import { pickAssetPhoto, pickVehiclePhoto, presentFields } from '@/lib/maintenance/display';
-import { computeHomeHealth, healthKey, type HealthDeduction, type HealthResult } from '@/lib/maintenance/health';
-import { warrantyCountdown } from '@/lib/maintenance/warranty';
+import { computeHomeHealth,  type HealthDeduction } from '@/lib/maintenance/health';
 import {
   calculateNextAssetDueDate,
   calculateNextVehicleDueDate,
   calculateNextVehicleMileage,
   findReminderSchedule,
-  getAssetScheduleMode,
-  getVehicleScheduleMode,
+  
+  
   quickCompletionValues,
   reminderCycleKey,
   serviceCompletionValues,
-  scheduleKeyFor,
+  
   type ScheduleCompletionTarget,
 } from '@/lib/maintenance/schedules';
-import { cn, stableSlugify } from '@/lib/utils';
+import {  stableSlugify } from '@/lib/utils';
 import { ToastAction } from '@/components/ui/toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import {
@@ -128,14 +118,17 @@ import { publicDisplayName } from '@/lib/member-directory';
 import { collection, deleteDoc, deleteField, doc, getDocs, orderBy, query, setDoc, writeBatch } from 'firebase/firestore';
 import { deleteObject, getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
-import { AttachmentPanel } from '@/components/maintenance/attachment-panel';
-import { LogList } from '@/components/maintenance/log-list';
-import { AutoResizeTextarea, DetailGrid, MileageWarning, SaveNotice, SummaryCard } from '@/components/maintenance/page-parts';
+import { AssetsTab } from '@/components/maintenance/assets-tab';
+import { LogsTab } from '@/components/maintenance/logs-tab';
+import { OverviewTab } from '@/components/maintenance/overview-tab';
+import { RemindersTab } from '@/components/maintenance/reminders-tab';
+import { VehiclesTab } from '@/components/maintenance/vehicles-tab';
+import { AutoResizeTextarea,  MileageWarning, SaveNotice } from '@/components/maintenance/page-parts';
 import {
   assetCategories, assetFormFromRecord, assetScheduleToForm, assetStatuses, assetValuesOf, emptyAssetForm, emptyLogForm,
   emptyScheduleCompletionForm, emptyVehicleForm, formatDate, frequencyTypes, getAttachmentsForTarget, getLogTargetType, getLogTitle,
-  humanizeLabel, isMaintenanceTab, logFormFromRecord, logSchema, logTypes, logValuesOf, MILEAGE_DUE_SOON_THRESHOLD, optionalCurrency,
-  optionalDate, REMINDER_DUE_SOON_DAYS, assetSchema, scheduleCompletionSchema, vehicleFormFromRecord, vehicleScheduleToForm, vehicleSchema,
+  humanizeLabel, isMaintenanceTab, logFormFromRecord, logSchema, logTypes, logValuesOf,  
+    assetSchema, scheduleCompletionSchema, vehicleFormFromRecord, vehicleScheduleToForm, vehicleSchema,
   vehicleStatuses, vehicleValuesOf, createLocalId, sanitizeFileName, cleanForFirestore, parseLogDate, toNumber, trimOptional, todayInputValue,
   type AssetFormValues, type AssetScheduleForm, type AssetValues, type LogFormValues, type LogPreset, type LogValues, type MaintenanceTab,
   type SaveNoticeState, type ScheduleCompletionFormValues, type ScheduleRemovalTarget, type VehicleFormValues, type VehicleScheduleForm,
@@ -404,8 +397,6 @@ export function MaintenanceLogClient() {
     () => computeHomeHealth({ assets, vehicles, logs, today, timeZone }),
     [assets, vehicles, logs, today, timeZone],
   );
-  const healthFor = (targetType: 'home_asset' | 'vehicle', id: string): HealthResult | undefined =>
-    health.targets[healthKey(targetType, id)];
 
   const dueSoonReminders = useMemo(() => {
     return reminders.filter((reminder) => reminder.status === 'due_soon' || reminder.status === 'due_today');
@@ -572,7 +563,7 @@ export function MaintenanceLogClient() {
       vehicles.filter((vehicle) => vehicle.status === 'needs_attention').length;
 
     return {
-      recentLogs,
+      recentLogs: recentLogs.length,
       recentCost,
       needingAttention,
     };
@@ -1469,123 +1460,6 @@ export function MaintenanceLogClient() {
     onSnooze: (reminder: MaintenanceReminder) => void snoozeReminder(reminder),
   };
 
-  // Peek cards (H26) for links that leave the current view: key facts at a glance.
-  const healthLine = (result?: HealthResult) => (result ? `Health ${result.score}` : null);
-  const assetPeek = (asset: HomeAsset) => {
-    const facts = [healthLine(healthFor('home_asset', asset.id)), asset.location].filter(Boolean).join(' · ');
-    return (
-      <div className="space-y-1">
-        <p className="font-headline font-semibold">{asset.name}</p>
-        <p className="text-muted-foreground">{[asset.brand, asset.model].filter(Boolean).join(' ') || asset.category}</p>
-        {facts && <p className="text-xs text-muted-foreground">{facts}</p>}
-      </div>
-    );
-  };
-  const vehiclePeek = (vehicle: Vehicle) => {
-    const mileage = typeof vehicle.currentMileage === 'number' ? `${vehicle.currentMileage.toLocaleString('en-US')} mi` : null;
-    const facts = [healthLine(healthFor('vehicle', vehicle.id)), mileage].filter(Boolean).join(' · ');
-    return (
-      <div className="space-y-1">
-        <p className="font-headline font-semibold">{vehicle.nickname}</p>
-        <p className="text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</p>
-        {facts && <p className="text-xs text-muted-foreground">{facts}</p>}
-      </div>
-    );
-  };
-
-  const renderVehicleCard = (vehicle: Vehicle, inactive: boolean) => {
-    const morph = sharedId('vehicle', vehicle.id);
-    const selected = selectedVehicle?.id === vehicle.id;
-    return (
-      <VehicleCard
-        vehicle={vehicle}
-        photo={pickVehiclePhoto(attachments, vehicle.id)}
-        health={healthFor('vehicle', vehicle.id)}
-        selected={selected}
-        inactive={inactive}
-        statusLabel={inactive ? humanizeLabel(vehicle.status) : undefined}
-        style={morphStyle(detailMorph.morphName === morph && !selected ? morph : null)}
-        onSelect={(event) => {
-          if (selected) return;
-          detailMorph.run(morph, () => setSelectedVehicleId(vehicle.id), { sync: true, event });
-        }}
-      />
-    );
-  };
-
-  const flaggedAssets = assets.filter((asset) => asset.status === 'needs_attention');
-  const flaggedVehicles = vehicles.filter((vehicle) => vehicle.status === 'needs_attention');
-
-  const assetFields = (asset: HomeAsset) => [
-    { label: 'Status', value: humanizeLabel(asset.status) },
-    { label: 'Location', value: asset.location },
-    { label: 'Brand', value: asset.brand },
-    { label: 'Model', value: asset.model },
-    { label: 'Serial Number', value: asset.serialNumber },
-    { label: 'Purchase Price', value: optionalCurrency(asset.purchasePrice) },
-    { label: 'Purchase Date', value: optionalDate(asset.purchaseDate) },
-    { label: 'Warranty Ends', value: optionalDate(asset.warrantyExpiration) },
-    { label: 'Warranty Provider', value: asset.warrantyProvider },
-  ];
-
-  const vehicleFields = (vehicle: Vehicle) => [
-    { label: 'Status', value: humanizeLabel(vehicle.status) },
-    { label: 'Mileage', value: typeof vehicle.currentMileage === 'number' ? vehicle.currentMileage.toLocaleString() : undefined },
-    { label: 'VIN', value: vehicle.vin },
-    { label: 'License Plate', value: vehicle.licensePlate },
-    { label: 'Insurance', value: vehicle.insuranceProvider },
-    { label: 'Purchase Price', value: optionalCurrency(vehicle.purchasePrice) },
-    { label: 'Purchase Date', value: optionalDate(vehicle.purchaseDate) },
-    { label: 'Registration Expires', value: optionalDate(vehicle.registrationExpiration) },
-    { label: 'Inspection Expires', value: optionalDate(vehicle.inspectionExpiration) },
-  ];
-
-  const missingCount = (fields: Array<{ label: string; value?: string | number | null }>) => fields.length - presentFields(fields).length;
-
-  /** One action row for a detail panel (D15): Edit and Add details on the left, Delete apart on the right. */
-  const detailActions = ({
-    name,
-    kind,
-    missing,
-    onEdit,
-    onDelete,
-  }: {
-    name: string;
-    kind: 'home asset' | 'vehicle';
-    missing: number;
-    onEdit: () => void;
-    onDelete: () => void;
-  }) => (canEdit || canDelete) && (
-    // Fits one row in the 320-420 px detail column; wraps only on very narrow screens.
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-2 border-t pt-4">
-      {canEdit && (
-        <Button aria-label={`Edit ${kind} ${name}`} variant="outline" size="sm" onClick={onEdit}>
-          <Edit className="mr-2 h-4 w-4" />
-          Edit
-        </Button>
-      )}
-      {canEdit && missing > 0 && (
-        <Button variant="ghost" size="sm" onClick={onEdit}>
-          <PencilLine className="mr-2 h-4 w-4" />
-          Add details
-          <span className="sr-only">({missing} empty)</span>
-        </Button>
-      )}
-      {canDelete && (
-        <Button
-          aria-label={`Delete ${kind} ${name}`}
-          variant="ghost"
-          size="sm"
-          className="ml-auto text-destructive hover:text-destructive"
-          onClick={onDelete}
-        >
-          <Trash2 className="mr-2 h-4 w-4" />
-          Delete
-        </Button>
-      )}
-    </div>
-  );
-
   return (
     <>
       <div className="space-y-6">
@@ -1618,488 +1492,84 @@ export function MaintenanceLogClient() {
             </div>
           )}
 
-          <TabsContent value="overview" className="space-y-6 pt-4">
-            {health.overall && <HealthPanel health={health.overall} onOpen={openHealthDeduction} />}
-            {assets.length === 0 && vehicles.length === 0 && (
-              <Card>
-                <CardContent className="p-6">
-                  <EmptyState
-                    kind="assets"
-                    title="Start your home registry"
-                    description="Add the furnace, the fridge or the family car, and HomeHub keeps track of when each needs care."
-                    action={canEdit ? { label: 'Add home asset', icon: <Plus className="h-4 w-4" />, onClick: () => { changeTab('assets'); openAssetDialog(); } } : undefined}
-                    secondaryAction={canEdit ? { label: 'Add vehicle', icon: <Car className="h-4 w-4" />, onClick: () => { changeTab('vehicles'); openVehicleDialog(); } } : undefined}
-                  />
-                </CardContent>
-              </Card>
-            )}
+          <OverviewTab
+            health={health}
+            assets={assets}
+            vehicles={vehicles}
+            logs={logs}
+            summary={summary}
+            canEdit={canEdit}
+            logListProps={logListProps}
+            changeTab={changeTab}
+            openAssetDialog={openAssetDialog}
+            openVehicleDialog={openVehicleDialog}
+            openTarget={openTarget}
+            openHealthDeduction={openHealthDeduction}
+          />
 
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              <SummaryCard title="Home Assets" value={assets.length} detail="Registered household assets" icon={Home} />
-              <SummaryCard title="Vehicles" value={vehicles.length} detail="Registered vehicles" icon={Car} />
-              <SummaryCard title="Logged, Last 30 Days" value={summary.recentLogs.length} detail="Logs dated in the last 30 days" icon={ClipboardList} />
-              <SummaryCard title="Needs Attention" value={summary.needingAttention} detail="Assets or vehicles flagged" icon={AlertCircle} />
-              <SummaryCard title="Spent, Last 30 Days" value={summary.recentCost} format={{ style: 'currency', currency: 'USD' }} detail="Costs on logs from the last 30 days" icon={DollarSign} />
-            </div>
+          <AssetsTab
+            assets={assets}
+            attachments={attachments}
+            health={health}
+            today={today}
+            selectedAsset={selectedAsset}
+            assetLogs={assetLogs}
+            highlightedScheduleKey={highlightedScheduleKey}
+            detailMorph={detailMorph}
+            canEdit={canEdit}
+            canDelete={canDelete}
+            canComplete={canComplete}
+            canCreateLogs={canCreateLogs}
+            uploadingAttachmentTarget={uploadingAttachmentTarget}
+            deletingAttachmentId={deletingAttachmentId}
+            logListProps={logListProps}
+            setSelectedAssetId={setSelectedAssetId}
+            openAssetDialog={openAssetDialog}
+            setAssetToDelete={setAssetToDelete}
+            uploadAttachment={uploadAttachment}
+            setAttachmentToDelete={setAttachmentToDelete}
+            openScheduleCompletionDialog={openScheduleCompletionDialog}
+            openLogDialog={openLogDialog}
+          />
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="font-headline">Latest Logs</CardTitle>
-                  <CardDescription>The five most recent entries, whatever their date.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <LogList {...logListProps} logs={logs.slice(0, 5)} />
-                </CardContent>
-              </Card>
+          <VehiclesTab
+            vehicles={vehicles}
+            activeVehicles={activeVehicles}
+            inactiveVehicles={inactiveVehicles}
+            attachments={attachments}
+            health={health}
+            selectedVehicle={selectedVehicle}
+            vehicleLogs={vehicleLogs}
+            highlightedScheduleKey={highlightedScheduleKey}
+            detailMorph={detailMorph}
+            showInactiveVehicles={showInactiveVehicles}
+            canEdit={canEdit}
+            canDelete={canDelete}
+            canComplete={canComplete}
+            canCreateLogs={canCreateLogs}
+            uploadingAttachmentTarget={uploadingAttachmentTarget}
+            deletingAttachmentId={deletingAttachmentId}
+            logListProps={logListProps}
+            setShowInactiveVehicles={setShowInactiveVehicles}
+            setSelectedVehicleId={setSelectedVehicleId}
+            openVehicleDialog={openVehicleDialog}
+            setVehicleToDelete={setVehicleToDelete}
+            uploadAttachment={uploadAttachment}
+            setAttachmentToDelete={setAttachmentToDelete}
+            openScheduleCompletionDialog={openScheduleCompletionDialog}
+            openLogDialog={openLogDialog}
+          />
 
-              <Card>
-                <CardHeader>
-                  <CardTitle className="font-headline">Attention Queue</CardTitle>
-                  <CardDescription>Items currently marked as needing attention.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {flaggedAssets.length + flaggedVehicles.length === 0 ? (
-                    <EmptyState compact headingLevel={3} title="Nothing flagged" description="Mark assets or vehicles as needing attention when they need follow-up." />
-                  ) : (
-                    <>
-                      {flaggedAssets.map(asset => (
-                        <PeekCard key={asset.id} peek={assetPeek(asset)}>
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-ui hover:bg-accent"
-                            onClick={() => openTarget({ targetType: 'home_asset', targetId: asset.id, deepLink: `/maintenance?asset=${encodeURIComponent(asset.id)}` })}
-                          >
-                            <BrandLogo brand={asset.brand} size="sm" className="text-muted-foreground" />
-                            <span className="min-w-0">
-                              <span className="block font-medium">{asset.name}</span>
-                              <span className="block text-sm text-muted-foreground">{[asset.category, asset.location].filter(Boolean).join(' · ')}</span>
-                            </span>
-                          </button>
-                        </PeekCard>
-                      ))}
-                      {flaggedVehicles.map(vehicle => (
-                        <PeekCard key={vehicle.id} peek={vehiclePeek(vehicle)}>
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-ui hover:bg-accent"
-                            onClick={() => openTarget({ targetType: 'vehicle', targetId: vehicle.id, deepLink: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}` })}
-                          >
-                            <BrandLogo brand={vehicle.make} size="sm" decorative className="text-muted-foreground" />
-                            <span className="min-w-0">
-                              <span className="block font-medium">{vehicle.nickname}</span>
-                              <span className="block text-sm text-muted-foreground">{[vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ') || 'Vehicle'}</span>
-                            </span>
-                          </button>
-                        </PeekCard>
-                      ))}
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
+          <RemindersTab
+            dueSoonReminders={dueSoonReminders}
+            overdueReminders={overdueReminders}
+            warrantyReminders={warrantyReminders}
+            vehicleServiceReminders={vehicleServiceReminders}
+            reminderListProps={reminderListProps}
+            reminderListEpoch={reminderListEpoch}
+          />
 
-          <TabsContent value="assets" className="space-y-4 pt-4">
-            {canEdit && assets.length > 0 && (
-              <div className="flex justify-end">
-                <Button onClick={() => openAssetDialog()}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Home Asset
-                </Button>
-              </div>
-            )}
-
-            {assets.length === 0 ? (
-              <EmptyState
-                kind="assets"
-                title="No home assets yet"
-                description="Add HVAC, appliances, tools and other things you look after to build your registry."
-                action={canEdit ? { label: 'Add Home Asset', icon: <Plus className="h-4 w-4" />, onClick: () => openAssetDialog() } : undefined}
-              />
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-                {/* content-start: cards keep their own height instead of stretching to the detail panel (B7). */}
-                <Stagger className="grid content-start gap-3 sm:grid-cols-2">
-                  {assets.map((asset) => {
-                    const morph = sharedId('asset', asset.id);
-                    const selected = selectedAsset?.id === asset.id;
-                    return (
-                      <StaggerItem key={asset.id} className="flex" style={morphStyle(detailMorph.morphName === morph && !selected ? morph : null)}>
-                        <AssetCard
-                          asset={asset}
-                          photo={pickAssetPhoto(attachments, asset.id)}
-                          health={healthFor('home_asset', asset.id)}
-                          warranty={warrantyCountdown(asset, today)}
-                          selected={selected}
-                          onSelect={(event) => {
-                            if (selected) return;
-                            detailMorph.run(morph, () => setSelectedAssetId(asset.id), { sync: true, event });
-                          }}
-                        />
-                      </StaggerItem>
-                    );
-                  })}
-                </Stagger>
-
-                {selectedAsset && (
-                  <Card className="min-w-0" data-testid="asset-detail" style={morphStyle(detailMorph.morphName === sharedId('asset', selectedAsset.id) ? sharedId('asset', selectedAsset.id) : null)}>
-                    <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                      {/* The brand is listed as text in the details below, so the mark is decorative. */}
-                      <BrandLogo brand={selectedAsset.brand} size="md" decorative className="text-primary" />
-                      <div className="min-w-0 flex-1">
-                        <CardTitle className="font-headline">{selectedAsset.name}</CardTitle>
-                        <CardDescription>{selectedAsset.category}</CardDescription>
-                      </div>
-                      {healthFor('home_asset', selectedAsset.id) && (
-                        <HealthRing
-                          score={healthFor('home_asset', selectedAsset.id)!.score}
-                          band={healthFor('home_asset', selectedAsset.id)!.band}
-                          label={`${selectedAsset.name} health`}
-                        />
-                      )}
-                    </CardHeader>
-                    <CardContent className="space-y-5">
-                      <DetailGrid fields={assetFields(selectedAsset)} />
-                      {selectedAsset.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedAsset.notes}</p>}
-                      {detailActions({
-                        name: selectedAsset.name,
-                        kind: 'home asset',
-                        missing: missingCount(assetFields(selectedAsset)),
-                        onEdit: () => openAssetDialog(selectedAsset),
-                        onDelete: () => setAssetToDelete(selectedAsset),
-                      })}
-                      <AttachmentPanel
-                        attachments={getAttachmentsForTarget(attachments, 'home_asset', selectedAsset.id)}
-                        targetType="home_asset"
-                        targetId={selectedAsset.id}
-                        uploading={uploadingAttachmentTarget === `home_asset:${selectedAsset.id}`}
-                        deletingId={deletingAttachmentId}
-                        canUpload={canEdit}
-                        canDelete={canDelete}
-                        onUpload={uploadAttachment}
-                        onDelete={setAttachmentToDelete}
-                      />
-                      {selectedAsset.schedules && selectedAsset.schedules.length > 0 && (
-                        <div className="space-y-2">
-                          <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
-                          {selectedAsset.schedules.map((schedule, index) => {
-                            const key = scheduleKeyFor(selectedAsset.id, schedule, index, 'home_asset');
-                            return (
-                              <div
-                                key={`${schedule.scheduleName}-${index}`}
-                                id={`maintenance-schedule-${stableSlugify(key)}`}
-                                data-testid={`asset-schedule-${schedule.id || index}`}
-                                className={cn('rounded-lg border p-3', highlightedScheduleKey === key && 'ring-2 ring-primary')}
-                              >
-                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                  <div>
-                                    <p className="text-sm font-medium">{schedule.scheduleName || 'Scheduled maintenance'}</p>
-                                    {getAssetScheduleMode(schedule) === 'checklist' ? (
-                                      <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
-                                    ) : (
-                                      <>
-                                        <p className="text-sm text-muted-foreground">
-                                          {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'Next date will be set when completed'}
-                                        </p>
-                                        {schedule.frequencyType && schedule.intervalValue && (
-                                          <p className="text-xs text-muted-foreground">
-                                            Every {schedule.intervalValue} {schedule.frequencyType}
-                                          </p>
-                                        )}
-                                      </>
-                                    )}
-                                  </div>
-                                  {canComplete && getAssetScheduleMode(schedule) === 'scheduled' && <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => openScheduleCompletionDialog({
-                                      targetType: 'home_asset',
-                                      asset: selectedAsset,
-                                      scheduleIndex: index,
-                                      schedule,
-                                    })}
-                                  >
-                                    Complete
-                                  </Button>}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      <div className="flex justify-between gap-2">
-                        <h3 className="font-headline font-semibold">Linked Logs</h3>
-                        {canCreateLogs && (
-                          <Button variant="outline" size="sm" onClick={() => openLogDialog({ targetType: 'home_asset', assetId: selectedAsset.id })}>
-                            Add Log
-                          </Button>
-                        )}
-                      </div>
-                      <LogList
-                        {...logListProps}
-                        logs={assetLogs}
-                        emptyTitle="No logs for this asset"
-                        emptyDescription="Repairs, service and inspections for it will show up here."
-                      />
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            )}
-          </TabsContent>
-
-          <TabsContent value="vehicles" className="space-y-4 pt-4">
-            {canEdit && vehicles.length > 0 && (
-              <div className="flex justify-end">
-                <Button onClick={() => openVehicleDialog()}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Vehicle
-                </Button>
-              </div>
-            )}
-
-            {vehicles.length === 0 ? (
-              <EmptyState
-                kind="assets"
-                title="No vehicles yet"
-                description="Add household vehicles to track mileage, key dates and service."
-                action={canEdit ? { label: 'Add Vehicle', icon: <Plus className="h-4 w-4" />, onClick: () => openVehicleDialog() } : undefined}
-              />
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
-                <div className="space-y-4">
-                  {activeVehicles.length > 0 ? (
-                    <Stagger className="grid content-start gap-3 sm:grid-cols-2">
-                      {activeVehicles.map((vehicle) => (
-                        <StaggerItem key={vehicle.id} className="flex">
-                          {renderVehicleCard(vehicle, false)}
-                        </StaggerItem>
-                      ))}
-                    </Stagger>
-                  ) : (
-                    <EmptyState compact headingLevel={3} title="No active vehicles" description="Sold and retired vehicles are kept out of the main vehicle list." />
-                  )}
-
-                  {inactiveVehicles.length > 0 && (
-                    <div className="rounded-lg border p-3">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="w-full justify-between px-2"
-                        aria-expanded={showInactiveVehicles}
-                        onClick={() => setShowInactiveVehicles(prev => !prev)}
-                      >
-                        <span>Sold / retired vehicles ({inactiveVehicles.length})</span>
-                        <span className="text-xs text-muted-foreground">{showInactiveVehicles ? 'Hide' : 'Show'}</span>
-                      </Button>
-                      {showInactiveVehicles && (
-                        <div className="mt-3 grid content-start gap-3 sm:grid-cols-2">
-                          {inactiveVehicles.map((vehicle) => (
-                            <div key={vehicle.id} className="flex">{renderVehicleCard(vehicle, true)}</div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {selectedVehicle && (
-                  <Card className="min-w-0" data-testid="vehicle-detail" style={morphStyle(detailMorph.morphName === sharedId('vehicle', selectedVehicle.id) ? sharedId('vehicle', selectedVehicle.id) : null)}>
-                    <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
-                      {/* The make is part of the description below, so the mark is decorative. */}
-                      <BrandLogo brand={selectedVehicle.make} size="md" decorative className="text-primary" />
-                      <div className="min-w-0 flex-1">
-                        <CardTitle className="font-headline">{selectedVehicle.nickname}</CardTitle>
-                        <CardDescription>{[selectedVehicle.year, selectedVehicle.make, selectedVehicle.model, selectedVehicle.trim].filter(Boolean).join(' ') || 'Vehicle details'}</CardDescription>
-                      </div>
-                      {healthFor('vehicle', selectedVehicle.id) && (
-                        <HealthRing
-                          score={healthFor('vehicle', selectedVehicle.id)!.score}
-                          band={healthFor('vehicle', selectedVehicle.id)!.band}
-                          label={`${selectedVehicle.nickname} health`}
-                        />
-                      )}
-                    </CardHeader>
-                    <CardContent className="space-y-5">
-                      <DetailGrid fields={vehicleFields(selectedVehicle)} />
-                      {selectedVehicle.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{selectedVehicle.notes}</p>}
-                      {detailActions({
-                        name: selectedVehicle.nickname,
-                        kind: 'vehicle',
-                        missing: missingCount(vehicleFields(selectedVehicle)),
-                        onEdit: () => openVehicleDialog(selectedVehicle),
-                        onDelete: () => setVehicleToDelete(selectedVehicle),
-                      })}
-                      <AttachmentPanel
-                        attachments={getAttachmentsForTarget(attachments, 'vehicle', selectedVehicle.id)}
-                        targetType="vehicle"
-                        targetId={selectedVehicle.id}
-                        uploading={uploadingAttachmentTarget === `vehicle:${selectedVehicle.id}`}
-                        deletingId={deletingAttachmentId}
-                        canUpload={canEdit}
-                        canDelete={canDelete}
-                        onUpload={uploadAttachment}
-                        onDelete={setAttachmentToDelete}
-                      />
-                      {selectedVehicle.serviceSchedules && selectedVehicle.serviceSchedules.length > 0 && (
-                        <div className="space-y-2">
-                          <h3 className="font-headline font-semibold">Scheduled Maintenance</h3>
-                          {selectedVehicle.serviceSchedules.map((schedule, index) => {
-                            const key = scheduleKeyFor(selectedVehicle.id, schedule, index, 'vehicle');
-                            return (
-                              <div
-                                key={`${schedule.serviceName}-${index}`}
-                                id={`maintenance-schedule-${stableSlugify(key)}`}
-                                data-testid={`vehicle-schedule-${schedule.id || index}`}
-                                className={cn('rounded-lg border p-3', highlightedScheduleKey === key && 'ring-2 ring-primary')}
-                              >
-                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                  <div>
-                                    <p className="text-sm font-medium">{schedule.serviceName || 'Scheduled maintenance'}</p>
-                                    {getVehicleScheduleMode(schedule) === 'checklist' ? (
-                                      <p className="text-sm text-muted-foreground">Unscheduled checklist item</p>
-                                    ) : (
-                                      <>
-                                        <p className="text-sm text-muted-foreground">
-                                          {schedule.nextDueDate ? `Next due ${formatDate(schedule.nextDueDate)}` : 'No next date set'}
-                                          {typeof schedule.nextDueMileage === 'number' ? `${schedule.nextDueDate ? ' or ' : 'Next due '}${schedule.nextDueMileage.toLocaleString()} miles` : ''}
-                                        </p>
-                                        <p className="text-xs text-muted-foreground">
-                                          {schedule.intervalMiles ? `Every ${schedule.intervalMiles.toLocaleString()} miles` : ''}
-                                          {schedule.intervalMiles && schedule.intervalMonths ? ' / ' : ''}
-                                          {schedule.intervalMonths ? `Every ${schedule.intervalMonths} months` : ''}
-                                        </p>
-                                      </>
-                                    )}
-                                  </div>
-                                  {canComplete && getVehicleScheduleMode(schedule) === 'scheduled' && <Button
-                                    type="button"
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => openScheduleCompletionDialog({
-                                      targetType: 'vehicle',
-                                      vehicle: selectedVehicle,
-                                      scheduleIndex: index,
-                                      schedule,
-                                    })}
-                                  >
-                                    Complete
-                                  </Button>}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      <div className="flex justify-between gap-2">
-                        <h3 className="font-headline font-semibold">Service Logs</h3>
-                        {canCreateLogs && (
-                          <Button variant="outline" size="sm" onClick={() => openLogDialog({ targetType: 'vehicle', vehicleId: selectedVehicle.id })}>
-                            Add Log
-                          </Button>
-                        )}
-                      </div>
-                      <LogList
-                        {...logListProps}
-                        logs={vehicleLogs}
-                        emptyTitle="No service logs yet"
-                        emptyDescription="Oil changes, repairs and inspections for this vehicle will show up here."
-                      />
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
-            )}
-          </TabsContent>
-
-          <TabsContent value="reminders" className="space-y-4 pt-4">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <SummaryCard title="Due Soon" value={dueSoonReminders.length} detail={`Within ${REMINDER_DUE_SOON_DAYS} days or ${MILEAGE_DUE_SOON_THRESHOLD} miles`} icon={CalendarDays} />
-              <SummaryCard title="Overdue" value={overdueReminders.length} detail="Past due date or mileage" icon={AlertCircle} />
-              <SummaryCard title="Warranty Watch" value={warrantyReminders.length} detail="Warranties ending or ended" icon={FileText} />
-              <SummaryCard title="Vehicle Service" value={vehicleServiceReminders.length} detail="Service, registration, and inspection" icon={Car} />
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card data-testid="reminders-due-soon">
-                <CardHeader>
-                  <CardTitle className="font-headline">Due Soon</CardTitle>
-                  <CardDescription>Maintenance due today or within the default reminder window.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ReminderList
-                    key={reminderListEpoch}
-                    {...reminderListProps}
-                    reminders={dueSoonReminders}
-                    emptyTitle="Nothing due soon"
-                    emptyDescription="Date and mileage reminders will appear here when they are close."
-                  />
-                </CardContent>
-              </Card>
-
-              <Card data-testid="reminders-overdue">
-                <CardHeader>
-                  <CardTitle className="font-headline">Overdue</CardTitle>
-                  <CardDescription>Items past their date or mileage threshold.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ReminderList
-                    key={reminderListEpoch}
-                    {...reminderListProps}
-                    reminders={overdueReminders}
-                    emptyTitle="Nothing overdue"
-                    emptyDescription="Overdue scheduled maintenance and vehicle requirements will appear here."
-                  />
-                </CardContent>
-              </Card>
-
-              <Card data-testid="reminders-warranty">
-                <CardHeader>
-                  <CardTitle className="font-headline">Warranty Watch</CardTitle>
-                  <CardDescription>Home asset warranties ending soon or already ended.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ReminderList
-                    key={reminderListEpoch}
-                    {...reminderListProps}
-                    reminders={warrantyReminders}
-                    emptyTitle="No warranty reminders"
-                    emptyDescription="Warranties ending within the reminder window will appear here."
-                  />
-                </CardContent>
-              </Card>
-
-              <Card data-testid="reminders-vehicle">
-                <CardHeader>
-                  <CardTitle className="font-headline">Vehicle Service Due</CardTitle>
-                  <CardDescription>Vehicle service, registration, and inspection reminders.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ReminderList
-                    key={reminderListEpoch}
-                    {...reminderListProps}
-                    reminders={vehicleServiceReminders}
-                    emptyTitle="No vehicle reminders"
-                    emptyDescription="Mileage and date-based vehicle reminders will appear here."
-                  />
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="logs" className="space-y-4 pt-4">
-            {canCreateLogs && (
-              <div className="flex justify-end">
-                <Button onClick={() => openLogDialog()}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Maintenance Log
-                </Button>
-              </div>
-            )}
-            <LogList {...logListProps} logs={logs} highlightedLogId={highlightedLogId} />
-          </TabsContent>
+          <LogsTab logs={logs} highlightedLogId={highlightedLogId} canCreateLogs={canCreateLogs} logListProps={logListProps} openLogDialog={openLogDialog} />
         </Tabs>
       </div>
 
