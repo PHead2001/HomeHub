@@ -40,6 +40,8 @@ export type LastCompletion = {
   /** Server time of the completion (ISO). */
   at: string;
   cycle: MaintenanceCycle;
+  /** Set when an edit explicitly replaced the due cycle: the marker no longer covers it. */
+  replaced?: true;
 };
 
 /** Field values before and after an operation; null means "absent". */
@@ -222,6 +224,7 @@ export const parseLastCompletion = (value: unknown): LastCompletion | null => {
     completedDate: typeof entry.completedDate === 'string' ? entry.completedDate : '',
     at: typeof entry.at === 'string' ? entry.at : '',
     cycle,
+    ...(entry.replaced === true ? { replaced: true } : {}),
   };
 };
 
@@ -258,7 +261,8 @@ export const planCompletion = (input: {
 }): CompletionPlan => {
   const { ownerType, schedule, seen, values, today } = input;
   const last = parseLastCompletion(schedule.lastCompletion);
-  if (last && sameCycle(last.cycle, seen)) return { kind: 'already_done', lastCompletion: last };
+  // A marker whose cycle was explicitly replaced by an edit no longer covers it.
+  if (last && !last.replaced && sameCycle(last.cycle, seen)) return { kind: 'already_done', lastCompletion: last };
   if (!sameCycle(cycleOf(schedule), seen)) return { kind: 'changed' };
 
   if (!isRealDay(values.completedDate)) return { kind: 'refused', reason: 'invalid_date' };
@@ -379,8 +383,12 @@ export const planUndoCompletion = (input: {
   const kept: KeptField[] = [];
   let nextSchedule: StoredSchedule | null = null;
   if (schedule) {
-    const result = compareAndRevert(schedule, pick(record.before, COMPLETION_SCHEDULE_FIELDS), pick(record.after, COMPLETION_SCHEDULE_FIELDS));
-    nextSchedule = applyPatch(schedule, result.patch);
+    // The completion marker is this operation's own (checked above): it goes back to what it
+    // was before, even when an edit since marked its cycle replaced. The other fields are
+    // compare-and-revert.
+    const fields = COMPLETION_SCHEDULE_FIELDS.filter(field => field !== 'lastCompletion');
+    const result = compareAndRevert(schedule, pick(record.before, fields), pick(record.after, fields));
+    nextSchedule = applyPatch(schedule, { ...result.patch, lastCompletion: orNull(record.before.lastCompletion) });
     kept.push(...result.kept);
   }
   let vehiclePatch: FieldValues = {};
@@ -482,7 +490,11 @@ export const mergeSchedules = (
     // An explicit new due date or mileage schedules a new occurrence, even when it equals
     // the one last completed: the completion marker no longer describes the current cycle,
     // so it must not make the next completion look "already done" (PR #210 review).
-    if (changed.includes('nextDueDate') || changed.includes('nextDueMileage')) patch.lastCompletion = null;
+    // The marker itself stays (it still names the completion, so its Undo is not mistaken
+    // for "completed again"); only its claim on the current cycle ends.
+    if ((changed.includes('nextDueDate') || changed.includes('nextDueMileage')) && schedule.lastCompletion && typeof schedule.lastCompletion === 'object') {
+      patch.lastCompletion = { ...(schedule.lastCompletion as Record<string, unknown>), replaced: true };
+    }
     merged.push(applyPatch(schedule, patch));
   }
   const storedIds = new Set(stored.map(schedule => String(schedule.id)));

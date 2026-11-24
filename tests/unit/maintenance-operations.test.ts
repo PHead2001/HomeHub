@@ -466,9 +466,25 @@ describe('an explicit new due date starts a new occurrence (PR #210 review)', ()
     // The member explicitly schedules the same date again.
     const values = [{ ...first.schedule, nextDueDate: '2026-03-01' }];
     const [edited] = mergeSchedules([first.schedule], base, values, ASSET_SCHEDULE_FIELDS);
-    assert.equal('lastCompletion' in edited, false);
+    // The marker stays (Undo still recognises its own completion) but no longer covers the cycle.
+    assert.equal((edited.lastCompletion as { replaced?: boolean }).replaced, true);
+    assert.equal((edited.lastCompletion as { opId: string }).opId, 'op1');
     const again = planCompletion({ ownerType: 'home_asset', schedule: edited, seen, values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op2') });
     assert.equal(again.kind, 'apply');
+  });
+
+  test('Undo after another member replaced the due date in the window is not "superseded"', () => {
+    const first = planCompletion({ ownerType: 'home_asset', schedule: filter(), seen, values: { completedDate: '2026-03-01' }, today: '2026-03-01', completion: who('op1') });
+    assert.ok(first.kind === 'apply');
+    const [edited] = mergeSchedules([first.schedule], [first.schedule], [{ ...first.schedule, nextDueDate: '2026-07-15' }], ASSET_SCHEDULE_FIELDS);
+    const undo = planUndoCompletion({ opId: 'op1', schedule: edited, record: first.record });
+    assert.equal(undo.kind, 'apply');
+    if (undo.kind !== 'apply') return;
+    // The edited due date is kept and reported; the completion itself is taken back.
+    assert.equal(undo.schedule?.nextDueDate, '2026-07-15');
+    assert.ok(undo.kept.some(entry => entry.field === 'nextDueDate'));
+    assert.equal(undo.schedule?.lastCompletedDate, filter().lastCompletedDate);
+    assert.equal('lastCompletion' in (undo.schedule ?? {}), false);
   });
 
   test('an edit that leaves the due values alone keeps the marker', () => {

@@ -239,7 +239,10 @@ export type MaintenanceLastCompletion = {
   byName: string;
   completedDate: string;
   at: string;
-  cycle: { nextDueDate: string | null; nextDueMileage: number | null };
+  cycle: { nextDueDate: string | null; nextDueMileage: number | null 
+  /** Set when an edit explicitly replaced the due cycle (the marker no longer covers it). */
+  replaced?: true;
+};
 };
 
 export type HomeAsset = {
