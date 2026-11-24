@@ -391,6 +391,21 @@ service cloud.firestore {
           exists(/databases/$(database)/documents/households/$(householdId)/vehicles/$(targetId))));
     }
 
+    // MA-16/MA-30: a member who may create logs but not edit (no maintenance.edit) may attach a
+    // receipt, invoice or photo to a log they created themselves through the server (doneByUid
+    // and createdAtServer are server-owned, so a client cannot forge them) within 30 minutes of
+    // creating it. Nothing broader: not another member's log, not an older log, not an asset or
+    // vehicle, and quick logs from the command palette (no doneByUid) are excluded.
+    function ownNewLogAttachment(householdId) {
+      let data = request.resource.data;
+      let log = get(/databases/$(database)/documents/households/$(householdId)/maintenance/$(data.targetId)).data;
+      return data.targetType == 'maintenance_log' &&
+             data.category in ['receipt', 'invoice', 'photo'] &&
+             log.get('doneByUid', '') == request.auth.uid &&
+             log.get('createdAtServer', null) is timestamp &&
+             request.time < log.createdAtServer + duration.value(30, 'm');
+    }
+
     function validNewMaintenanceAttachment(householdId) {
       return request.resource.data.householdId == householdId &&
              request.resource.data.uploadedByUid == request.auth.uid &&
@@ -1945,9 +1960,17 @@ service cloud.firestore {
 
       match /maintenance-attachments/{attachmentId} {
         allow read: if hasHouseholdPermission(householdId, 'maintenance.view') || sectionEnabled(householdId, 'maintenance');
-        allow create: if hasHouseholdPermission(householdId, 'maintenance.edit') && validNewMaintenanceAttachment(householdId);
+        allow create: if validNewMaintenanceAttachment(householdId) && (
+          hasHouseholdPermission(householdId, 'maintenance.edit') ||
+          (hasHouseholdPermission(householdId, 'maintenance.createLogs') && ownNewLogAttachment(householdId)));
         allow update: if false;
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
+      }
+
+      // Maintenance deletes in progress (MA-22): written and read only by the server
+      // (functions/src/shared/maintenance-delete.ts, Admin SDK); the hourly upkeep resumes them.
+      match /maintenance-deletions/{deletionId} {
+        allow read, write: if false;
       }
 
       match /auditLogs/{auditId} {
