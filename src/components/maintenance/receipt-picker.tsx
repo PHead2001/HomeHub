@@ -22,13 +22,17 @@ import { receiptStaging, type StagedReceipt } from './receipt-staging';
 
 const MAX_STAGED = 5;
 
-/** Reads a file as base64 (no data: prefix). */
-const toBase64 = (file: Blob) => new Promise<string>((resolve, reject) => {
-  const reader = new FileReader();
-  reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ''));
-  reader.onerror = () => reject(reader.error);
-  reader.readAsDataURL(file);
-});
+/** Reads a file as base64 (no data: prefix) from its bytes: a plain promise, no reader events. */
+const toBase64 = async (file: Blob) => {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let start = 0; start < bytes.length; start += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(start, start + 0x8000));
+  }
+  return btoa(binary);
+};
+
+const READABLE_AS_IS = ['image/jpeg', 'image/png', 'image/webp'];
 
 type ReadState =
   | { kind: 'idle' }
@@ -119,7 +123,9 @@ export function ReceiptPicker({
       const check = checkMaintenanceFile(entry.file);
       let payload: Blob = entry.file;
       let contentType = check.ok ? check.contentType : '';
-      if (check.ok && check.image) {
+      // A photo already small enough is sent as it is (no decode); only larger or HEIC photos are
+      // redrawn, which needs the browser to decode them.
+      if (check.ok && check.image && !(READABLE_AS_IS.includes(contentType) && entry.file.size <= RECEIPT_READ_MAX_BYTES)) {
         const smaller = await downscaleImage(entry.file, { maxEdge: RECEIPT_READ_MAX_EDGE, maxBytes: RECEIPT_READ_MAX_BYTES });
         if (!smaller.ok || (isHeicType(contentType) && !smaller.resized)) {
           throw new Error(isHeicType(contentType) ? 'heic' : 'too_large');

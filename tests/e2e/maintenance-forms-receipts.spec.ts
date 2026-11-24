@@ -18,10 +18,18 @@ const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 
 // A real 1x1 PNG.
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 
-async function open(page: Page, path: string) {
-  await page.clock.setFixedTime(fixedNow);
+async function open(page: Page, path: string, { realClock = false } = {}) {
+  // Playwright's fixed time also freezes the page's timers (they are scheduled on the fake clock,
+  // which never advances), so flows with a bounded wait (the receipt reading) use the real clock.
+  if (!realClock) await page.clock.setFixedTime(fixedNow);
   await page.goto(path);
   await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
+}
+
+/** Prints the page's console errors and uncaught exceptions with the test output (diagnosis on failure). */
+function logPageErrors(page: Page) {
+  page.on('console', (message) => { if (message.type() === 'error') console.log(`[page console] ${message.text()}`); });
+  page.on('pageerror', (error) => console.log(`[page error] ${error.message}`));
 }
 
 async function removeTestRecords() {
@@ -131,7 +139,8 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
   test('MA-16/MA-30: a receipt is read with AI, confirmed without overwriting what was typed, and attached on save', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     test.setTimeout(90_000);
-    await open(page, '/maintenance');
+    logPageErrors(page);
+    await open(page, '/maintenance', { realClock: true });
     // The page header's button (the dialog is titled "Add Maintenance Log").
     await page.getByRole('button', { name: 'Add Log', exact: true }).first().click();
     const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
@@ -174,7 +183,8 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
 
   test('MA-30: a late reading is ignored after the receipt is removed, and the log still saves', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
-    await open(page, '/maintenance');
+    logPageErrors(page);
+    await open(page, '/maintenance', { realClock: true });
     // The page header's button (the dialog is titled "Add Maintenance Log").
     await page.getByRole('button', { name: 'Add Log', exact: true }).first().click();
     const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
