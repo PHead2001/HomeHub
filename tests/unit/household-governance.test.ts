@@ -11,6 +11,11 @@ import {
   customizedPermissions,
   describeAuditAction,
   formatInviteInput,
+  householdPageGate,
+  inviteLiveKey,
+  isActiveInvite,
+  showSoloMembersState,
+  transferOwnershipDescription,
   householdNameError,
   inviteCodeError,
   inviteState,
@@ -212,6 +217,92 @@ describe('activity wording', () => {
     assert.equal(describeAuditAction({ action: 'member.role_changed', details: { role: 'newuser' } }), 'Changed a role to Pending');
     assert.equal(describeAuditAction({ action: 'member.joined_pending' }), 'Asked to join');
     assert.equal(describeAuditAction({ action: 'something.new_thing' }), 'Something new thing');
+  });
+
+  it('says what changed when the server recorded it (HO-8)', () => {
+    // Role changes: from and to; approvals and denials keep their own sentences.
+    assert.equal(describeAuditAction({ action: 'member.role_changed', details: { role: 'admin', previousRole: 'member' } }), 'Changed a role from Member to Admin');
+    assert.equal(describeAuditAction({ action: 'member.approved', details: { role: 'child', previousRole: 'newuser' } }), 'Approved a member as Child');
+    assert.equal(describeAuditAction({ action: 'member.removed', details: { pending: true } }), 'Denied a request to join');
+    assert.equal(describeAuditAction({ action: 'member.removed' }), 'Removed a member');
+    // Renames: old and new names.
+    assert.equal(describeAuditAction({ action: 'household.renamed', details: { householdName: 'The Foxes', previousName: 'Foxes' } }), 'Renamed the household from "Foxes" to "The Foxes"');
+    assert.equal(describeAuditAction({ action: 'household.renamed', details: { householdName: 'The Foxes', previousName: '' } }), 'Renamed the household to "The Foxes"');
+    assert.equal(describeAuditAction({ action: 'household.renamed' }), 'Renamed the household');
+    // Permission edits: what was given and taken away, in plain labels.
+    assert.equal(
+      describeAuditAction({ action: 'member.permissions_changed', details: { granted: 'household.manageInvites, shopping.delete', revoked: 'chores.view' } }),
+      'Customized permissions: allowed Manage invites, Delete shopping; took away View chores',
+    );
+    assert.equal(describeAuditAction({ action: 'member.permissions_changed', details: { granted: '', revoked: 'pets.view' } }), 'Customized permissions: took away View pets');
+    assert.equal(describeAuditAction({ action: 'member.permissions_changed', details: { granted: '', revoked: '' } }), 'Customized permissions');
+  });
+});
+
+describe('Household page gate (HO-8)', () => {
+  const owner = { role: 'owner' as const, status: 'active' as const };
+  const ownerPermissions = getEffectivePermissions('owner', {});
+  const base = { signedIn: true, householdLoading: false, hasHousehold: true, member: owner, permissions: ownerPermissions };
+
+  it('shows a skeleton, not "No household yet", while the household loads', () => {
+    assert.equal(householdPageGate({ ...base, hasHousehold: false, householdLoading: true, member: null }), 'loading');
+    assert.equal(householdPageGate({ ...base, hasHousehold: false, householdLoading: false, member: null }), 'no-household');
+    assert.equal(householdPageGate({ ...base, signedIn: false, hasHousehold: false, householdLoading: true }), 'sign-in');
+  });
+
+  it('decides access from resolved permissions and status, not the role name', () => {
+    assert.equal(householdPageGate(base), 'page');
+    // An admin whose View household was turned off.
+    const admin = { role: 'admin' as const, status: 'active' as const };
+    assert.equal(householdPageGate({ ...base, member: admin, permissions: getEffectivePermissions('admin', { 'household.view': false }) }), 'not-available');
+    // A pending person, and a record that is not active (permissions resolve to nothing).
+    assert.equal(householdPageGate({ ...base, member: { role: 'newuser', status: 'pending' }, permissions: getRolePresetPermissions('newuser') }), 'waiting');
+    assert.equal(householdPageGate({ ...base, member: { role: 'admin', status: 'deleting' }, permissions: getRolePresetPermissions('newuser') }), 'not-available');
+  });
+});
+
+describe('Members after a failed load (HO-8)', () => {
+  it('never says "It\'s just you so far" under a failed load', () => {
+    assert.equal(showSoloMembersState(1, 0, false), true);
+    assert.equal(showSoloMembersState(1, 0, true), false);
+    assert.equal(showSoloMembersState(2, 0, false), false);
+    assert.equal(showSoloMembersState(1, 1, false), false);
+  });
+});
+
+describe('Make owner warning (HO-8)', () => {
+  it('warns when ownership would go to a Child or Guest', () => {
+    for (const role of ['child', 'guest'] as const) {
+      const text = transferOwnershipDescription({ displayName: 'Casey', role });
+      assert.match(text, new RegExp(`^Casey is a ${role === 'child' ? 'Child' : 'Guest'}, a role with limited access\\. They get full control`));
+    }
+    for (const role of ['admin', 'member'] as const) {
+      assert.equal(transferOwnershipDescription({ displayName: 'Sam', role }), 'They get full control, including deleting the household. You become an admin.');
+    }
+  });
+});
+
+describe('invite clock (HO-8)', () => {
+  it('keeps the clock moving only while a code can still expire', () => {
+    const invite = (code: string, extra: Record<string, unknown> = {}) => ({ code, maxUses: 1, useCount: 0, expiresAt: '', ...extra });
+    const now = new Date('2026-08-01T12:00:00.000Z');
+    const live = { expiresAt: '2026-08-01T12:30:00.000Z' };
+    assert.equal(inviteLiveKey([], now), '');
+    assert.equal(inviteLiveKey([
+      invite('B', live), invite('A', live),
+      invite('R', { ...live, revokedAt: 'x' }), invite('U', { ...live, useCount: 1 }),
+      invite('E', { expiresAt: '2026-08-01T11:59:00.000Z' }),
+    ], now), 'A|B');
+    // Once the last code has expired the key is empty and the clock stops.
+    assert.equal(inviteLiveKey([invite('A', live)], new Date('2026-08-01T12:30:00.000Z')), '');
+  });
+
+  it('measures expiry against the time it is given, so a ticking clock flips the state', () => {
+    const code = { revokedAt: undefined, maxUses: 1, useCount: 0, expiresAt: '2026-08-01T12:30:00.000Z' };
+    assert.equal(isActiveInvite(code, new Date('2026-08-01T12:29:59.000Z')), true);
+    assert.equal(isActiveInvite(code, new Date('2026-08-01T12:30:00.000Z')), false);
+    assert.equal(relativeTime(code.expiresAt, new Date('2026-08-01T12:00:00.000Z')), 'in 30 min');
+    assert.equal(relativeTime(code.expiresAt, new Date('2026-08-01T12:20:00.000Z')), 'in 10 min');
   });
 });
 

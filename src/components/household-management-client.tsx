@@ -62,6 +62,10 @@ import {
   describeAuditAction,
   describeAuditActor,
   householdManagerReads,
+  householdPageGate,
+  inviteLiveKey,
+  showSoloMembersState,
+  transferOwnershipDescription,
   memberStat,
   householdNameError,
   inviteState,
@@ -78,6 +82,7 @@ import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
 import { DevicesTab } from '@/components/household/devices-tab';
 import { useMemberTabletControls } from '@/components/household/member-tablet-controls';
+import { useServerNow } from '@/components/household/use-server-now';
 
 // Wall tablets ship dark behind the public devices flag (docs/modules/devices/README.md).
 const devicesEnabled = process.env.NEXT_PUBLIC_HOMEHUB_DEVICES === 'true';
@@ -87,7 +92,7 @@ const INVITE_TTL_MINUTES = 30;
 const householdTabs = ['overview', 'invites', 'members', 'roles', 'devices', 'activity', 'danger'];
 
 export function HouseholdManagementClient() {
-  const { currentUser, household, currentMember, permissions, leaveHousehold, deleteHousehold } = useAuth();
+  const { currentUser, household, currentMember, permissions, householdLoading, leaveHousehold, deleteHousehold } = useAuth();
   const { toast, toastError } = useToast();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get('tab');
@@ -142,6 +147,9 @@ export function HouseholdManagementClient() {
     ownEmail: currentUser?.email ?? null,
   });
   const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
+  // Invite expiry by the server's clock, moving on while a code is still active (HO-8);
+  // once the last one has expired the clock stops.
+  const inviteNow = useServerNow(reads.invites && canManageInvites, (now) => inviteLiveKey(invites, now));
   // Wall tablets: kid profiles and tablet PINs (owners and admins, devices flag on).
   const tablet = useMemberTabletControls({ householdId: household?.id, currentMember, members });
   // Kid profiles are managed by role (owner or admin), as the server enforces.
@@ -165,10 +173,16 @@ export function HouseholdManagementClient() {
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [matrixSelection, setMatrixSelection] = useState<string>(ALL_ROLES);
 
-  const activeInvites = useMemo(() => invites.filter((invite) => isActiveInvite(invite)), [invites]);
+  const activeInvites = useMemo(() => invites.filter((invite) => isActiveInvite(invite, inviteNow)), [invites, inviteNow]);
   const pendingMembers = useMemo(() => members.filter(member => member.role === 'newuser'), [members]);
   const approvedMembers = useMemo(() => members.filter(member => member.role !== 'newuser'), [members]);
-  const colors = useMemo(() => memberColorMap(members.map((m) => m.uid)), [members]);
+  // Join order, pending people last: the same colors Chores and the calendar give the
+  // approved members, and nobody's color moves when someone joins (HO-8).
+  const colors = useMemo(() => memberColorMap(members.map((m) => ({
+    uid: m.uid,
+    joinedAt: m.joinedAt,
+    pending: m.role === 'newuser' || (m.status ?? 'active') !== 'active',
+  }))), [members]);
 
   // Daily "still pending" reminder: when someone who can approve opens this page
   // and a pending person has not been reminded about for 24 hours, the server
@@ -373,7 +387,7 @@ export function HouseholdManagementClient() {
 
   const askTransfer = (member: HouseholdMember) => setConfirm({
     title: `Make ${memberName(member)} the owner?`,
-    description: 'They get full control, including deleting the household. You become an admin.',
+    description: transferOwnershipDescription(member),
     confirmLabel: 'Transfer ownership',
     onConfirm: () => transferOwnership(member),
   });
@@ -391,11 +405,28 @@ export function HouseholdManagementClient() {
     selectTab('roles');
   };
 
-  if (!currentUser) {
+  // HO-8: access from the resolved permissions; a skeleton while the household loads.
+  const gate = householdPageGate({
+    signedIn: Boolean(currentUser),
+    householdLoading,
+    hasHousehold: Boolean(household),
+    member: currentMember,
+    permissions,
+  });
+
+  if (gate === 'sign-in' || !currentUser) {
     return <SignInPrompt what="manage your household" />;
   }
 
-  if (!household) {
+  if (gate === 'loading') {
+    return (
+      <div className="mx-auto max-w-6xl space-y-6">
+        <ManagerSkeleton />
+      </div>
+    );
+  }
+
+  if (gate === 'no-household' || !household) {
     return (
       <Card>
         <CardHeader>
@@ -406,8 +437,8 @@ export function HouseholdManagementClient() {
     );
   }
 
-  if (!reads.page) {
-    const pending = !currentMember || currentMember.role === 'newuser' || currentMember.status === 'pending';
+  if (gate !== 'page') {
+    const pending = gate === 'waiting';
     return (
       <Card>
         <CardHeader>
@@ -445,13 +476,7 @@ export function HouseholdManagementClient() {
       </div>
 
       {live.loading ? (
-        <div role="status" aria-label="Loading household" className="space-y-4">
-          <Skeleton className="h-10 w-full rounded-lg" />
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
-            {[0, 1, 2, 3].map((key) => <Skeleton key={key} className="h-20 rounded-lg" />)}
-          </div>
-          <Skeleton className="h-40 w-full rounded-lg" />
-        </div>
+        <ManagerSkeleton />
       ) : (
         <Tabs value={shownTab} onValueChange={selectTab}>
           <TabsList className="grid h-auto w-full grid-cols-3 md:flex md:w-auto md:justify-start">
@@ -484,6 +509,7 @@ export function HouseholdManagementClient() {
                     members={approvedMembers.map((m) => ({ uid: m.uid, name: memberName(m), photoUrl: m.avatarUrl }))}
                     size="sm"
                     max={4}
+                    colors={colors}
                     className="mt-1"
                   />
                 ) : null}
@@ -567,7 +593,7 @@ export function HouseholdManagementClient() {
                   ) : (
                     <ul className="grid gap-3">
                       {invites.map(invite => {
-                        const state = inviteState(invite);
+                        const state = inviteState(invite, inviteNow);
                         const active = state === 'active';
                         return (
                           <li key={invite.id} className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -578,7 +604,7 @@ export function HouseholdManagementClient() {
                               </div>
                               <p className="break-words text-sm text-muted-foreground">
                                 Created by {invite.createdByEmail}
-                                {active ? ` · expires ${relativeTime(invite.expiresAt)}` : ` · ${relativeTime(invite.createdAt)}`}
+                                {active ? ` · expires ${relativeTime(invite.expiresAt, inviteNow)}` : ` · ${relativeTime(invite.createdAt, inviteNow)}`}
                               </p>
                             </div>
                             {active && (
@@ -658,7 +684,8 @@ export function HouseholdManagementClient() {
                     onTablet={tablet.run}
                   />
                 ))}
-                <Card>
+                {/* Never under a failed load: the list may hold more people (HO-8). */}
+                {showSoloMembersState(approvedMembers.length, shownPending.length, live.membersFailed) && <Card>
                   <EmptyState
                     kind="generic"
                     headingLevel={3}
@@ -666,7 +693,7 @@ export function HouseholdManagementClient() {
                     description="Invite the people you live with so chores, lists and pets can be shared."
                     action={canManageInvites ? { label: 'Create an invite code', icon: <UserPlus className="mr-2 h-4 w-4" />, onClick: () => selectTab('invites') } : undefined}
                   />
-                </Card>
+                </Card>}
               </>
             ) : (
               <Stagger className="grid gap-3 md:grid-cols-2" data-testid="household-member-list">
@@ -829,6 +856,19 @@ export function HouseholdManagementClient() {
           </form>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** Tabs, stat cards and the first card, while the household or its members load. */
+function ManagerSkeleton() {
+  return (
+    <div role="status" aria-label="Loading household" className="space-y-4">
+      <Skeleton className="h-10 w-full rounded-lg" />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+        {[0, 1, 2, 3].map((key) => <Skeleton key={key} className="h-20 rounded-lg" />)}
+      </div>
+      <Skeleton className="h-40 w-full rounded-lg" />
     </div>
   );
 }

@@ -13,7 +13,7 @@ import {
   themeBootstrapScript,
 } from '../../src/lib/theme/appearance';
 import { PRESET_LIST, themeCss } from '../../src/lib/theme/tokens';
-import { memberColor, memberColorIndex, memberColorMap } from '../../src/lib/member-colors';
+import { memberColor, memberColorIndex, memberColorMap, memberColorOrder } from '../../src/lib/member-colors';
 import { FEEDBACK_HAPTICS, FEEDBACK_KINDS, FEEDBACK_SOUNDS, configureFeedback, playFeedback } from '../../src/lib/feedback';
 import { STAGGER, sharedId, staggerDelay } from '../../src/lib/motion';
 
@@ -133,6 +133,47 @@ describe('member colors', () => {
     // Order of input does not matter.
     const reversed = memberColorMap([...ids].reverse());
     for (const id of ids) assert.equal(reversed.get(id)?.index, map.get(id)?.index);
+  });
+
+  it('never moves an existing member when someone joins (HO-8)', () => {
+    // Every pair of ids whose own slots collide, with the newcomer's id sorting first:
+    // in id order the newcomer would have taken the slot and pushed the existing member.
+    const ids = Array.from({ length: 60 }, (_, i) => `uid-${i}`);
+    let checked = 0;
+    for (const existing of ids) {
+      for (const newcomer of ids) {
+        if (newcomer >= existing || memberColorIndex(newcomer) !== memberColorIndex(existing)) continue;
+        const before = memberColorMap([{ uid: existing, joinedAt: '2026-01-01T00:00:00.000Z' }]);
+        const after = memberColorMap([
+          { uid: existing, joinedAt: '2026-01-01T00:00:00.000Z' },
+          { uid: newcomer, joinedAt: '2026-02-01T00:00:00.000Z' },
+        ]);
+        assert.equal(after.get(existing)?.index, before.get(existing)?.index);
+        assert.notEqual(after.get(newcomer)?.index, after.get(existing)?.index);
+        checked += 1;
+      }
+    }
+    assert.ok(checked > 0, 'the id set must contain colliding pairs');
+    // A whole household: each join keeps everyone already placed.
+    const household = ids.slice(0, 8).map((uid, i) => ({ uid, joinedAt: `2026-01-0${i + 1}T00:00:00.000Z` }));
+    for (let n = 1; n < household.length; n++) {
+      const smaller = memberColorMap(household.slice(0, n));
+      const larger = memberColorMap(household.slice(0, n + 1));
+      for (const { uid } of household.slice(0, n)) assert.equal(larger.get(uid)?.index, smaller.get(uid)?.index);
+    }
+  });
+
+  it('places pending people after approved ones, so a request never moves a member', () => {
+    assert.deepEqual(memberColorOrder([
+      { uid: 'b', joinedAt: '2026-03-01' },
+      { uid: 'p', joinedAt: '2026-01-01', pending: true },
+      { uid: 'a', joinedAt: '2026-02-01' },
+      'legacy',
+    ]), ['legacy', 'a', 'b', 'p']);
+    const approved = [{ uid: 'uid-1', joinedAt: '2026-02-01' }, { uid: 'uid-2', joinedAt: '2026-03-01' }];
+    const withPending = memberColorMap([...approved, { uid: 'uid-0', joinedAt: '2026-01-01', pending: true }]);
+    const alone = memberColorMap(approved);
+    for (const { uid } of approved) assert.equal(withPending.get(uid)?.index, alone.get(uid)?.index);
   });
 });
 

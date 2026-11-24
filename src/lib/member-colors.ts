@@ -8,10 +8,12 @@
  *   <Avatar className={cn('ring-2', c.classes.ring)} />
  *   <div style={{ background: c.color }} />          // e.g. chart bars
  *
- * Use `memberColorMap(uids)` when several members appear together (calendar,
+ * Use `memberColorMap(members)` when several members appear together (calendar,
  * leaderboard): it keeps each member's own color where possible and resolves
  * collisions deterministically, so two members never share a color while the
- * household has ≤ 8 members.
+ * household has ≤ 8 members. Pass `joinedAt` (and `pending` for people still
+ * waiting for approval) so that someone joining never moves an existing member's
+ * color (HO-8), and pass the same people on every screen so a member has one color.
  */
 
 import { MEMBER_COLOR_COUNT } from './theme/tokens';
@@ -74,15 +76,39 @@ export function memberColor(id: string): MemberColor {
   return memberColorFromIndex(memberColorIndex(id));
 }
 
+/** A member for `memberColorMap`: a bare id, or the id with when they joined. */
+export type MemberColorEntry = string | { uid: string; joinedAt?: string | null; pending?: boolean };
+
 /**
- * Collision-free colors for a group of members. Members are placed in id order;
+ * The order members are placed in: approved before pending, then by join time
+ * (records without one first: they predate it), then by id. Someone who joins
+ * later is placed after everyone already there, so they never take a slot an
+ * existing member had (HO-8). The input order never matters.
+ */
+export function memberColorOrder(entries: readonly MemberColorEntry[]): string[] {
+  const byUid = new Map<string, { uid: string; joinedAt: string; pending: boolean }>();
+  for (const entry of entries) {
+    const item = typeof entry === 'string'
+      ? { uid: entry, joinedAt: '', pending: false }
+      : { uid: entry.uid, joinedAt: entry.joinedAt ?? '', pending: Boolean(entry.pending) };
+    if (!byUid.has(item.uid)) byUid.set(item.uid, item);
+  }
+  return [...byUid.values()]
+    .sort((a, b) => Number(a.pending) - Number(b.pending)
+      || (a.joinedAt < b.joinedAt ? -1 : a.joinedAt > b.joinedAt ? 1 : 0)
+      || (a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0))
+    .map((item) => item.uid);
+}
+
+/**
+ * Collision-free colors for a group of members, placed in `memberColorOrder`;
  * each takes its own slot if free, otherwise the next free slot. Beyond eight
  * members colors repeat.
  */
-export function memberColorMap(ids: readonly string[]): Map<string, MemberColor> {
+export function memberColorMap(entries: readonly MemberColorEntry[]): Map<string, MemberColor> {
   const result = new Map<string, MemberColor>();
   const taken = new Set<number>();
-  for (const id of [...new Set(ids)].sort()) {
+  for (const id of memberColorOrder(entries)) {
     let index = memberColorIndex(id);
     if (taken.size < MEMBER_COLOR_COUNT) {
       while (taken.has(index)) index = ((index % MEMBER_COLOR_COUNT) + 1) as MemberColorIndex;

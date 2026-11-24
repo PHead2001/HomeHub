@@ -93,6 +93,11 @@ export type MemberAvatarStackProps = {
   /** Accessible name for the group; defaults to the member names ("Sam, Alex and 2 others"). */
   label?: string;
   className?: string;
+  /**
+   * The page's own `memberColorMap` for the whole household, so a member has the same
+   * color here as elsewhere on the page. Without it the stack colors its own members.
+   */
+  colors?: ReadonlyMap<string, MemberColor>;
 };
 
 const OVERLAP: Record<MemberAvatarSize, string> = { sm: '-ml-1.5', md: '-ml-2.5', lg: '-ml-4' };
@@ -102,8 +107,9 @@ const OVERLAP: Record<MemberAvatarSize, string> = { sm: '-ml-1.5', md: '-ml-2.5'
  * come from `memberColorMap`, so members in one stack never share a color. The
  * stack is one image to assistive tech, named after the members.
  */
-export function MemberAvatarStack({ members, max = 4, size = 'md', ring = false, label, className }: MemberAvatarStackProps) {
-  const colors = React.useMemo(() => memberColorMap(members.map((m) => m.uid)), [members]);
+export function MemberAvatarStack({ members, max = 4, size = 'md', ring = false, label, className, colors: pageColors }: MemberAvatarStackProps) {
+  const ownColors = React.useMemo(() => memberColorMap(members.map((m) => m.uid)), [members]);
+  const colors = pageColors ?? ownColors;
   const { visible, overflow } = avatarStackSlots(members.length, max);
   const names = members.map((m) => m.name);
   const groupLabel = label ?? formatMemberNames(names);

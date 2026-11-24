@@ -157,10 +157,17 @@ export type JoinResult = {
 /** What the creator of a new household gets back: the household (only their own email in it) and their owner record. */
 export type CreateHouseholdResult = { household: Household; member: HouseholdMember };
 
+const INVITE_NO_LONGER_VALID = 'That invite code is no longer valid. Ask for a new one.';
+
+/** A Firestore document id read from stored data, or '' when it is not one. */
+const validDocId = (value: unknown): string =>
+  typeof value === 'string' && value && value.length <= 200 && !value.includes('/') ? value : '';
+
 // Redeems an invite atomically: validates expiry, revocation and remaining uses,
 // creates a pending membership, and alerts the people who can approve it.
 export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now = new Date()): Promise<JoinResult> => {
-  const code = normalizeInviteCode(rawCode);
+  // Anything but a string (a malformed request) is treated like an unreadable code.
+  const code = normalizeInviteCode(typeof rawCode === 'string' ? rawCode : '');
   if (!code) throw new MembershipError('Enter the 10-character invite code, for example ABCD-EFGH-JK.');
 
   const profileRef = adminDb.collection('users').doc(caller.email);
@@ -189,18 +196,26 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     const useCount = typeof invite.useCount === 'number' ? invite.useCount : 0;
     if (useCount >= maxUses) throw new MembershipError('That invite code has already been used. Ask for a new one.');
 
-    const householdId = typeof invite.householdId === 'string' ? invite.householdId : '';
+    // A malformed invite (no household, or no creator) is refused in plain words before
+    // any path is built from it, never as a generic failure (HO-8).
+    const householdId = validDocId(invite.householdId);
+    const creatorUid = validDocId(invite.createdByUid);
+    if (!householdId || !creatorUid) throw new MembershipError(INVITE_NO_LONGER_VALID);
     const householdRef = adminDb.collection('households').doc(householdId);
     const memberRef = householdRef.collection('members').doc(caller.uid);
-    const [householdSnap, memberSnap, profileSnap, approversSnap] = await Promise.all([
+    const [householdSnap, memberSnap, profileSnap, approversSnap, creatorSnap] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(memberRef),
       transaction.get(profileRef),
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
+      transaction.get(householdRef.collection('members').doc(creatorUid)),
     ]);
-    if (!householdId || !householdSnap.exists) throw new MembershipError('That household no longer exists.');
+    if (!householdSnap.exists) throw new MembershipError('That household no longer exists.');
     if (householdSnap.get('deletingAt')) throw new MembershipError('That household is being deleted.');
     if (memberSnap.exists) throw new MembershipError('You are already part of this household.');
+    // The code stops working once its creator may no longer invite: removed, left,
+    // demoted, or their invite permission taken away (HO-8; device codes: D-T14).
+    if (!canManageInvites(toStoredMember(creatorSnap)).ok) throw new MembershipError(INVITE_NO_LONGER_VALID);
 
     const currentHouseholdId = profileSnap.exists ? profileSnap.data()?.householdId : null;
     if (typeof currentHouseholdId === 'string' && currentHouseholdId && currentHouseholdId !== householdId) {
