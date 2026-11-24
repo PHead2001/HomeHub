@@ -84,8 +84,9 @@ export const PROOF_CATEGORIES: readonly MaintenanceAttachmentCategory[] = ['rece
 /**
  * Where an attachment's derived copies live: siblings of the file in the record's own folder
  * (storage.rules matches one file name per record folder), named by the attachment id. The
- * original is `{attachmentId}-{sanitized name}`, and a sanitized name never contains `~`
- * (`sanitizeFileName` keeps only letters, digits, `.`, `_` and `-`), so `{attachmentId}~display.jpg`
+ * original is `{attachmentId}-{sanitized name}` (a `-` right after the id) and a derived copy
+ * is `{attachmentId}.display.jpg` / `.thumb.jpg` (a `.` right after the id; attachment ids are Firestore
+ * auto-ids, letters and digits only), so `{attachmentId}.display.jpg`
  * can never be an original's path, whatever the file was called (a photo named "display.jpg"
  * included). Attachments stored before this keep their older `-display.jpg`/`-thumb.jpg` paths in
  * their metadata, which are read and deleted as they are.
@@ -94,8 +95,8 @@ export const originalFilePath = (folder: string, attachmentId: string, fileName:
   `${folder}${attachmentId}-${fileName.replace(/[^a-zA-Z0-9._-]/g, '-')}`;
 
 export const derivedFilePaths = (folder: string, attachmentId: string) => ({
-  displayPath: `${folder}${attachmentId}~display.jpg`,
-  thumbnailPath: `${folder}${attachmentId}~thumb.jpg`,
+  displayPath: `${folder}${attachmentId}.display.jpg`,
+  thumbnailPath: `${folder}${attachmentId}.thumb.jpg`,
 });
 
 export const attachmentFolder = (householdId: string, targetType: MaintenanceAttachmentTargetType, targetId: string) =>

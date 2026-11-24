@@ -82,8 +82,8 @@ describe('file checks (MA-11c): the same limits as storage.rules', () => {
   test('derived copies are siblings in the record folder; thumbnails never fall back to a HEIC file', () => {
     const folder = maintenanceFileFolder('h1', 'home_asset', 'a1');
     assert.deepEqual(derivedFilePaths(folder, '123-abc'), {
-      displayPath: 'households/h1/maintenance/home_asset/a1/123-abc~display.jpg',
-      thumbnailPath: 'households/h1/maintenance/home_asset/a1/123-abc~thumb.jpg',
+      displayPath: 'households/h1/maintenance/home_asset/a1/123-abc.display.jpg',
+      thumbnailPath: 'households/h1/maintenance/home_asset/a1/123-abc.thumb.jpg',
     });
     assert.equal(attachmentThumbnailUrl({ downloadUrl: 'u', contentType: 'image/heic' }), null);
     assert.equal(attachmentThumbnailUrl({ downloadUrl: 'u', displayUrl: 'd', contentType: 'image/heic' }), 'd');

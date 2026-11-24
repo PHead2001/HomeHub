@@ -99,7 +99,7 @@ export async function uploadMaintenanceFile(input: {
 
   const attachmentId = `${Date.now()}-${createLocalId()}`;
   const folder = attachmentFolder(householdId, targetType, targetId);
-  // Never equal to a derived copy's path (`~display`/`~thumb`), whatever the file is called.
+  // Never equal to a derived copy's path (`.display`/`.thumb` right after the id), whatever the file is called.
   const filePath = originalFilePath(folder, attachmentId, file.name);
   const uploaded: string[] = [];
   try {

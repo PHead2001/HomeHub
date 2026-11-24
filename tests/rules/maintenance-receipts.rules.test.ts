@@ -119,9 +119,9 @@ describe('attachment files: the scoped receipt rule (storage.rules)', () => {
   test('a log-only member uploads to their own new log, with their uid in the object metadata', async () => {
     await assertSucceeds(upload(users.logger, path('maintenance_log', 'own-new'), own(users.logger)));
     await assertSucceeds(upload(users.logger, path('maintenance_log', 'own-new', '1-r-thumb.jpg'), own(users.logger)));
-    // Derived copies are named `{attachmentId}~display.jpg` / `~thumb.jpg` (PR #211 review): one file name, allowed.
-    await assertSucceeds(upload(users.logger, path('maintenance_log', 'own-new', '1-r~display.jpg'), own(users.logger)));
-    await assertSucceeds(upload(users.logger, path('maintenance_log', 'own-new', '1-r~thumb.jpg'), own(users.logger)));
+    // Derived copies are named `{attachmentId}.display.jpg` / `.thumb.jpg` (PR #211 review): one file name, allowed.
+    await assertSucceeds(upload(users.logger, path('maintenance_log', 'own-new', '1-r.display.jpg'), own(users.logger)));
+    await assertSucceeds(upload(users.logger, path('maintenance_log', 'own-new', '1-r.thumb.jpg'), own(users.logger)));
   });
 
   test('never broader: no uploader metadata, older or other logs, palette logs, assets, wrong types', async () => {
@@ -143,8 +143,8 @@ describe('attachment files: the scoped receipt rule (storage.rules)', () => {
     await assertSucceeds(upload(users.editor, path('home_asset', 'fridge', 'p.jpg'), { contentType: 'image/jpeg' }));
     // An original named display.jpg and its derived display copy are different objects; neither overwrites the other.
     await assertSucceeds(upload(users.editor, path('home_asset', 'fridge', '9-abc-display.jpg'), own(users.editor)));
-    await assertSucceeds(upload(users.editor, path('home_asset', 'fridge', '9-abc~display.jpg'), own(users.editor)));
-    await assertFails(upload(users.editor, path('home_asset', 'fridge', '9-abc~display.jpg'), own(users.editor)));
+    await assertSucceeds(upload(users.editor, path('home_asset', 'fridge', '9-abc.display.jpg'), own(users.editor)));
+    await assertFails(upload(users.editor, path('home_asset', 'fridge', '9-abc.display.jpg'), own(users.editor)));
     await assertSucceeds(upload(users.editor, path('maintenance_log', 'own-old', 'p.jpg'), own(users.editor)));
   });
 });
