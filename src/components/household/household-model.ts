@@ -7,7 +7,7 @@
  * decide what to show and how to word it.
  */
 
-import { getEffectivePermissions, getRolePresetPermissions, householdPermissions } from '@/lib/permissions';
+import { getEffectivePermissions, getRolePresetPermissions, householdPermissions, permissionLabels } from '@/lib/permissions';
 import { OWNER_ONLY_PERMISSIONS, canGrantPermission, effectivePermissions, normalizeOverrides, type PolicyMember } from '@/lib/household-policy';
 import { completionInstant, type ChoreRecord } from '@/lib/chores/dates';
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
@@ -116,6 +116,18 @@ export function inviteState(invite: Pick<InviteCode, 'revokedAt' | 'expiresAt' |
 
 export function isActiveInvite(invite: Pick<InviteCode, 'revokedAt' | 'expiresAt' | 'maxUses' | 'useCount'>, now = new Date()): boolean {
   return inviteState(invite, now) === 'active';
+}
+
+/**
+ * Codes that can still change state with time alone (not revoked, not used up), as
+ * one key. While it is not empty the Invite Codes list keeps its clock moving (HO-8).
+ */
+export function inviteLiveKey(invites: readonly Pick<InviteCode, 'code' | 'revokedAt' | 'maxUses' | 'useCount'>[]): string {
+  return invites
+    .filter((invite) => !invite.revokedAt && (invite.useCount ?? 0) < (invite.maxUses ?? 1))
+    .map((invite) => invite.code)
+    .sort()
+    .join('|');
 }
 
 export const INVITE_STATE_LABELS: Record<InviteState, string> = {
@@ -346,12 +358,38 @@ const AUDIT_LABELS: Record<string, string> = {
   'pet.deleted': 'Deleted a pet',
 };
 
-/** Plain-language sentence for an audit entry; unknown actions fall back to a readable form. */
+/** "Manage invites, Delete shopping" from the server's comma-joined permission keys. */
+function permissionList(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.split(',').map((key) => key.trim()).filter(Boolean)
+    .map((key) => permissionLabels[key as HouseholdPermission] ?? key)
+    .join(', ');
+}
+
+/**
+ * Plain-language sentence for an audit entry, with what changed when the server
+ * recorded it (HO-8: from/to for roles and renames, the permissions given and taken
+ * away). Unknown actions fall back to a readable form.
+ */
 export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): string {
   const base = AUDIT_LABELS[log.action];
   const details = log.details ?? {};
   if (log.action === 'member.role_changed' && typeof details.role === 'string') {
-    return `Changed a role to ${roleLabel(details.role as HouseholdRole)}`;
+    const to = roleLabel(details.role as HouseholdRole);
+    return typeof details.previousRole === 'string' && details.previousRole
+      ? `Changed a role from ${roleLabel(details.previousRole as HouseholdRole)} to ${to}`
+      : `Changed a role to ${to}`;
+  }
+  if (log.action === 'household.renamed' && typeof details.householdName === 'string' && details.householdName) {
+    return typeof details.previousName === 'string' && details.previousName
+      ? `Renamed the household from "${details.previousName}" to "${details.householdName}"`
+      : `Renamed the household to "${details.householdName}"`;
+  }
+  if (log.action === 'member.permissions_changed') {
+    const granted = permissionList(details.granted);
+    const revoked = permissionList(details.revoked);
+    const parts = [granted && `allowed ${granted}`, revoked && `took away ${revoked}`].filter(Boolean);
+    if (parts.length > 0) return `Customized permissions: ${parts.join('; ')}`;
   }
   if (log.action === 'member.approved' && typeof details.role === 'string') {
     return `Approved a member as ${roleLabel(details.role as HouseholdRole)}`;
@@ -373,6 +411,49 @@ export function describeAuditActor(log: Pick<AuditLog, 'actorName' | 'actorEmail
   if (log.via !== 'device' || !log.deviceName) return actor;
   if (log.level === 'pin' || log.level === 'face') return `as ${actor} (${log.level === 'pin' ? 'PIN' : 'face'}) on ${log.deviceName}`;
   return `${actor} on ${log.deviceName}`;
+}
+
+/**
+ * What the Household page shows (HO-8): the sign-in prompt, a skeleton while the
+ * household is still loading (never "No household yet" on a cold load), the
+ * no-household card, the waiting or not-available card, or the page. Access comes
+ * from the resolved permissions (`getMemberPermissions`, which also requires an
+ * approved, active record), never from the role name.
+ */
+export type HouseholdPageGate = 'sign-in' | 'loading' | 'no-household' | 'waiting' | 'not-available' | 'page';
+
+export function householdPageGate(input: {
+  signedIn: boolean;
+  householdLoading: boolean;
+  hasHousehold: boolean;
+  member: Pick<HouseholdMember, 'role' | 'status'> | null | undefined;
+  permissions: Partial<Record<HouseholdPermission, boolean>> | null | undefined;
+}): HouseholdPageGate {
+  if (!input.signedIn) return 'sign-in';
+  if (!input.hasHousehold) return input.householdLoading ? 'loading' : 'no-household';
+  if (householdManagerReads(input.permissions).page) return 'page';
+  const member = input.member;
+  return !member || member.role === 'newuser' || member.status === 'pending' ? 'waiting' : 'not-available';
+}
+
+/**
+ * Whether Members shows "It's just you so far": only when the list really loaded and
+ * holds nobody else, never under a failed load (HO-8).
+ */
+export function showSoloMembersState(approvedCount: number, shownPendingCount: number, membersFailed: boolean): boolean {
+  return !membersFailed && approvedCount <= 1 && shownPendingCount === 0;
+}
+
+/**
+ * The Make owner confirmation (HO-8): a Child or Guest gets an explicit warning,
+ * since ownership is full control whatever role the person had.
+ */
+export function transferOwnershipDescription(member: Pick<HouseholdMember, 'displayName' | 'role'>): string {
+  const outcome = 'They get full control, including removing people and deleting the household. You become an admin.';
+  if (member.role === 'child' || member.role === 'guest') {
+    return `${memberName(member)} is a ${roleLabel(member.role)}, a role with limited access. ${outcome}`;
+  }
+  return 'They get full control, including deleting the household. You become an admin.';
 }
 
 /** Which Household Manager listeners the viewer opens (`householdManagerReads`). */

@@ -103,6 +103,38 @@ test.describe('household governance UX', () => {
     await expect(page.getByRole('checkbox', { name: 'Delete shopping for Sam Member' })).toBeVisible();
   });
 
+  test('HO-8: Make owner warns before handing a Guest the household; a role change says custom permissions reset', async ({ page }) => {
+    await openHousehold(page, 'members');
+
+    // The seeded guest: the confirmation names the limited role before anything changes.
+    await page.getByRole('button', { name: 'Actions for Casey Limited' }).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: 'Make owner' }).click();
+    const transfer = page.getByRole('alertdialog', { name: 'Make Casey Limited the owner?' });
+    await expect(transfer).toContainText('Casey Limited is a Guest, a role with limited access.');
+    await expect(transfer).toContainText('including removing people and deleting the household');
+    await transfer.getByRole('button', { name: 'Cancel' }).click();
+    await expect(transfer).toHaveCount(0);
+
+    // A member: no warning about the role, the usual wording.
+    await page.getByRole('button', { name: 'Actions for Sam Member' }).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: 'Make owner' }).click();
+    const transferMember = page.getByRole('alertdialog', { name: 'Make Sam Member the owner?' });
+    await expect(transferMember).toContainText('They get full control, including deleting the household.');
+    await expect(transferMember).not.toContainText('limited access');
+    await transferMember.getByRole('button', { name: 'Cancel' }).click();
+
+    // A role change is never one silent tap: it asks, and says custom permissions reset.
+    await page.getByRole('button', { name: 'Actions for Sam Member' }).click();
+    await page.getByRole('menu').getByRole('menuitemradio', { name: 'Guest' }).click();
+    const roleChange = page.getByRole('alertdialog', { name: 'Change Sam Member to Guest?' });
+    await expect(roleChange).toContainText('custom permissions they have are reset');
+    await roleChange.getByRole('button', { name: 'Cancel' }).click();
+    await expect(roleChange).toHaveCount(0);
+    await page.getByRole('button', { name: 'Actions for Sam Member' }).click();
+    await expect(page.getByRole('menu').getByRole('menuitemradio', { name: 'Member' })).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Escape');
+  });
+
   test('the permission matrix toggles from the keyboard and discards cleanly', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await openHousehold(page, 'roles');
@@ -213,6 +245,40 @@ test.describe('household tabs and invites', () => {
       const code = (await description.textContent())!.match(/[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{2}/)![0];
       await expect(page.getByRole('tabpanel').getByText(code, { exact: true })).toBeVisible();
       await expect.poll(async () => (await invites.doc(code).get()).exists).toBe(true);
+    } finally {
+      const after = await invites.where('householdId', '==', 'the-foxy-residence-e2e').get();
+      await Promise.all(after.docs.filter((d) => !before.has(d.id)).map((d) => d.ref.delete()));
+    }
+  });
+});
+
+test.describe('invite expiry clock (HO-8)', () => {
+  test('expiry is measured by the server clock, not a wrong device clock, and the list ticks over to Expired', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const invites = getFirestore(adminApp).collection('inviteCodes');
+    const before = new Set((await invites.where('householdId', '==', 'the-foxy-residence-e2e').get()).docs.map((d) => d.id));
+    // The device clock is months behind the server (fixedNow); expiry must not depend on it.
+    await page.clock.setFixedTime(fixedNow);
+    try {
+      await page.goto('/household?tab=invites');
+      const create = page.getByRole('button', { name: 'Create invite code', exact: true });
+      await expect(create).toBeEnabled();
+      await create.click();
+      let code = '';
+      await expect.poll(async () => {
+        const after = await invites.where('householdId', '==', 'the-foxy-residence-e2e').get();
+        code = after.docs.map((d) => d.id).find((id) => !before.has(id)) ?? '';
+        return code;
+      }).not.toBe('');
+      const row = page.getByRole('listitem').filter({ hasText: code });
+      await expect(row.getByText('Active', { exact: true })).toBeVisible();
+      // By the server's clock the code has about 30 minutes left (never a date months away).
+      await expect(row).toContainText(/expires in (29|30) min/);
+
+      // 31 minutes later on the device's (offset) clock, the open list flips on its own.
+      await page.clock.setFixedTime(new Date(fixedNow.getTime() + 31 * 60_000));
+      await expect(row.getByText('Expired', { exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(row.getByRole('button', { name: `Revoke invite code ${code}` })).toHaveCount(0);
     } finally {
       const after = await invites.where('householdId', '==', 'the-foxy-residence-e2e').get();
       await Promise.all(after.docs.filter((d) => !before.has(d.id)).map((d) => d.ref.delete()));

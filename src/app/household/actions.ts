@@ -141,6 +141,14 @@ export async function transferOwnershipAction(input: { idToken: string; househol
 }
 
 /**
+ * The server's clock, for a signed-in caller. The Invite Codes list measures expiry
+ * against it instead of the device clock, which may be wrong (HO-8).
+ */
+export async function householdServerTimeAction(input: { idToken: string }): Promise<HouseholdActionResult<{ serverNow: string }>> {
+  return manage(input?.idToken, async () => ({ serverNow: new Date().toISOString() }));
+}
+
+/**
  * Copies the caller's own profile name and photo onto their membership record,
  * the public member data housemates read (members cannot write their own record).
  */
