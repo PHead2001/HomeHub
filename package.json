@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "docs:check": "node scripts/check-module-docs.mjs",
     "brand:icons": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/brand/render-icons.mjs",
-    "test:ai": "node --import tsx --test tests/ai/deterministic-flows.test.ts tests/ai/security-and-barcode.test.ts tests/ai/firebase-app-id.test.ts tests/unit/pwa-share.test.ts tests/ai/parse-command.test.ts",
+    "test:ai": "node --import tsx --test tests/ai/deterministic-flows.test.ts tests/ai/security-and-barcode.test.ts tests/ai/firebase-app-id.test.ts tests/unit/pwa-share.test.ts tests/ai/parse-command.test.ts tests/ai/read-receipt.test.ts",
     "test:unit": "node --import tsx --test \"tests/unit/*.test.ts\"",
     "test:rules": "node scripts/e2e/run-rules.mjs",
     "test:server": "node scripts/e2e/run-server.mjs",
