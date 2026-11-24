@@ -164,7 +164,9 @@ export function fitMilesPerDay(readings: readonly MileageReading[], today: strin
  * When the vehicle should reach `nextDueMileage`, counted from the latest
  * cleaned reading at the fitted rate. `low` ≤ `date` ≤ `high`. A mileage that
  * the latest reading has already reached is 'already-reached' (the reminder
- * itself says it is due); an estimate before today is moved to today.
+ * itself says it is due); an estimate before today is moved to today. An
+ * estimate more than 730 days out is 'too-far', decided on the day count before
+ * any date is built; the range's late end is capped at that horizon.
  */
 export function predictDueDate(
   nextDueMileage: number | null | undefined,
@@ -176,13 +178,23 @@ export function predictDueDate(
   if ('insufficient' in fit) return fit;
   const remaining = nextDueMileage - fit.last.miles;
   if (remaining <= 0) return { insufficient: 'already-reached' };
-  const at = (rate: number) => {
-    const day = addDays(fit.last.day, Math.ceil(remaining / rate));
-    return day < today ? today : day;
+  // Days from today, worked out as numbers and checked against the horizon
+  // before any date is built: a tiny rate gives a huge (or infinite) count that
+  // would overflow the calendar helpers' four-digit years.
+  const lastOffset = diffDays(fit.last.day, today);
+  const daysFromToday = (rate: number) => Math.max(0, lastOffset + Math.ceil(remaining / rate));
+  const days = daysFromToday(fit.milesPerDay);
+  if (!Number.isFinite(days) || days > MAX_ESTIMATE_DAYS) return { insufficient: 'too-far' };
+  // The slow end of the range is capped at the horizon (still on or after `date`).
+  const highDays = daysFromToday(fit.lowRate);
+  const lowDays = daysFromToday(fit.highRate);
+  return {
+    date: addDays(today, days),
+    low: addDays(today, Math.min(lowDays, days)),
+    high: addDays(today, Number.isFinite(highDays) ? Math.min(Math.max(highDays, days), MAX_ESTIMATE_DAYS) : MAX_ESTIMATE_DAYS),
+    basis: fit.basis,
+    milesPerDay: fit.milesPerDay,
   };
-  const date = at(fit.milesPerDay);
-  if (diffDays(date, today) > MAX_ESTIMATE_DAYS) return { insufficient: 'too-far' };
-  return { date, low: at(fit.highRate), high: at(fit.lowRate), basis: fit.basis, milesPerDay: fit.milesPerDay };
 }
 
 const dayLabel = (day: string, today: string) =>

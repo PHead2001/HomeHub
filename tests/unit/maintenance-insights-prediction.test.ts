@@ -62,6 +62,44 @@ describe('mileage prediction (MA-29)', () => {
     assert.deepEqual(predictDueDate(60000, steady(5, 20, 5), TODAY), { insufficient: 'too-far' });
   });
 
+  it('says too-far for very slow usage instead of overflowing the calendar (PR #208 review)', () => {
+    const slow: MileageReading[] = [
+      { day: '2026-01-01', miles: 10000 },
+      { day: '2026-06-01', miles: 10001 },
+      { day: '2026-11-24', miles: 10002 },
+    ];
+    assert.deepEqual(predictDueDate(50000, slow, TODAY), { insufficient: 'too-far' });
+    assert.deepEqual(predictDueDate(1000000, slow, TODAY), { insufficient: 'too-far' });
+  });
+
+  it('never throws and never returns a date before today or past the horizon (property)', () => {
+    const random = rng(208);
+    const horizon = addDays(TODAY, 730);
+    let estimates = 0;
+    let tooFar = 0;
+    for (let run = 0; run < 2000; run += 1) {
+      const count = 3 + Math.floor(random() * 6);
+      const rate = 10 ** (random() * 8 - 6); // 0.000001 to 100 miles a day
+      const start = 1000 + Math.floor(random() * 100000);
+      const readings = Array.from({ length: count }, (_, index) => {
+        const back = Math.round(((count - 1 - index) / (count - 1)) * (30 + Math.floor(random() * 300)));
+        return { day: addDays(TODAY, -back - Math.floor(random() * 5)), miles: Math.round(start + (330 - back) * rate * (0.5 + random())) };
+      });
+      const due = start + 10 ** (random() * 7);
+      let prediction: ReturnType<typeof predictDueDate> | undefined;
+      assert.doesNotThrow(() => { prediction = predictDueDate(due, readings, TODAY); }, JSON.stringify({ readings, due }));
+      if (prediction && 'insufficient' in prediction && prediction.insufficient === 'too-far') tooFar += 1;
+      if (!prediction || 'insufficient' in prediction) continue;
+      estimates += 1;
+      for (const day of [prediction.low, prediction.date, prediction.high]) {
+        assert.match(day, /^\d{4}-\d{2}-\d{2}$/);
+        assert.ok(day >= TODAY && day <= horizon, JSON.stringify({ prediction, readings, due }));
+      }
+      assert.ok(prediction.low <= prediction.date && prediction.date <= prediction.high);
+    }
+    assert.ok(estimates > 50 && tooFar > 200, JSON.stringify({ estimates, tooFar }));
+  });
+
   it('drops backdated readings and typos in either direction', () => {
     const base = steady(6, 30, 30);
     const highEarly = [...base, { day: addDays(TODAY, -140), miles: 99999 }];
