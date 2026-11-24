@@ -86,6 +86,7 @@ export const nextDueAfterCompletion = (
     anchorDay: schedule.anchorDay,
     nextDueDate: schedule.nextDueDate,
     snoozedUntil: schedule.snoozedUntil,
+    snoozedFrom: schedule.snoozedFrom,
   }, completedDate);
 };
 
@@ -184,9 +185,10 @@ export const reminderCycleKey = (reminder: Pick<MaintenanceReminder, 'id' | 'due
 
 /** The schedule after completion (same advancement as the completion dialog). */
 /** Completion always ends a snooze, even if the new cycle lands on the snoozed date. */
-const withoutSnooze = <T extends { snoozedUntil?: string }>(schedule: T): T => {
+const withoutSnooze = <T extends { snoozedUntil?: string; snoozedFrom?: string }>(schedule: T): T => {
   const copy = { ...schedule };
   delete copy.snoozedUntil;
+  delete copy.snoozedFrom;
   return copy;
 };
 

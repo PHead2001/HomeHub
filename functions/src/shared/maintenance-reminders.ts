@@ -34,6 +34,8 @@ type Schedule = {
    * nextDueDate, so a stale value never applies.
    */
   snoozedUntil?: string;
+  /** The due day the snooze moved away from; never part of a reminder. */
+  snoozedFrom?: string;
   /**
    * "completion" (default) or "calendar": only changes how completion
    * advances the due date (functions/src/shared/maintenance-schedule.ts),

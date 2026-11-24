@@ -203,10 +203,10 @@ describe('maintenance notification identities stay stable (M3)', () => {
     assert.equal(deterministicNotificationId('maintenance_asset_schedule', 'hvac:s1', 'overdue|2026-10-01'), getDeterministicNotificationId({ sourceType: 'maintenance_asset_schedule', sourceId: 'hvac:s1', stateKey: 'overdue|2026-10-01' }));
   });
 
-  test('anchor, anchor month/day, a stale snooze and warrantyLifetime: false change nothing', () => {
+  test('anchor, anchor month/day, a stale snooze (with snoozedFrom) and warrantyLifetime: false change nothing', () => {
     const assets = [{
       ...base.assets[0], warrantyLifetime: false,
-      schedules: [{ ...base.assets[0].schedules[0], anchor: 'calendar' as const, anchorMonth: 10, anchorDay: 1, snoozedUntil: '2026-09-01' }],
+      schedules: [{ ...base.assets[0].schedules[0], anchor: 'calendar' as const, anchorMonth: 10, anchorDay: 1, snoozedUntil: '2026-09-01', snoozedFrom: '2026-08-25' }],
     }];
     const vehicles = [{ ...base.vehicles[0], serviceSchedules: [{ ...base.vehicles[0].serviceSchedules[0], anchor: 'completion' as const, snoozedUntil: '2027-02-01' }] }];
     // The oil change is due soon by mileage, so its date snooze does not quiet it.

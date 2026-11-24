@@ -213,6 +213,8 @@ export type MaintenanceScheduleAnchor = 'completion' | 'calendar';
 export type HomeAssetSchedule = {
   /** Set by Snooze to the due date it moved to; quiets the push until then (see functions/src/shared/maintenance-reminders.ts). */
   snoozedUntil?: string;
+  /** The due day the snooze moved away from (exact cycle for calendar anchoring; see functions/src/shared/maintenance-schedule.ts). */
+  snoozedFrom?: string;
   id?: string;
   mode?: MaintenanceScheduleMode;
   scheduleName?: string;
@@ -255,6 +257,8 @@ export type VehicleStatus = 'active' | 'needs_attention' | 'retired' | 'sold';
 export type VehicleServiceSchedule = {
   /** Set by Snooze to the due date it moved to; quiets the push until then (see functions/src/shared/maintenance-reminders.ts). */
   snoozedUntil?: string;
+  /** The due day the snooze moved away from (exact cycle for calendar anchoring; see functions/src/shared/maintenance-schedule.ts). */
+  snoozedFrom?: string;
   id?: string;
   mode?: MaintenanceScheduleMode;
   serviceName?: string;

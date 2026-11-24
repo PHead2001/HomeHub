@@ -6,7 +6,7 @@
 // builder was asked to look ahead: build them with
 // `buildMaintenanceReminders(assets, vehicles, today, timeZone, { expiryLookaheadDays: COMING_UP_DAYS })`.
 import { format } from 'date-fns';
-import { addDays, isDayString } from '../../../functions/src/shared/calendar';
+import { addDays, DEFAULT_TIME_ZONE, toDay } from '../../../functions/src/shared/calendar';
 import type { MaintenanceReminder } from '../../../functions/src/shared/maintenance-reminders';
 
 export const COMING_UP_DAYS = 90;
@@ -36,10 +36,8 @@ export type ComingUpMonth = {
   entries: ComingUpEntry[];
 };
 
-const dayOf = (value?: string) => {
-  const day = value?.slice(0, 10);
-  return day && isDayString(day) ? day : undefined;
-};
+/** A stored due date (day string or legacy ISO instant) as the household-local day, like the reminder builder. */
+const dayOf = (value: string | undefined, timeZone: string) => toDay(value, timeZone) ?? undefined;
 
 const milesLeftOf = (reminder: MaintenanceReminder) =>
   typeof reminder.dueMileage === 'number' && typeof reminder.currentMileage === 'number'
@@ -51,13 +49,17 @@ const milesLeftOf = (reminder: MaintenanceReminder) =>
  * in Overdue). Snoozed items keep their (snoozed) date and their `snoozed` flag.
  * `predictedDates` (keyed by the reminder's `scheduleKey`, else its `id`) places a
  * mileage service on a predicted day; without one it is listed by miles left.
+ * Pass the household `timeZone` (the one the reminders were built in): a legacy
+ * ISO due date is placed on its household-local day, as the builder reads it
+ * (default America/Chicago, the app's default household zone).
  */
 export const comingUp = (
   reminders: readonly MaintenanceReminder[],
   today: string,
   days: number = COMING_UP_DAYS,
-  options: { predictedDates?: Readonly<Record<string, string>> } = {},
+  options: { timeZone?: string; predictedDates?: Readonly<Record<string, string>> } = {},
 ): ComingUp => {
+  const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
   const end = addDays(today, days);
   const dated: ComingUpEntry[] = [];
   const byMileage: ComingUpEntry[] = [];
@@ -66,13 +68,13 @@ export const comingUp = (
   reminders.forEach((reminder) => {
     if (reminder.status === 'overdue') return;
     const milesLeft = milesLeftOf(reminder);
-    const due = dayOf(reminder.dueDate);
+    const due = dayOf(reminder.dueDate, timeZone);
     if (inWindow(due)) {
       dated.push({ reminder, date: due, ...(milesLeft !== undefined ? { milesLeft } : {}) });
       return;
     }
     if (reminder.group !== 'vehicle_service' || milesLeft === undefined || milesLeft <= 0) return;
-    const predicted = dayOf(options.predictedDates?.[reminder.scheduleKey ?? reminder.id]);
+    const predicted = dayOf(options.predictedDates?.[reminder.scheduleKey ?? reminder.id], timeZone);
     if (predicted) {
       if (inWindow(predicted)) dated.push({ reminder, date: predicted, predicted: true, milesLeft });
       return;

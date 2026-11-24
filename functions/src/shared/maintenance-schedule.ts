@@ -25,6 +25,12 @@ export type AnchoredSchedule = {
   anchorDay?: number;
   nextDueDate?: string;
   snoozedUntil?: string;
+  /**
+   * The due day a snooze moved away from (written with `snoozedUntil`).
+   * While the snooze applies it is the exact cycle being completed; older
+   * snoozes without it fall back to inferring the cycle from the anchors.
+   */
+  snoozedFrom?: string;
 };
 
 /**
@@ -142,26 +148,32 @@ export const nextCalendarDue = (
 
 /**
  * The anchor lattice of a month/year schedule with an anchor month and/or
- * day: an origin a year before `reference` (in the anchor month, else the
- * reference's month) and the day of month every step keeps. Null without
- * anchor fields or for day/week intervals.
+ * day: an origin at least a year before `reference` and the day of month
+ * every step keeps. The lattice passes through the anchor month of the
+ * reference's year (or, with a day-only anchor, the reference's own month),
+ * so a new schedule's cycle includes today's month. Null without anchor
+ * fields or for day/week intervals.
  * @param {AnchoredSchedule} schedule Interval and anchors.
- * @param {string} reference A day the origin must not be after.
+ * @param {string} reference A day the origin must be before.
  * @return {{base: string, day: number} | null} Lattice.
  */
 const anchorLattice = (
   schedule: AnchoredSchedule, reference: string,
 ): {base: string; day: number} | null => {
-  if (schedule.unit !== "months" && schedule.unit !== "years") return null;
+  const unit = schedule.unit;
+  if (unit !== "months" && unit !== "years") return null;
   const anchorMonth = validMonth(schedule.anchorMonth);
   const anchorDay = validDayOfMonth(schedule.anchorDay);
   if (!anchorMonth && !anchorDay) return null;
-  const year = Number(reference.slice(0, 4)) - 1;
+  const interval = Math.max(1, Math.round(schedule.value ?? 1));
+  const year = Number(reference.slice(0, 4));
   const month = anchorMonth ?? Number(reference.slice(5, 7));
   const day = anchorDay ?? 1;
-  const base = `${String(year).padStart(4, "0")}-${pad(month)}-` +
+  const pivot = `${String(year).padStart(4, "0")}-${pad(month)}-` +
     pad(Math.min(day, daysInMonth(year, month)));
-  return {base, day};
+  const stepMonths = (unit === "years" ? 12 : 1) * interval;
+  const back = Math.ceil(12 / stepMonths) + 1;
+  return {base: addMonthsToDay(pivot, -stepMonths * back, day), day};
 };
 
 /**
@@ -210,8 +222,15 @@ export const nextDueDay = (
   if (previous && !snoozed) {
     return nextCalendarDue(previous, unit, interval, completed, anchorDay);
   }
+  const snoozedFrom = snoozed ? dayOnly(schedule.snoozedFrom) : null;
+  if (previous && snoozedFrom && snoozedFrom <= previous) {
+    // Exact: the cycle the snooze moved away from, as if never snoozed.
+    return nextCalendarDue(snoozedFrom, unit, interval, completed, anchorDay);
+  }
   if (previous) {
-    // The cycle the snooze moved away from.
+    // Snoozed before `snoozedFrom` existed: infer the cycle the snooze moved
+    // away from (exact when the anchors fix the phase: an anchor month with
+    // an interval dividing a year, or a monthly day-only anchor).
     const movedFrom = addDays(previous, -SNOOZE_SHIFT_DAYS);
     const lattice = anchorLattice(anchored, movedFrom);
     if (!lattice) {
@@ -242,9 +261,21 @@ export const firstCalendarDue = (
   schedule: AnchoredSchedule, today: string,
 ): string | undefined => {
   if (!isDayString(today)) return undefined;
-  return nextDueDay(
-    {...schedule, anchor: "calendar", nextDueDate: undefined},
-    addDays(today, -1));
+  const {unit, value} = schedule;
+  const yesterday = addDays(today, -1);
+  if (!unit || typeof value !== "number" || !Number.isFinite(value) ||
+    Math.round(value) <= 0) {
+    return undefined;
+  }
+  const interval = Math.round(value);
+  // The lattice comes from today (an implicit anchor month is today's
+  // month), then the first anchor day on or after today.
+  const lattice = anchorLattice({...schedule, value: interval}, today);
+  if (lattice) {
+    return nextCalendarDue(lattice.base, unit, interval, yesterday,
+      lattice.day);
+  }
+  return stepFrom(yesterday, unit, interval, 1);
 };
 
 /**

@@ -13,6 +13,7 @@ import {
 import {
   calculateNextAssetDueDate,
   calculateNextVehicleDueDate,
+  completedAssetSchedule,
   nextDueAfterCompletion,
   snoozedDueDate,
   SNOOZE_DAYS,
@@ -179,28 +180,85 @@ describe('review fixes (PR #209)', () => {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 
-  it('property: always after the completion day, and a snooze never changes the result', () => {
+  it('finding 1: a day-only yearly anchor initialised on the first of a month keeps that month', () => {
+    assert.equal(firstCalendarDue({ unit: 'years', value: 1, anchorDay: 1 }, '2026-11-01'), '2026-11-01');
+    assert.equal(firstCalendarDue({ unit: 'months', value: 1, anchorDay: 1 }, '2026-11-01'), '2026-11-01');
+    assert.equal(firstCalendarDue({ unit: 'months', value: 1, anchorDay: 31 }, '2026-10-31'), '2026-10-31');
+    assert.equal(firstCalendarDue({ unit: 'years', value: 1, anchorMonth: 10, anchorDay: 1 }, '2026-10-01'), '2026-10-01');
+  });
+
+  it('finding 2: snoozedFrom keeps the exact cycle of a day-only multi-month schedule snoozed into another month', () => {
+    const bimonthly: HomeAssetSchedule = { frequencyType: 'months', intervalValue: 2, anchor: 'calendar', anchorDay: 31 };
+    const plain = nextDueAfterCompletion({ ...bimonthly, nextDueDate: '2026-01-31' }, '2026-02-02');
+    assert.equal(plain, '2026-03-31');
+    // Snoozed on Feb 1 (overdue) to Feb 8, completed Feb 2.
+    assert.equal(nextDueAfterCompletion({ ...bimonthly, nextDueDate: '2026-02-08', snoozedUntil: '2026-02-08', snoozedFrom: '2026-01-31' }, '2026-02-02'), plain);
+    // A stale snoozedFrom (the snooze no longer applies) is ignored.
+    assert.equal(nextDueAfterCompletion({ ...bimonthly, nextDueDate: '2026-03-31', snoozedUntil: '2026-02-08', snoozedFrom: '2026-01-31' }, '2026-04-02'), '2026-05-31');
+    // Completion clears both snooze fields.
+    const done = completedAssetSchedule({ ...bimonthly, nextDueDate: '2026-02-08', snoozedUntil: '2026-02-08', snoozedFrom: '2026-01-31' }, { completedDate: '2026-02-02' });
+    assert.equal('snoozedFrom' in done, false);
+    assert.equal('snoozedUntil' in done, false);
+  });
+
+
+  it('property: first due, snoozes in other months and completion all keep the cycle', () => {
     const random = rng(209);
     const int = (min: number, max: number) => min + Math.floor(random() * (max - min + 1));
     const pick = <T,>(items: readonly T[]) => items[Math.floor(random() * items.length)];
     const anyDay = () => addDays('2025-01-01', int(0, 1500));
-    for (let i = 0; i < 4000; i++) {
-      // Anchored month/year schedules whose cycle the anchors define (intervals that divide a year).
+    const monthEdge = () => {
+      const day = anyDay();
+      const first = `${day.slice(0, 7)}-01`;
+      return random() < 0.5 ? first : addDays(addMonthsToDay(first, 1), -1);
+    };
+    for (let i = 0; i < 6000; i++) {
       const unit = pick(['months', 'years'] as const);
-      const intervalValue = unit === 'years' ? 1 : pick([1, 2, 3, 4, 6]);
-      const anchorDay = int(1, 31);
-      const anchorMonth = unit === 'months' && intervalValue === 1 && random() < 0.5 ? undefined : int(1, 12);
-      const base: HomeAssetSchedule = { frequencyType: unit, intervalValue, anchor: 'calendar', anchorDay, anchorMonth };
-      const due = firstCalendarDue({ unit, value: intervalValue, anchorDay, anchorMonth }, anyDay())!;
-      // Snooze is offered from 14 days before the due day, or while overdue.
-      const today = addDays(due, int(-14, 60));
+      const intervalValue = unit === 'years' ? int(1, 3) : int(1, 12);
+      const kind = pick(['day', 'month+day', 'month'] as const);
+      const anchorDay = kind === 'month' ? undefined : int(1, 31);
+      const anchorMonth = kind === 'day' ? undefined : int(1, 12);
+      const anchors = { anchorDay, anchorMonth };
+      const base: HomeAssetSchedule = { frequencyType: unit, intervalValue, anchor: 'calendar', ...anchors };
+
+      // First due: on or after today, on the anchor day, and today itself when today is an anchor day.
+      const created = random() < 0.5 ? monthEdge() : anyDay();
+      const due = firstCalendarDue({ unit, value: intervalValue, ...anchors }, created)!;
+      const where = JSON.stringify({ base, created, due });
+      assert.ok(due >= created, where);
+      const [y, m] = due.split('-').map(Number);
+      assert.equal(Number(due.slice(8)), Math.min(anchorDay ?? 1, new Date(Date.UTC(y, m, 0)).getUTCDate()), where);
+      if (anchorMonth && (unit === 'years' || 12 % intervalValue === 0) && intervalValue * (unit === 'years' ? 12 : 1) <= 12) {
+        assert.equal((m - anchorMonth) % (unit === 'years' ? 12 : intervalValue) === 0 || (m - anchorMonth + 12) % (unit === 'years' ? 12 : intervalValue) === 0, true, where);
+      }
+      const createdMonth = Number(created.slice(5, 7));
+      const createdDay = Number(created.slice(8));
+      const createdDim = new Date(Date.UTC(Number(created.slice(0, 4)), createdMonth, 0)).getUTCDate();
+      const isAnchorDay = (anchorDay === undefined ? createdDay === 1 : createdDay === Math.min(anchorDay, createdDim));
+      if (isAnchorDay && (!anchorMonth ? (unit === 'months' || unit === 'years') : (anchorMonth === createdMonth && (unit === 'years' || 12 % intervalValue === 0)))) {
+        assert.equal(due, created, where);
+      }
+
+      // Snooze from 14 days before the due day to months after it (other months), then complete.
+      const today = addDays(due, int(-14, 120));
       const snoozedTo = snoozedDueDate(due, today);
-      const completed = today <= due ? addDays(due, int(-60, 400)) : addDays(today, int(0, 400));
+      const completed = addDays(due, int(-60, 500));
       const plain = nextDueAfterCompletion({ ...base, nextDueDate: due }, completed)!;
-      const snoozed = nextDueAfterCompletion({ ...base, nextDueDate: snoozedTo, snoozedUntil: snoozedTo }, completed)!;
+      const exact = nextDueAfterCompletion({ ...base, nextDueDate: snoozedTo, snoozedUntil: snoozedTo, snoozedFrom: due }, completed)!;
       const context = JSON.stringify({ base, due, today, snoozedTo, completed });
       assert.ok(plain > completed, context);
-      assert.equal(snoozed, plain, context);
+      assert.equal(exact, plain, context);
+      // Legacy snoozes (no snoozedFrom): exact when the anchors fix the phase and completion follows the snooze.
+      const fixedPhase = (unit === 'months' && intervalValue === 1 && anchorDay !== undefined)
+        || (anchorMonth !== undefined && ((unit === 'months' && 12 % intervalValue === 0) || (unit === 'years' && intervalValue === 1)));
+      if (fixedPhase && anchorDay !== undefined) {
+        const after = today <= due ? completed : addDays(today, int(0, 400));
+        assert.equal(
+          nextDueAfterCompletion({ ...base, nextDueDate: snoozedTo, snoozedUntil: snoozedTo }, after),
+          nextDueAfterCompletion({ ...base, nextDueDate: due }, after),
+          JSON.stringify({ base, due, today, snoozedTo, after }),
+        );
+      }
     }
     // Any schedule (any unit, anchor or none, stale or live snooze): strictly after the completion day.
     for (let i = 0; i < 4000; i++) {
@@ -214,6 +272,7 @@ describe('review fixes (PR #209)', () => {
         anchorMonth: random() < 0.5 ? int(1, 12) : undefined,
         nextDueDate,
         snoozedUntil: random() < 0.4 ? (random() < 0.7 ? nextDueDate : anyDay()) : undefined,
+        snoozedFrom: random() < 0.3 ? anyDay() : undefined,
       };
       const completed = anyDay();
       const next = nextDueAfterCompletion(schedule, completed);

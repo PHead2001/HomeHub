@@ -197,6 +197,17 @@ describe('coming up (MA-27a)', () => {
     assert.equal(comingUp(withLookahead, TODAY, 30, { predictedDates: { [tires.scheduleKey!]: '2027-03-01' } }).byMileage.length, 0);
   });
 
+  it('places legacy ISO due dates on the household-local day (finding 4)', () => {
+    const asset = { id: 'a', name: 'Boiler', schedules: [{ id: 's', mode: 'scheduled' as const, scheduleName: 'Service', nextDueDate: '2026-12-01T02:00:00Z' }] };
+    const built = buildMaintenanceReminders([asset], [], '2026-11-30', TZ);
+    assert.equal(built[0].status, 'due_today');
+    const timeline = comingUp(built, '2026-11-30', 0, { timeZone: TZ });
+    assert.deepEqual(timeline.dated.map((e) => e.date), ['2026-11-30']);
+    assert.deepEqual(comingUpByMonth(timeline.dated).map((m) => m.month), ['2026-11']);
+    // In UTC the same instant is Dec 1.
+    assert.deepEqual(comingUp(built, '2026-12-01', 0, { timeZone: 'UTC' }).dated.map((e) => e.date), ['2026-12-01']);
+  });
+
   it('respects a shorter window', () => {
     assert.deepEqual(comingUp(withLookahead, TODAY, 7).dated.map((e) => e.reminder.title), ['Clean coils', 'Check ducts', 'Oil change']);
   });
