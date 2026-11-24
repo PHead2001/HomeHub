@@ -240,7 +240,7 @@ function TabletLogServiceDialog({ entry, assets, vehicles, today, onReverted, on
   };
   return (
     <Dialog open onOpenChange={(value) => { if (!value) onClose(); }}>
-      <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto" data-testid="tablet-maintenance-log">
+      <DialogContent className="max-w-xl overflow-y-auto" data-testid="tablet-maintenance-log">
         <DialogHeader>
           <DialogTitle className="font-headline text-2xl">{entry.target ? `Log service: ${name}` : `Log maintenance: ${name}`}</DialogTitle>
           <DialogDescription>
@@ -298,7 +298,7 @@ function TabletMaintenanceRecordSheet({ record, assets, vehicles, logs, onLog, o
   };
   return (
     <Dialog open onOpenChange={(value) => { if (!value) onClose(); }}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto" data-testid="tablet-maintenance-record">
+      <DialogContent className="max-w-2xl overflow-y-auto" data-testid="tablet-maintenance-record">
         <DialogHeader>
           <DialogTitle className="font-headline text-2xl">{name ?? 'Removed'}</DialogTitle>
           <DialogDescription>
