@@ -4,7 +4,6 @@ import * as React from 'react';
 import { useMemo, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { format } from 'date-fns';
 import { CalendarDays, Loader2, Plus, Wrench } from 'lucide-react';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { Button } from '@/components/ui/button';
@@ -18,6 +17,8 @@ import {
   detailsToggleLabel, emptyDetailFields, formIsDirty, visibleDetailFields,
 } from '@/lib/maintenance/form-sections';
 import { presetSchedulesFor, schedulePresetsFor } from '@/lib/maintenance/presets';
+import { useAuth } from '@/hooks/use-auth';
+import { householdDayZone, useHouseholdToday } from '@/lib/household-day';
 import type { HomeAsset, HomeAssetCategory, Vehicle } from '@/lib/types';
 import { MileageWarning, SaveNotice, focusScheduleField } from './page-parts';
 import {
@@ -32,7 +33,12 @@ import { AnchorControl, DetailsToggle, NotesField, SelectField, TextField } from
 
 type AssetSave = { base?: AssetValues; values: AssetValues };
 
-const localToday = () => format(new Date(), 'yyyy-MM-dd');
+/** The household's day (MA-1): the page's `today` when it passes one, else the household zone's own. */
+function useFormToday(given?: string) {
+  const { household } = useAuth();
+  const householdToday = useHouseholdToday(householdDayZone(household?.timeZone));
+  return given || householdToday;
+}
 
 /** A calendar-anchored schedule without a due day gets its first anchor day (M3 `firstCalendarDue`). */
 const withFirstCalendarDue = <S extends { anchor: string; anchorMonth: string; anchorDay: string; nextDueDate: string }>(
@@ -74,13 +80,13 @@ type AssetDialogBodyProps = {
   record: HomeAsset | null;
   busy: boolean;
   notice?: SaveNoticeState;
-  /** The household's day (presets' first due days); the device's day when not given. */
+  /** The household's day (presets' first due days); worked out from the household when not given. */
   today?: string;
   onSave: (save: AssetSave) => void | Promise<void>;
 };
 
 function AssetDialogBody({ record, busy, notice, today: givenToday, onSave }: AssetDialogBodyProps) {
-  const today = givenToday || localToday();
+  const today = useFormToday(givenToday);
   const cancel = useGuardedCancel();
   const [initial] = useState(() => {
     const form = record ? assetFormFromRecord(record) : emptyAssetForm;
@@ -365,7 +371,7 @@ type VehicleDialogBodyProps = {
 };
 
 function VehicleDialogBody({ record, busy, notice, mileageMessage, today: givenToday, onSave }: VehicleDialogBodyProps) {
-  const today = givenToday || localToday();
+  const today = useFormToday(givenToday);
   const cancel = useGuardedCancel();
   const [initial] = useState(() => {
     const form = record ? vehicleFormFromRecord(record) : emptyVehicleForm;

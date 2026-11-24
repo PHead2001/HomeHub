@@ -6,6 +6,7 @@ import { CategorizeGroceryItemOutputSchema } from '../../src/ai/tasks/categorize
 import { CategorizeGroceryItemsModelOutputSchema } from '../../src/ai/tasks/categorize-grocery-items';
 import { GenerateRecipeOutputSchema } from '../../src/ai/tasks/generate-recipe';
 import { SummarizeMaintenanceLogOutputSchema } from '../../src/ai/tasks/summarize-maintenance-log';
+import { ReadReceiptOutputSchema } from '../../src/ai/tasks/read-receipt';
 import { HomeOverviewNarrativeSchema, OverviewSectionSchema } from '../../src/ai/overview-schemas';
 
 // Keywords OpenAI strict structured outputs reject (mirrors the SDK's own list) plus the
@@ -35,6 +36,7 @@ const flowOutputSchemas = {
   'categorization-batch': CategorizeGroceryItemsModelOutputSchema,
   recipe: GenerateRecipeOutputSchema,
   'maintenance-summary': SummarizeMaintenanceLogOutputSchema,
+  'maintenance-receipt': ReadReceiptOutputSchema,
   overview: HomeOverviewNarrativeSchema,
 } as const;
 

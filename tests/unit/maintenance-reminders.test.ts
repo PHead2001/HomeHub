@@ -226,7 +226,9 @@ describe('maintenance display rules', () => {
       { ...base, id: 'nourl', downloadUrl: undefined, category: 'photo', fileName: 'n.jpg', contentType: 'image/jpeg', createdAt: '2026-07-07' },
     ];
     assert.equal(pickAssetPhoto(attachments, 'hvac-main')?.id, 'new');
-    assert.equal(pickAssetPhoto(attachments.filter((item) => item.category !== 'photo'), 'hvac-main')?.id, 'receipt');
+    // MA-11b: a receipt is never the card picture, even when it is the only image.
+    assert.equal(pickAssetPhoto(attachments.filter((item) => item.category !== 'photo'), 'hvac-main'), null);
+    assert.equal(pickAssetPhoto(attachments.map((item) => (item.id === 'receipt' ? { ...item, category: 'manual' as const } : item)).filter((item) => item.category !== 'photo'), 'hvac-main')?.id, 'receipt');
     assert.equal(pickAssetPhoto([], 'hvac-main'), null);
   });
 });
