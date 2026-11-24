@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore, Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { getDeterministicNotificationId } from '../../src/lib/notifications';
 import { fixedNow } from './test-helpers';
 
@@ -71,7 +71,11 @@ async function restoreMaintenanceSeed() {
   await Promise.all([
     household.collection('home-assets').doc('hvac-main').update({ schedules: HVAC_SCHEDULES }),
     household.collection('home-assets').doc('dishwasher').update({ schedules: DISHWASHER_SCHEDULES }),
-    household.collection('vehicles').doc('family-suv').update({ serviceSchedules: SUV_SCHEDULES, currentMileage: 48750 }),
+    household.collection('vehicles').doc('family-suv').update({
+      serviceSchedules: SUV_SCHEDULES, currentMileage: 48750, registrationExpiration: '2026-08-12', inspectionExpiration: '2026-08-05',
+      // A completion test sets it; left behind it would add a dated reading to the mileage estimate.
+      mileageUpdatedAt: FieldValue.delete(),
+    }),
     household.collection('notifications').doc(HVAC_NOTIFICATION).set({
       householdId,
       category: 'maintenance',
@@ -125,7 +129,8 @@ test.describe('maintenance center UX', () => {
     const deduction = panel.getByRole('button', { name: /Main HVAC System: flagged as needing attention/ });
     await expect(deduction).toContainText('−10');
     await deduction.click();
-    await expect(page.getByRole('tab', { name: 'Home Assets' })).toHaveAttribute('aria-selected', 'true');
+    // Located without roles: on a phone the record opens in a sheet, which hides the page from role queries.
+    await expect(page.locator('[role="tab"][data-state="active"]')).toHaveText('Home Assets');
     await expect(page).toHaveURL(/\?asset=hvac-main$/);
     await expect(page.getByRole('img', { name: /^Main HVAC System health 85 out of 100/ }).first()).toBeVisible();
   });
@@ -148,14 +153,15 @@ test.describe('maintenance center UX', () => {
     });
     await open(page, '/maintenance?tab=reminders');
 
-    const overdue = page.getByTestId('reminders-overdue');
+    const list = page.getByTestId('reminders-list');
+    const overdue = page.getByTestId('reminders-group-overdue');
     const dishwasher = overdue.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' });
     await expect(dishwasher.getByText('Overdue', { exact: true })).toHaveCount(1);
     await expect(dishwasher).toContainText('Due Jul 1, 2026 · 4 weeks ago');
     await expect(dishwasher).not.toContainText('is overdue');
 
     // Warranties expire; they are never "overdue" or "due".
-    const warranty = page.getByTestId('reminders-warranty').getByRole('listitem').filter({ hasText: 'Main HVAC System' });
+    const warranty = page.getByTestId('reminders-group-due_soon').getByRole('listitem').filter({ hasText: 'Main HVAC System' });
     await expect(warranty.getByText('Expires soon', { exact: true })).toBeVisible();
     await expect(warranty.getByRole('checkbox', { name: /^Mark done/ })).toHaveCount(0);
     await expect(warranty.getByRole('button', { name: /^Log service/ })).toHaveCount(0);
@@ -172,7 +178,7 @@ test.describe('maintenance center UX', () => {
     // Still on the Reminders tab: the action happened in place.
     await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
 
-    const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
+    const filter = list.getByRole('listitem').filter({ hasText: 'Replace air filter' });
     // H05 completion: the check fills at once, before the write returns.
     const check = filter.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' });
     await check.click();
@@ -184,7 +190,11 @@ test.describe('maintenance center UX', () => {
       .toBe(1);
     await expect.poll(async () => Boolean((await household.collection('notifications').doc(HVAC_NOTIFICATION).get()).get('resolvedAt')))
       .toBe(true);
-    await expect(page.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(0);
+    // It leaves the due groups; its next cycle (Nov 1) is listed once, under Upcoming, with the new date.
+    await expect(page.getByTestId('reminders-group-due_today')).toHaveCount(0);
+    const nextCycle = list.getByRole('listitem').filter({ hasText: 'Replace air filter' });
+    await expect(nextCycle).toHaveCount(1);
+    await expect(page.getByTestId('reminders-group-upcoming').getByRole('listitem').filter({ hasText: 'Replace air filter' })).toContainText('Due Nov 1, 2026');
     await expect(page.getByRole('tab', { name: 'Reminders' })).toHaveAttribute('aria-selected', 'true');
 
     // Last: an unrelated edit of the snoozed asset keeps the snooze (the edit form rebuilds the
@@ -222,7 +232,8 @@ test.describe('maintenance center UX', () => {
 
       // A schedule changed elsewhere moves its reminder.
       await page.getByRole('tab', { name: 'Reminders' }).click();
-      const overdueDishwasher = page.getByTestId('reminders-overdue').getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' });
+      const overdueDishwasher = page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' })
+        .filter({ has: page.getByText('Overdue', { exact: true }) });
       await expect(overdueDishwasher).toHaveCount(0);
       await household.collection('home-assets').doc('dishwasher').update({
         schedules: [{ ...DISHWASHER_SCHEDULES[0], nextDueDate: '2026-07-01' }],
@@ -252,21 +263,21 @@ test.describe('maintenance center UX', () => {
     // "Replace air filter" schedule to the seeded household.
     const filterIn = (testId: string) => page.getByTestId(testId).getByRole('listitem')
       .filter({ hasText: 'Replace air filter' }).filter({ hasText: 'Main HVAC System' });
-    // The HVAC filter is due Aug 1: due today, so in Due Soon.
-    await expect(filterIn('reminders-due-soon')).toHaveCount(1);
-    await expect(filterIn('reminders-overdue')).toHaveCount(0);
+    // The HVAC filter is due Aug 1: due today.
+    await expect(filterIn('reminders-group-due_today')).toHaveCount(1);
+    await expect(filterIn('reminders-group-overdue')).toHaveCount(0);
 
     await page.clock.setFixedTime(new Date('2026-08-02T05:01:00.000Z'));
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     // Aug 2 in the household: overdue, without a reload or any data change.
-    await expect(filterIn('reminders-overdue')).toHaveCount(1);
-    await expect(filterIn('reminders-due-soon')).toHaveCount(0);
+    await expect(filterIn('reminders-group-overdue')).toHaveCount(1);
+    await expect(filterIn('reminders-group-due_today')).toHaveCount(0);
   });
 
   test('M1: Mark done offers Undo for 10 s, which puts the schedule back and removes the log', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?tab=reminders');
-    const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
+    const filter = page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Replace air filter' });
     await filter.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
     await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
     const hvac = household.collection('home-assets').doc('hvac-main');
@@ -291,15 +302,15 @@ test.describe('maintenance center UX', () => {
   test('M1: Mark done on a service due by mileage asks for the odometer first', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?tab=reminders');
-    const tires = page.getByRole('listitem').filter({ hasText: 'Tire rotation' }).first();
+    const tires = page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Tire rotation' });
     const check = tires.getByRole('checkbox', { name: 'Mark done: Tire rotation for Family SUV' });
     await check.click();
     const dialog = page.getByRole('dialog', { name: 'Confirm mileage' });
     await expect(dialog).toBeVisible();
     // Not drawn as done before the reading is confirmed. The open dialog hides the
     // page behind it from role queries, so the check is found by its label.
-    // (The service can be listed twice, by status and by kind, until MA-13.)
-    await expect(page.locator('[role="checkbox"][aria-label="Mark done: Tire rotation for Family SUV"][aria-checked="false"]').first()).toBeAttached();
+    // MA-13: the service is listed once.
+    await expect(page.locator('[role="checkbox"][aria-label="Mark done: Tire rotation for Family SUV"][aria-checked="false"]')).toHaveCount(1);
     await expect(page.locator('[role="checkbox"][aria-label="Mark done: Tire rotation for Family SUV"][aria-checked="true"]')).toHaveCount(0);
     const odometer = dialog.getByLabel('Odometer (miles)');
     await expect(odometer).toHaveValue('48750');
@@ -375,7 +386,7 @@ test.describe('maintenance center UX', () => {
   test('D16: Log service opens the log form for that schedule and completes it on save', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?tab=reminders');
-    const filter = page.getByRole('listitem').filter({ hasText: 'Replace air filter' }).first();
+    const filter = page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Replace air filter' });
     await filter.getByRole('button', { name: 'Log service: Replace air filter for Main HVAC System' }).click();
 
     const dialog = page.getByRole('dialog', { name: 'Add Maintenance Log' });
@@ -396,7 +407,10 @@ test.describe('maintenance center UX', () => {
     }).toEqual([{ assetId: 'hvac-main', cost: 42.5, serviceProvider: 'E2E Heating', type: 'routine' }]);
     await expect.poll(async () => Boolean((await household.collection('notifications').doc(HVAC_NOTIFICATION).get()).get('resolvedAt')))
       .toBe(true);
-    await expect(page.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(0);
+    // Gone from the due groups; the next cycle (Nov 1) is listed once, under Upcoming.
+    await expect(page.getByTestId('reminders-group-due_today')).toHaveCount(0);
+    await expect(page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(1);
+    await expect(page.getByTestId('reminders-group-upcoming').getByRole('listitem').filter({ hasText: 'Replace air filter' })).toContainText('Due Nov 1, 2026');
   });
 
   test('H30: vehicle cards show their photo; brand logos and badges theme with the text', async ({ page }, testInfo) => {
@@ -504,15 +518,12 @@ test.describe('maintenance peeks', () => {
   test.beforeEach(async () => { await restoreMaintenanceSeed(); });
   test.afterEach(async () => { await restoreMaintenanceSeed(); });
 
-  test('H26: an Attention Queue item and a reminder Open link show peek cards on hover', async ({ page }, testInfo) => {
+  test('H26: a flagged item in Needs doing and a reminder Open link show peek cards on hover', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance');
     const peek = page.locator('[data-peek-card]');
     // The seeded HVAC is flagged as needing attention.
-    const queue = page.locator('div')
-      .filter({ has: page.getByText('Attention Queue', { exact: true }) })
-      .filter({ has: page.getByRole('button', { name: /Main HVAC System/ }) })
-      .last();
+    const queue = page.getByTestId('needs-doing-flagged');
     await queue.getByRole('button', { name: /Main HVAC System/ }).hover();
     await expect(peek).toBeVisible();
     await expect(peek).toContainText('Main HVAC System');
@@ -528,5 +539,198 @@ test.describe('maintenance peeks', () => {
     await expect(peek).toContainText('Main HVAC System');
     await expect(peek).toContainText('Replace air filter');
     await expect(peek).toContainText('Opens the home asset');
+  });
+});
+
+test.describe('maintenance center M4: overview, reminders, filters, layout and insights', () => {
+  test.beforeEach(async () => { await restoreMaintenanceSeed(); });
+  test.afterEach(async () => { await restoreMaintenanceSeed(); });
+
+  test('MA-12/MA-14: Needs doing comes first on Overview, with its actions in place and the flags labelled', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance');
+    const needs = page.getByTestId('needs-doing');
+    await expect(needs).toBeVisible();
+    // Due today before due soon; the separate "Needs Attention: 0" count card is gone.
+    const items = needs.getByRole('listitem');
+    await expect(items.first()).toContainText('Replace air filter');
+    await expect(items.first().getByText('Due today', { exact: true })).toBeVisible();
+    await expect(page.getByText('Needs Attention', { exact: true })).toHaveCount(0);
+    await expect(needs.getByTestId('reminder-actions-hint')).toContainText('Snooze moves a due date 7 days later.');
+    // The manual flag is in the same list, labelled as a flag.
+    const flagged = needs.getByTestId('needs-doing-flagged');
+    await expect(flagged.getByRole('button', { name: /Main HVAC System/ })).toContainText('Flagged');
+    // Health and the next 30 days sit beside it.
+    await expect(page.getByTestId('maintenance-health')).toBeVisible();
+    await expect(page.getByTestId('overview-coming-up')).toContainText('The next 30 days');
+
+    // Snooze in place, muted with "Snoozed until", then Undo.
+    const dishwasher = needs.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' });
+    await dishwasher.getByRole('button', { name: 'Snooze 1 week: Clean filter for Kitchen Dishwasher' }).click();
+    await expect(page.getByText('Snoozed for a week', { exact: true })).toBeVisible();
+    await expect(dishwasher).toHaveAttribute('data-snoozed', 'true');
+    await expect(dishwasher).toContainText('Snoozed until Aug 15, 2026');
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.getByText('Snooze undone', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await household.collection('home-assets').doc('dishwasher').get()).get('schedules')?.[0]?.nextDueDate).toBe('2026-08-08');
+
+    // Done in place from Overview, with Undo.
+    await needs.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
+    await expect(page.getByText('Marked done', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await household.collection('home-assets').doc('hvac-main').get()).get('schedules')?.[0]?.nextDueDate).toBe('2026-11-01');
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.getByText('Undone', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await household.collection('home-assets').doc('hvac-main').get()).get('schedules')?.[0]?.nextDueDate).toBe('2026-08-01');
+    await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  test('MA-26: ?location= narrows Needs doing to one room with a Room chip', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?location=Kitchen');
+    const needs = page.getByTestId('needs-doing');
+    await expect(needs.getByRole('group', { name: 'Room' }).getByRole('button', { name: 'Kitchen, 1' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(needs.getByRole('listitem').filter({ hasText: 'Kitchen Dishwasher' })).toHaveCount(1);
+    await expect(needs).not.toContainText('Replace air filter');
+    await expect(needs).not.toContainText('Family SUV');
+    await needs.getByRole('button', { name: 'All rooms' }).click();
+    await expect(page).toHaveURL(/\/maintenance$/);
+    await expect(needs).toContainText('Replace air filter');
+  });
+
+  test('MA-13: Reminders is one urgency-grouped list with kind chips; each reminder appears once', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=reminders');
+    const list = page.getByTestId('reminders-list');
+    await expect(list.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(1);
+    await expect(list.getByRole('listitem').filter({ hasText: 'Tire rotation' })).toHaveCount(1);
+    await expect(page.getByTestId('reminders-group-due_today')).toContainText('Replace air filter');
+    await expect(page.getByTestId('reminders-group-due_soon')).toContainText('Clean filter');
+    await expect(page.getByText(/Within 14 days/)).toHaveCount(0);
+    // Kind chips with counts from the same pass.
+    const kinds = list.getByRole('group', { name: 'Kind of reminder' });
+    await kinds.getByRole('button', { name: /^Warranties, 1$/ }).click();
+    await expect(list.getByRole('listitem')).toHaveCount(1);
+    await expect(list.getByRole('listitem')).toContainText('Main HVAC System');
+    await kinds.getByRole('button', { name: /^All/ }).click();
+    await expect(list.getByRole('listitem').filter({ hasText: 'Replace air filter' })).toHaveCount(1);
+    // Coming up, 90 days, beside the list.
+    await expect(page.getByTestId('reminders-coming-up')).toContainText('The next 90 days');
+  });
+
+  test('MA-29: a vehicle service due by mileage shows an estimate, labelled as one', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const readings = [['m4-reading-1', '2026-05-01', 45000], ['m4-reading-2', '2026-06-15', 46500]] as const;
+    try {
+      await Promise.all(readings.map(([id, date, mileage]) => household.collection('maintenance').doc(id).set({
+        householdId, targetType: 'vehicle', vehicleId: 'family-suv', title: 'Odometer E2E', date, type: 'other', mileage,
+        createdAt: `${date}T12:00:00.000Z`, updatedAt: `${date}T12:00:00.000Z`,
+      })));
+      await open(page, '/maintenance?tab=reminders');
+      const tires = page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Tire rotation' });
+      await expect(tires.getByTestId('mileage-estimate')).toContainText(/Estimated around [A-Z][a-z]{2} \d{1,2}, based on \d+ readings/);
+      await expect(tires.getByTestId('mileage-estimate')).toContainText('An estimate');
+    } finally {
+      await Promise.all(readings.map(([id]) => household.collection('maintenance').doc(id).delete()));
+    }
+  });
+
+  test('MA-21: filters and search live in the URL and stay across tabs; logs open their files on demand', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?tab=assets&q=dish');
+    await expect(page.getByRole('searchbox', { name: 'Search maintenance' })).toHaveValue('dish');
+    await expect(page.getByTestId('asset-card-dishwasher')).toBeVisible();
+    await expect(page.getByTestId('asset-card-hvac-main')).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Logs' }).click();
+    await expect(page).toHaveURL(/\?tab=logs&q=dish$/);
+    await page.getByRole('button', { name: 'Clear filters' }).click();
+    await expect(page).toHaveURL(/\?tab=logs$/);
+
+    // Category chip, then typing in the search box (written after a short pause).
+    await page.getByRole('tab', { name: 'Home Assets' }).click();
+    await page.getByRole('group', { name: 'Category' }).getByRole('button', { name: 'HVAC, 1' }).click();
+    await expect(page).toHaveURL(/\?tab=assets&category=HVAC$/);
+    await expect(page.getByTestId('asset-card-dishwasher')).toHaveCount(0);
+    await page.getByRole('searchbox', { name: 'Search maintenance' }).fill('carrier');
+    await expect(page).toHaveURL(/\?tab=assets&category=HVAC&q=carrier$/);
+    await expect(page.getByTestId('asset-card-hvac-main')).toBeVisible();
+
+    // Logs: files are not loaded per row; opening a log shows them.
+    await page.goto('/maintenance?tab=logs');
+    const log = page.getByTestId('maintenance-log-hvac-inspection');
+    await expect(log.getByText('sample-hvac-report.txt', { exact: true })).toHaveCount(0);
+    await log.getByRole('button', { name: 'Files for Summer HVAC inspection (1)' }).click();
+    // Exact: the attachment row also has a screen-reader "Open attachment sample-hvac-report.txt".
+    await expect(log.getByText('sample-hvac-report.txt', { exact: true })).toBeVisible();
+  });
+
+  test('MA-11e/MA-20: an undated log is kept, last, as "Undated"; a server log says who did it', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const undated = household.collection('maintenance').doc('m4-undated-e2e');
+    const doneBy = household.collection('maintenance').doc('m4-done-by-e2e');
+    try {
+      await undated.set({ householdId, targetType: 'general', title: 'Legacy log without a date E2E', type: 'other', receiptUrl: 'https://example.test/receipt.pdf' });
+      await doneBy.set({ householdId, targetType: 'general', title: 'Done by E2E', date: '2026-07-31', type: 'routine', doneByUid: 'e2e-owner-uid', doneByName: 'Sam E2E' });
+      await open(page, '/maintenance?tab=logs');
+      const legacy = page.getByTestId('maintenance-log-m4-undated-e2e');
+      await expect(legacy).toContainText('Undated');
+      await expect(legacy.getByRole('link', { name: 'Receipt (older upload)' })).toHaveAttribute('href', 'https://example.test/receipt.pdf');
+      const ids = await page.locator('[data-testid^="maintenance-log-"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-testid')));
+      expect(ids.at(-1)).toBe('maintenance-log-m4-undated-e2e');
+      await expect(page.getByTestId('maintenance-log-m4-done-by-e2e').getByTestId('log-done-by')).toContainText('Done by Sam E2E');
+      await expect(page.getByTestId('maintenance-log-oil-change').getByTestId('log-done-by')).toHaveCount(0);
+    } finally {
+      await Promise.all([undated.delete(), doneBy.delete()]);
+    }
+  });
+
+  test('MA-28/MA-31/MA-32/MA-33c: the asset detail shows costs, the history line, the claim checklist and Print label', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?asset=hvac-main');
+    const detail = page.getByTestId('asset-detail');
+    await expect(detail.getByTestId('detail-history')).toHaveText('Summer HVAC inspection last done 6 weeks ago');
+    await expect(detail.getByTestId('asset-costs')).toContainText('Lifetime cost');
+    await expect(detail.getByTestId('asset-costs')).toContainText('$129');
+    await expect(detail.getByTestId('warranty-claim-checklist')).toContainText('Warranty claim checklist');
+    await detail.getByRole('button', { name: 'Print label' }).click();
+    await expect(detail.getByRole('img', { name: 'QR code that opens Main HVAC System in HomeHub' })).toBeVisible();
+    // The detail column stays in view beside the cards (sticky).
+    expect(await detail.evaluate((el) => getComputedStyle(el.parentElement!).position)).toBe('sticky');
+  });
+
+  test('MA-33a: Renewed (+1 year) moves the registration a year on, with Undo', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/maintenance?vehicle=family-suv');
+    const documents = page.getByTestId('vehicle-documents');
+    await expect(documents).toContainText('Expires Aug 12, 2026');
+    await documents.getByRole('button', { name: 'Renewed (+1 year): registration for Family SUV' }).click();
+    await expect(page.getByText('Registration renewed', { exact: true })).toBeVisible();
+    const suv = household.collection('vehicles').doc('family-suv');
+    await expect.poll(async () => (await suv.get()).get('registrationExpiration')).toBe('2027-08-12');
+    await expect(documents).toContainText('Expires Aug 12, 2027');
+    expect((await suv.get()).get('inspectionExpiration')).toBe('2026-08-05');
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.getByText('Renewal undone', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await suv.get()).get('registrationExpiration')).toBe('2026-08-12');
+    await expect(page.getByTestId('vehicle-costs')).toContainText('Cost per mile');
+  });
+
+  test('MA-17: on a phone a card opens its detail in a full-height sheet that Back closes; the tab row is one row', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile-chromium');
+    await open(page, '/maintenance?tab=assets');
+    const tabs = page.locator('[data-maintenance-tabs]');
+    const tabBoxes = await tabs.getByRole('tab').evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().top));
+    expect(new Set(tabBoxes.map((top) => Math.round(top))).size).toBe(1);
+    // No detail column on a phone until a card is chosen.
+    await expect(page.getByTestId('asset-detail')).toHaveCount(0);
+    await page.getByTestId('asset-card-dishwasher').click();
+    const sheet = page.getByTestId('asset-detail-sheet');
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByTestId('asset-detail')).toContainText('Kitchen Dishwasher');
+    const box = await sheet.boundingBox();
+    expect(box!.height).toBeGreaterThanOrEqual((page.viewportSize()!.height) - 1);
+    await page.goBack();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).toHaveURL(/\/maintenance\?tab=assets$/);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
   });
 });

@@ -21,11 +21,15 @@ import type { HomeAsset, MaintenanceAttachment, MaintenanceLog, Vehicle } from '
 export const MAINTENANCE_COLLECTIONS = ['home-assets', 'vehicles', 'maintenance', 'maintenance-attachments'] as const;
 export type MaintenanceCollection = typeof MAINTENANCE_COLLECTIONS[number];
 
-/** The order each list is read in (what the one-time reads used). */
-export const MAINTENANCE_ORDER: Record<MaintenanceCollection, { field: string; direction: 'asc' | 'desc' }> = {
+/**
+ * The order each list is read in. Logs are read unordered (null) and sorted on the page
+ * (`sortLogs`, undated last): a Firestore `orderBy('date')` leaves out every log without a
+ * `date` field, and such legacy logs are kept (MA-11e).
+ */
+export const MAINTENANCE_ORDER: Record<MaintenanceCollection, { field: string; direction: 'asc' | 'desc' } | null> = {
   'home-assets': { field: 'name', direction: 'asc' },
   vehicles: { field: 'nickname', direction: 'asc' },
-  maintenance: { field: 'date', direction: 'desc' },
+  maintenance: null,
   'maintenance-attachments': { field: 'createdAt', direction: 'desc' },
 };
 

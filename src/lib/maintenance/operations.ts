@@ -9,6 +9,7 @@
 // rebuilds the array from the document read in the same transaction and changes
 // only the schedule (by stable id) and the fields the operation owns.
 import { stableSlugify } from '../../../functions/src/shared/ids';
+import { renewedExpiration } from '../../../functions/src/shared/maintenance-schedule';
 import {
   buildMaintenanceReminders,
   type AssetInput,
@@ -459,6 +460,42 @@ export const planUndoSnooze = (schedule: StoredSchedule, before: FieldValues, af
   if (!sameValue(orNull(schedule.snoozedUntil), orNull(after.snoozedUntil))) return { kind: 'superseded' };
   const result = compareAndRevert(schedule, pick(before, SNOOZE_FIELDS), pick(after, SNOOZE_FIELDS));
   return { kind: 'apply', schedule: applyPatch(schedule, result.patch), kept: result.kept };
+};
+
+/* -------------------------------------------------------------------------- */
+/* Renewing a registration or inspection (MA-33a)                              */
+/* -------------------------------------------------------------------------- */
+
+/** The vehicle documents "Renewed (+1 year)" moves on. */
+export const RENEWABLE_DOCUMENTS = ['registrationExpiration', 'inspectionExpiration'] as const;
+export type RenewableDocument = typeof RENEWABLE_DOCUMENTS[number];
+
+export const isRenewableDocument = (value: unknown): value is RenewableDocument =>
+  typeof value === 'string' && (RENEWABLE_DOCUMENTS as readonly string[]).includes(value);
+
+export type RenewalPlan =
+  | { kind: 'changed' }
+  | { kind: 'apply'; expiration: string; before: FieldValues; after: FieldValues };
+
+/**
+ * Plans "Renewed (+1 year)": only that one field changes, to `renewedExpiration`
+ * of the value read now (one year on from the current expiration when it is
+ * in the future or at most 60 days past, otherwise one year from today). The
+ * request names the expiration the person saw (`seen`, null when there was
+ * none), so a second session, or a double tap with another op id, cannot add
+ * two years: once the value differs from `seen` the answer is `changed`.
+ */
+export const planRenewal = (input: { field: RenewableDocument; current: unknown; seen: string | null; today: string }): RenewalPlan => {
+  const current = typeof input.current === 'string' && input.current ? input.current : null;
+  if (!sameValue(current, input.seen)) return { kind: 'changed' };
+  const expiration = renewedExpiration(current, input.today);
+  return { kind: 'apply', expiration, before: { [input.field]: current }, after: { [input.field]: expiration } };
+};
+
+/** Undo of a renewal: compare-and-revert of that one field on the vehicle. */
+export const planUndoRenewal = (vehicle: Record<string, unknown>, before: FieldValues, after: FieldValues) => {
+  const fields = Object.keys(after).filter(isRenewableDocument);
+  return compareAndRevert(vehicle, pick(before, fields), pick(after, fields));
 };
 
 /* -------------------------------------------------------------------------- */

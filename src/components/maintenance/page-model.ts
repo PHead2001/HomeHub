@@ -33,8 +33,6 @@ export const logTargetTypes = ['general', 'home_asset', 'vehicle'] as const;
 export const logTypes = ['repair', 'routine', 'inspection', 'cleaning', 'replacement', 'issue', 'other'] as const;
 export const frequencyTypes = ['days', 'weeks', 'months', 'years'] as const;
 export const attachmentCategories = ['photo', 'receipt', 'manual', 'warranty_document', 'invoice', 'other'] as const;
-export const REMINDER_DUE_SOON_DAYS = 14;
-export const MILEAGE_DUE_SOON_THRESHOLD = 500;
 
 export const assetSchema = z.object({
   name: z.string().min(1, 'Asset name is required.'),

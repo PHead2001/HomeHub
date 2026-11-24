@@ -174,10 +174,20 @@ test.describe('verification finding regressions', () => {
       ['/maintenance?log=oil-change', 'Logs', 'Engine oil and filter'],
     ] as const;
 
+    // On a phone a record link opens that record's detail sheet, a modal: the page under it (its
+    // heading included) is hidden from role queries. So the page is opened once, then each link.
+    await openAuthenticated(page, '/maintenance', 'Maintenance Center');
     for (const [path, tab, content] of cases) {
-      await openAuthenticated(page, path, 'Maintenance Center');
-      await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
+      await page.goto(path);
+      await expect(page.locator('h1').filter({ hasText: /^Maintenance Center$/ })).toBeAttached();
+      await expect(page.getByText('Sign in with Google')).toHaveCount(0);
+      // Not by role: on a phone a record link opens its detail sheet, which hides the page from role queries.
+      await expect(page.locator('[role="tab"][data-state="active"]')).toHaveText(tab);
       await expect(page.getByText(content, { exact: true }).first()).toBeVisible();
+      // MA-17: on a phone the linked asset or vehicle opens in its detail sheet.
+      if ((page.viewportSize()?.width ?? 1440) < 1024 && /[?&](asset|vehicle)=/.test(path)) {
+        await expect(page.getByTestId(path.includes('asset=') ? 'asset-detail-sheet' : 'vehicle-detail-sheet')).toBeVisible();
+      }
     }
 
     await openAuthenticated(page, '/maintenance?asset=deleted-asset', 'Maintenance Center');
@@ -362,7 +372,9 @@ test.describe('verification finding regressions', () => {
     await page.getByRole('option', { name: 'Unscheduled checklist' }).click();
     await expect(item.getByText('Next Due', { exact: true })).toHaveCount(0);
     await dialog.getByRole('button', { name: 'Save Asset' }).click();
-    await expect(page.getByText('Unscheduled checklist item', { exact: true })).toBeVisible();
+    // MA-24: a checklist item says it has no due date and offers to add one.
+    await expect(page.getByTestId('asset-detail').getByText('No due date yet. Add one to get reminders.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add a due date: Incomplete scheduled item' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Edit' }).first().click();
     dialog = page.getByRole('dialog', { name: 'Edit Home Asset' });

@@ -29,7 +29,8 @@ export function useMaintenanceLiveData(householdId: string | null | undefined, k
     const session = ++lastSession;
     const started = MAINTENANCE_COLLECTIONS.map((name) => {
       const order = MAINTENANCE_ORDER[name];
-      const source = query(collection(db, 'households', householdId, name), orderBy(order.field, order.direction));
+      const list = collection(db, 'households', householdId, name);
+      const source = order ? query(list, orderBy(order.field, order.direction)) : query(list);
       let answered = false;
       let fromServer = false;
       return resilientListener<QuerySnapshot>(
