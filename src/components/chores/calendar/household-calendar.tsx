@@ -52,7 +52,7 @@ function initialView(): View {
 }
 
 const VIEW_NOUN: Record<View, string> = { day: 'day', week: 'week', month: 'month' };
-type Member = CalendarMember & { avatarUrl?: string | null };
+type Member = CalendarMember & { avatarUrl?: string | null; joinedAt?: string };
 type SourceErrors = Partial<Record<'chores' | 'maintenance' | 'pets', string>>;
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -66,6 +66,7 @@ async function loadMembers(householdId: string, viewer: { uid: string; email: st
     email: person.uid === viewer.uid ? person.email || viewer.email : person.email,
     name: person.displayName,
     avatarUrl: person.avatarUrl,
+    joinedAt: person.joinedAt,
   }));
 }
 
@@ -345,7 +346,7 @@ export function HouseholdCalendar() {
     return () => { active = false; };
   }, [householdId, viewerUid, viewerEmail, canViewChores, canViewMaintenance, canViewPets, timeZone]);
 
-  const colors = useMemo(() => memberColorMap(members.map(m => m.uid)), [members]);
+  const colors = useMemo(() => memberColorMap(members.map(m => ({ uid: m.uid, joinedAt: m.joinedAt }))), [members]);
   // The whole visible range, so repeating chores beyond the server's 30-occurrence
   // lookahead still show.
   const visibleDays = useMemo(() => (view === 'day' ? [selectedDay] : view === 'week' ? weekDays(anchor) : monthGrid(anchor).flat()), [view, anchor, selectedDay]);

@@ -168,7 +168,13 @@ export function HouseholdManagementClient() {
   const activeInvites = useMemo(() => invites.filter((invite) => isActiveInvite(invite)), [invites]);
   const pendingMembers = useMemo(() => members.filter(member => member.role === 'newuser'), [members]);
   const approvedMembers = useMemo(() => members.filter(member => member.role !== 'newuser'), [members]);
-  const colors = useMemo(() => memberColorMap(members.map((m) => m.uid)), [members]);
+  // Join order, pending people last: the same colors Chores and the calendar give the
+  // approved members, and nobody's color moves when someone joins (HO-8).
+  const colors = useMemo(() => memberColorMap(members.map((m) => ({
+    uid: m.uid,
+    joinedAt: m.joinedAt,
+    pending: m.role === 'newuser' || (m.status ?? 'active') !== 'active',
+  }))), [members]);
 
   // Daily "still pending" reminder: when someone who can approve opens this page
   // and a pending person has not been reminded about for 24 hours, the server
@@ -484,6 +490,7 @@ export function HouseholdManagementClient() {
                     members={approvedMembers.map((m) => ({ uid: m.uid, name: memberName(m), photoUrl: m.avatarUrl }))}
                     size="sm"
                     max={4}
+                    colors={colors}
                     className="mt-1"
                   />
                 ) : null}
