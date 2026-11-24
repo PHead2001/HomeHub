@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input';
 import { matchLocalIntents, type LocalIntent } from '@/lib/devices/quick-add-local';
 import { petsSection, quickAddTargets } from '@/lib/devices/tablet-sections';
-import { personMay } from '@/lib/devices/roster';
+import { personMayUse } from '@/lib/devices/roster';
 import { policyOf } from '@/lib/devices/action-policy';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { useTablet } from './tablet-context';
@@ -36,7 +36,7 @@ export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
   const remembered = person(shell.face?.memberUid);
   const petStates = useMemo(() => new Map((petsSection(data.sectionFacts ?? {}) ?? []).map((pet) => [pet.id, pet])), [data.sectionFacts]);
   const intents = matchLocalIntents(text, { pets, chores, sections: settings.sections })
-    .filter((intent) => !remembered || personMay(remembered, policyOf(intent.capability).permissions))
+    .filter((intent) => !remembered || personMayUse(remembered, policyOf(intent.capability)))
     // A feed needs the pet's feeding history (its portion and food), as the Feed button does.
     .filter((intent) => intent.kind !== 'feed' || Boolean(petStates.get(intent.petId)?.feed));
 

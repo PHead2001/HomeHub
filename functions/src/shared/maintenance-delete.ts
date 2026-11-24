@@ -23,7 +23,7 @@
 // 5. The tombstone goes last. A tombstone left behind is finished by a retry
 //    of the action or by the next hourly upkeep.
 import type {
-  DocumentReference, Firestore, QueryDocumentSnapshot,
+  DocumentReference, Firestore, QueryDocumentSnapshot, Transaction,
 } from "firebase-admin/firestore";
 
 export type MaintenanceDeleteTargetType =
@@ -194,6 +194,18 @@ export class MaintenanceStorageUnavailable extends Error {
 export type MaintenanceDeleteHooks = {
   /** Runs after the record is gone (step 1). Tests simulate a crash. */
   afterBarrier?: () => Promise<void>;
+  /**
+   * A registered wall tablet's gate hooks (M8a, `maintenance.log.delete`,
+   * `maintenance.record.delete`; as the pet delete): `precheck` is the
+   * barrier transaction's first statement (a replay of the same opId writes
+   * nothing there; the rest still finishes what is left, and a record that
+   * exists again under that id is left alone), `finalize` its last (op
+   * ledger entry and the `device.action` activity entry).
+   */
+  device?: {
+    precheck(tx: Transaction): Promise<{replay?: unknown}>;
+    finalize(tx: Transaction, existed: boolean, name: string | null): void;
+  };
 };
 
 const repointLogs = async (
@@ -310,15 +322,24 @@ export async function deleteMaintenanceCascade(
   // 1. Barrier: tombstone + record, in one transaction.
   type Started = {name: string; existed: boolean; skipped?: true};
   const started = await db.runTransaction(async (tx): Promise<Started> => {
+    const replay = hooks.device ?
+      Boolean((await hooks.device.precheck(tx)).replay) : false;
     const [record, tombstone] =
       await Promise.all([tx.get(recordRef), tx.get(tombstoneRef)]);
     if (!record.exists) {
-      return {
+      const found = {
         name: tombstone.exists ? String(tombstone.get("name") ?? "") : "",
         existed: tombstone.exists,
       };
+      if (!replay) {
+        hooks.device?.finalize(tx, found.existed, found.name || null);
+      }
+      return found;
     }
-    if (input.resumeOnly) {
+    // Upkeep's resume, or a tablet's retry of a delete already done, while a
+    // record exists again under this id: never delete it (a stale tombstone
+    // goes).
+    if (input.resumeOnly || replay) {
       if (tombstone.exists) tx.delete(tombstoneRef);
       return {name: "", existed: false, skipped: true};
     }
@@ -334,6 +355,7 @@ export async function deleteMaintenanceCascade(
       startedAt: input.now.toISOString(),
     });
     tx.delete(recordRef);
+    hooks.device?.finalize(tx, true, name || null);
     return {name, existed: true};
   });
   if (started.skipped) {

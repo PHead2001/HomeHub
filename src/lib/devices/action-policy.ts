@@ -40,6 +40,13 @@ export type DeviceCapabilityPolicy = {
    */
   permissions: readonly HouseholdPermission[] | null;
   /**
+   * Permissions the actor needs ALL of, checked in addition to `permissions` (one-of)
+   * (M8a: completing a maintenance item needs both maintenance.edit and
+   * maintenance.createLogs, as the personal action does). Absent on every other capability,
+   * whose behaviour is unchanged. Never an empty list. `policyPermits` applies both.
+   */
+  permissionsAll?: readonly HouseholdPermission[];
+  /**
    * Extra actor rule, applied by the feature operation against the target record
    * inside its transaction (`assertActorRule` in the gate):
    * - `original-actor`: only the member who did the original action;
@@ -71,6 +78,13 @@ const PET = PET_ACTION_PERMISSIONS;
 const NOTE_EDIT = [...PET['pets.note.add'], ...PET['pets.note.edit']] as const satisfies readonly HouseholdPermission[];
 /** Deleting a note: pets.deleteLogs, a pinned one also pets.editProfiles, its author within 10 minutes (`mayDeleteNote`, in the operation). */
 const NOTE_DELETE = [...PET['pets.note.add'], ...PET['pets.note.delete'], ...PET['pets.note.edit']] as const satisfies readonly HouseholdPermission[];
+
+// Maintenance (M8a): the permission names of the personal server actions (src/app/maintenance/actions.ts).
+const M_EDIT = ['maintenance.edit'] as const satisfies readonly HouseholdPermission[];
+const M_LOGS = ['maintenance.createLogs'] as const satisfies readonly HouseholdPermission[];
+const M_DELETE = ['maintenance.delete'] as const satisfies readonly HouseholdPermission[];
+/** Completing a cycle writes a log and advances the schedule: both permissions (all of them). */
+const M_COMPLETE = ['maintenance.edit', 'maintenance.createLogs'] as const satisfies readonly HouseholdPermission[];
 
 /** Face-level once proven (`face*`); queueable. */
 const faceStar = (section: DeviceSection, permissions: readonly HouseholdPermission[], extra: Partial<DeviceCapabilityPolicy> = {}): DeviceCapabilityPolicy => ({
@@ -143,16 +157,32 @@ export const DEVICE_ACTION_POLICY = {
   'notifications.dismiss': notOnTablets('home'),
   'notifications.dismiss.undo': notOnTablets('home'),
 
-  // --- Shopping and maintenance: read-only sections in this goal (D-T8, JC-24) ---
+  // --- Shopping: a read-only section in this goal (JC-24) -----------------------
   'shopping.add': notOnTablets('shopping'),
   'shopping.tick': notOnTablets('shopping'),
   'shopping.remove': notOnTablets('shopping'),
   'shopping.putAway': notOnTablets('shopping'),
   'shopping.usedUp': notOnTablets('shopping'),
   'shopping.scan': notOnTablets('shopping'),
-  'maintenance.log': notOnTablets('maintenance'),
-  'maintenance.snooze': notOnTablets('maintenance'),
-  'maintenance.editSchedules': notOnTablets('maintenance'),
+
+  // --- Maintenance (M8a; supersedes D-T8, which kept maintenance off tablets) -----
+  // Done, Log service and Snooze are face* for the selected member with their own
+  // permissions and a verified Undo (only the original person, as on a phone); editing
+  // schedules and permanent deletions are PIN. Never subject to the points PIN (no points).
+  // Renewing a registration or inspection and Update mileage have operations but no recorded
+  // 10.4 Undo proof: not classified (refused `unclassified`), so they stay on phones.
+  'maintenance.complete': faceStar('maintenance', M_COMPLETE, { permissionsAll: M_COMPLETE }),
+  'maintenance.complete.undo': faceStar('maintenance', M_COMPLETE, { permissionsAll: M_COMPLETE, actorRule: 'original-actor' }),
+  'maintenance.log': faceStar('maintenance', M_LOGS),
+  'maintenance.log.undo': faceStar('maintenance', M_LOGS, { actorRule: 'original-actor' }),
+  'maintenance.snooze': faceStar('maintenance', M_EDIT),
+  'maintenance.snooze.undo': faceStar('maintenance', M_EDIT, { actorRule: 'original-actor' }),
+  'maintenance.editSchedules': pin('maintenance', M_EDIT),
+  /** Deleting a home asset or vehicle (the shared delete cascade, as the page's deleteMaintenanceRecord). */
+  'maintenance.record.delete': pin('maintenance', M_DELETE),
+  'maintenance.log.delete': pin('maintenance', M_DELETE),
+  /** Deleting an attachment (no tablet server action: attachments are not shown on tablets). */
+  'maintenance.attachment.delete': pin('maintenance', M_DELETE),
 
   // --- AI flows (JC-28) -----------------------------------------------------
   'ai.parse': notOnTablets('home'),
@@ -217,12 +247,31 @@ export const UNDO_PROVEN: ReadonlySet<DeviceCapability> = new Set<DeviceCapabili
   'pets.note.undo',
   'pets.weight.add',
   'pets.weight.undo',
+  // Maintenance (M8a): tests/server/device-maintenance-undo.test.ts, the seven cases of 10.4
+  // for maintenance.complete, maintenance.log and maintenance.snooze.
+  'maintenance.complete',
+  'maintenance.complete.undo',
+  'maintenance.log',
+  'maintenance.log.undo',
+  'maintenance.snooze',
+  'maintenance.snooze.undo',
 ]);
 
 export const isDeviceCapability = (value: unknown): value is DeviceCapability =>
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(DEVICE_ACTION_POLICY, value);
 
 export const policyOf = (capability: DeviceCapability): DeviceCapabilityPolicy => DEVICE_ACTION_POLICY[capability];
+
+/**
+ * Whether someone with these permissions may use a capability (8.4 step 8): one of
+ * `permissions` (none listed: no permission check) and every one of `permissionsAll`.
+ * The gate decides with it; the tablet offers a face only what it allows.
+ */
+export const policyPermits = (
+  policy: Pick<DeviceCapabilityPolicy, 'permissions' | 'permissionsAll'>,
+  has: (permission: HouseholdPermission) => boolean,
+): boolean =>
+  (!policy.permissions || policy.permissions.some(has)) && (!policy.permissionsAll || policy.permissionsAll.every(has));
 
 /** An Undo capability (`….undo`): it takes the original action's opId. */
 export const isUndoCapability = (capability: DeviceCapability): boolean => capability.endsWith('.undo');
@@ -240,6 +289,9 @@ export const UNDO_OF = {
   'pets.weight.undo': ['pets.weight.add'],
   'chores.complete.undo': ['chores.complete'],
   'chores.take.undo': ['chores.take'],
+  'maintenance.complete.undo': ['maintenance.complete'],
+  'maintenance.log.undo': ['maintenance.log'],
+  'maintenance.snooze.undo': ['maintenance.snooze'],
   'notifications.dismiss.undo': ['notifications.dismiss'],
 } as const satisfies Partial<Record<DeviceCapability, readonly DeviceCapability[]>>;
 

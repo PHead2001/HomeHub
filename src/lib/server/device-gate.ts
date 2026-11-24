@@ -10,6 +10,7 @@ import {
   isDeviceCapability,
   isUndoCapability,
   policyOf,
+  policyPermits,
   readPointsPinPolicy,
   requiredLevel,
   requiresOpId,
@@ -367,8 +368,9 @@ const evaluate = (
   // Step 8: capability.
   if (policy.levelClass === 'admin-pin') {
     if (actor.role !== 'owner' && actor.role !== 'admin') throw new DeviceActionError('admin_pin_required');
-  } else if (policy.permissions) {
-    if (!policy.permissions.some(permission => actor.permissions[permission])) throw new DeviceActionError('forbidden');
+  } else if (!policyPermits(policy, permission => actor.permissions[permission] === true)) {
+    // One of `permissions`, and every one of `permissionsAll` (M8a).
+    throw new DeviceActionError('forbidden');
   }
   // Step 9: the level this action needs now.
   const required = requiredLevel(request.capability, { pointsPin: readPointsPinPolicy(snaps.household.data()), actorRole: actor.role }, undoProven);

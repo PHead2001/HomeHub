@@ -1776,6 +1776,16 @@ service cloud.firestore {
     // Schedule entries (`schedules`, `serviceSchedules`) are an unvalidated list: only their
     // count is bounded. The Maintenance Center writes them through the server
     // (src/lib/server/maintenance-operations.ts), which owns `lastCompletion` (M1).
+    // The log fields only the server writes (M1, M8a): who did it, the op that made it, the
+    // completion it records and the server time. Outside the allow-list, so a client never
+    // adds or changes them; an update must also never remove them. A log that never had
+    // them (written by a client, or before M1) is unaffected: a whole-document rewrite that
+    // leaves them out matches. `deviceAttribution` is kept by deviceAttributionKept().
+    function maintenanceLogServerFieldsKept() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['doneByUid', 'doneByName', 'opId', 'completion', 'createdAtServer']);
+    }
+
     function validHomeAssetFields(data, keys) {
       return keys.hasOnly([
           'householdId', 'name', 'category', 'location', 'brand', 'model', 'serialNumber', 'purchaseDate',
@@ -2298,7 +2308,9 @@ service cloud.firestore {
           validMaintenanceLogFields(request.resource.data, writtenKeys());
         allow update: if hasHouseholdPermission(householdId, 'maintenance.edit') &&
           householdIdMatchesPath(householdId) &&
-          validMaintenanceLogFields(request.resource.data, writtenKeys());
+          validMaintenanceLogFields(request.resource.data, writtenKeys()) &&
+          deviceAttributionKept() &&
+          maintenanceLogServerFieldsKept();
         allow delete: if hasHouseholdPermission(householdId, 'maintenance.delete');
       }
 

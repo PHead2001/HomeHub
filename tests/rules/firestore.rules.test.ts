@@ -2820,6 +2820,38 @@ describe('content shapes: maintenance', () => {
     await assertFails(updateDoc(ref(users.member, 'vehicles', 'car'), { mileageUpdatedAt: '2026-08-01' }));
   });
 
+  test('a server-written log keeps its attribution and server-owned fields through client updates (M8a)', async () => {
+    const attribution = { deviceId: 'dev-1', deviceName: 'Kitchen tablet', generation: 1, actorUid: users.member.uid, level: 'face' };
+    const serverFields = {
+      doneByUid: users.member.uid, doneByName: 'Max', opId: 'op-tablet-1',
+      completion: { scheduleId: 's1', ownerType: 'vehicle', ownerId: 'car' }, createdAtServer: Timestamp.now(),
+    };
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'maintenance', 'tablet-log'), { ...formLog(), ...serverFields, deviceAttribution: attribution });
+    });
+    const log = ref(users.member, 'maintenance', 'tablet-log');
+    // An ordinary edit (title, notes) that keeps those fields is allowed, as a partial update
+    // and as a whole-document write carrying them unchanged.
+    await assertSucceeds(updateDoc(log, { title: 'Oil and filter', item: 'Oil and filter', notes: 'Edited', updatedAt: nowIso }));
+    // deviceAttribution: never changed, removed or replaced.
+    await assertFails(updateDoc(log, { deviceAttribution: { ...attribution, level: 'pin' } }));
+    await assertFails(updateDoc(log, { deviceAttribution: deleteField() }));
+    await assertFails(updateDoc(log, { 'deviceAttribution.actorUid': users.owner.uid }));
+    // The other server-owned fields: never changed or removed.
+    await assertFails(updateDoc(log, { doneByName: 'Someone else' }));
+    for (const field of ['doneByUid', 'doneByName', 'opId', 'completion', 'createdAtServer']) {
+      await assertFails(updateDoc(log, { [field]: deleteField() }));
+    }
+    // An older cached page rewriting the whole log without them is refused for this log
+    // (the person reloads; the current page edits logs through the server action).
+    await assertFails(setDoc(log, formLog({ notes: 'Old page' })));
+    // A log that never had them (client-written) stays editable by a whole-document write.
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'client-log'), formLog()));
+    await assertSucceeds(setDoc(ref(users.member, 'maintenance', 'client-log'), formLog({ notes: 'Old page edit' })));
+    // Adding attribution to a log that has none is refused (outside the allow-list).
+    await assertFails(updateDoc(ref(users.member, 'maintenance', 'client-log'), { deviceAttribution: attribution }));
+  });
+
   test('attachment metadata is created only for a record that exists (review of PR #210)', async () => {
     const attachment = (targetType: string, targetId: string) => ({
       householdId: householdA, targetType, targetId, category: 'receipt', fileName: 'r.pdf',
