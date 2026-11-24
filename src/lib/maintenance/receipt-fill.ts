@@ -20,7 +20,6 @@ export const RECEIPT_TEXT_LIMITS = { serviceProvider: 120, partsUsed: 500 } as c
 export const RECEIPT_MAX_COST = 1_000_000;
 
 // Control characters, zero-width and bidirectional overrides.
-// eslint-disable-next-line no-control-regex
 const UNSAFE_TEXT = /[\x00-\x1f\x7f-\x9f\u{200b}-\u{200f}\u{202a}-\u{202e}\u{2066}-\u{2069}]+/gu;
 
 /** Removes control characters, collapses spaces and bounds the length; never HTML (rendered as text). */

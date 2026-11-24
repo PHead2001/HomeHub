@@ -103,8 +103,8 @@ export const attachmentThumbnailUrl = (attachment: Pick<MaintenanceAttachment, '
 
 /** "Delete Kitchen fridge and its 3 attachments" (MA-22): the confirmation's action label. */
 export const deleteActionLabel = (kind: 'home_asset' | 'vehicle' | 'maintenance_log', name: string, files: number) => {
-  const what = kind === 'maintenance_log' ? 'log' : name || (kind === 'vehicle' ? 'vehicle' : 'asset');
-  if (files <= 0) return `Delete ${what}`;
+  if (files <= 0) return kind === 'maintenance_log' ? 'Delete Log' : kind === 'vehicle' ? 'Delete Vehicle' : 'Delete Home Asset';
+  const what = name || (kind === 'vehicle' ? 'vehicle' : 'asset');
   if (kind === 'maintenance_log') return `Delete log and its ${files} ${files === 1 ? 'file' : 'files'}`;
   return `Delete ${what} and its ${files} ${files === 1 ? 'attachment' : 'attachments'}`;
 };

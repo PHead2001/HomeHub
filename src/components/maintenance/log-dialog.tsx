@@ -1,19 +1,26 @@
 'use client';
 
 import * as React from 'react';
-import { useCallback, useState } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { MAX_MILEAGE } from '@/lib/maintenance/operations';
 import type { ScheduleCompletionTarget } from '@/lib/maintenance/schedules';
 import type { HomeAsset, MaintenanceLog, Vehicle } from '@/lib/types';
+import { useAuth } from '@/hooks/use-auth';
+import { detailsToggleLabel, emptyDetailFields, formIsDirty, visibleDetailFields } from '@/lib/maintenance/form-sections';
+import { receiptFillPatch, type ReceiptFields } from '@/lib/maintenance/receipt-fill';
 import { AutoResizeTextarea, MileageWarning, SaveNotice } from './page-parts';
+import { FORM_FOOTER_CLASSES, MaintenanceFormDialog, useGuardedCancel, useReportDirty } from './form-shell';
+import { DetailsToggle } from './form-fields';
+import { ReceiptPicker } from './receipt-picker';
+import { receiptStaging, type StagedReceipt } from './receipt-staging';
 import {
   emptyLogForm, getScheduleCompletionName, humanizeLabel, logFormFromRecord, logSchema, logTypes, logValuesOf, toNumber,
   type LogFormValues, type LogPreset, type LogValues, type SaveNoticeState,
@@ -23,8 +30,10 @@ import {
 export type LogFormHandle = { setError: (field: keyof LogFormValues, message: string) => void };
 
 /**
- * Add or edit a maintenance log; opened by Log service it also completes that schedule. The
- * form is this dialog's own state, initialised once per opening (see AssetDialog).
+ * Add or edit a maintenance log; opened by Log service it also completes that schedule. What,
+ * which item, date and cost up front (MA-15), the rest behind "More details"; "Receipt / photos"
+ * stages files for the log and can read a receipt (MA-16, MA-30). The form is this dialog's own
+ * state, initialised once per opening (see AssetDialog); unsaved changes ask before closing.
  */
 export const LogDialog = React.memo(function LogDialog({
   open,
@@ -35,14 +44,11 @@ export const LogDialog = React.memo(function LogDialog({
   open: boolean;
   session: number;
   onOpenChange: (open: boolean) => void;
-} & Omit<LogDialogBodyProps, 'onCancel'>) {
-  const cancel = useCallback(() => onOpenChange(false), [onOpenChange]);
+} & LogDialogBodyProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[min(90vh,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)))] max-w-2xl flex-col overflow-hidden p-0">
-        <LogDialogBody key={session} {...body} onCancel={cancel} />
-      </DialogContent>
-    </Dialog>
+    <MaintenanceFormDialog open={open} busy={body.busy} onOpenChange={onOpenChange} className="max-w-2xl" testId="log-form">
+      <LogDialogBody key={session} {...body} />
+    </MaintenanceFormDialog>
   );
 });
 
@@ -58,11 +64,12 @@ type LogDialogBodyProps = {
   busy: boolean;
   notice?: SaveNoticeState;
   mileageMessage?: string;
-  onCancel: () => void;
   onSave: (save: { values: LogFormValues; base?: LogValues }, form: LogFormHandle) => void | Promise<void>;
 };
 
-function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today, busy, notice, mileageMessage, onCancel, onSave }: LogDialogBodyProps) {
+function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today, busy, notice, mileageMessage, onSave }: LogDialogBodyProps) {
+  const cancel = useGuardedCancel();
+  const { permissions } = useAuth();
   const [initial] = useState(() => {
     const form = record ? logFormFromRecord(record, today) : emptyLogForm(preset, today);
     return { form, base: record ? logValuesOf(form) : undefined };
@@ -72,6 +79,33 @@ function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today
     defaultValues: initial.form,
   });
   const targetType = useWatch({ control: logForm.control, name: 'targetType' });
+  const values = useWatch({ control: logForm.control }) as LogFormValues;
+  const staged = useSyncExternalStore(receiptStaging.subscribe, receiptStaging.current, () => [] as readonly StagedReceipt[]);
+  const [expanded, setExpanded] = useState(false);
+  useReportDirty(formIsDirty(initial.form, values) || staged.length > 0);
+  // A new log's files go up after it is saved (own log: allowed with maintenance.createLogs);
+  // files on an existing log need maintenance.edit, as in the attachment panel.
+  const canAttach = !record || permissions['maintenance.edit'];
+  const vehicleLog = targetType === 'vehicle';
+  // A preset (Log service) fills mileage: it is shown up front then.
+  const shown = useMemo(() => new Set(visibleDetailFields('log', { ...initial.form, mileage: vehicleLog ? initial.form.mileage : '' }, expanded, { vehicleLog })), [initial.form, expanded, vehicleLog]);
+  const emptyCount = emptyDetailFields('log', initial.form, { vehicleLog }).length;
+  const allDetails = visibleDetailFields('log', initial.form, true, { vehicleLog }).length;
+
+  /** Fields the person changed since the form opened (a reading never overwrites them). */
+  const editedFields = () => {
+    const current = logForm.getValues();
+    const changed = (field: 'cost' | 'serviceProvider' | 'partsUsed') => (current[field] ?? '').trim() !== (initial.form[field] ?? '').trim();
+    return { cost: changed('cost'), serviceProvider: changed('serviceProvider'), partsUsed: changed('partsUsed') };
+  };
+
+  const applyReceipt = (fields: ReceiptFields, accepted: Record<keyof ReceiptFields, boolean>) => {
+    const patch = receiptFillPatch(fields, editedFields(), accepted);
+    for (const [field, value] of Object.entries(patch)) {
+      logForm.setValue(field as 'cost' | 'serviceProvider' | 'partsUsed', value, { shouldValidate: true });
+    }
+    if (patch.serviceProvider || patch.partsUsed) setExpanded(true);
+  };
   const handle: LogFormHandle = {
     setError: (field, message) => logForm.setError(field, { message }, { shouldFocus: true }),
   };
@@ -107,7 +141,10 @@ function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today
       <Form {...logForm}>
         <form onSubmit={logForm.handleSubmit(submit)} className="flex min-h-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-6 pb-4">
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2" id="log-details">
+            <FormField control={logForm.control} name="title" render={({ field }) => (
+              <FormItem className="sm:col-span-2"><FormLabel>Title</FormLabel><FormControl><Input placeholder="Replaced air filter" {...field} /></FormControl><FormMessage /></FormItem>
+            )} />
             <FormField control={logForm.control} name="targetType" render={({ field }) => (
               <FormItem><FormLabel>Log For</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent><SelectItem value="general">General</SelectItem><SelectItem value="home_asset">Home Asset</SelectItem><SelectItem value="vehicle">Vehicle</SelectItem></SelectContent></Select><FormMessage /></FormItem>
             )} />
@@ -121,37 +158,52 @@ function LogDialogBody({ record, preset, scheduleTarget, assets, vehicles, today
                 <FormItem><FormLabel>Vehicle</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue placeholder="Choose vehicle" /></SelectTrigger></FormControl><SelectContent>{vehicles.map(vehicle => <SelectItem key={vehicle.id} value={vehicle.id}>{vehicle.nickname}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
               )} />
             )}
-            <FormField control={logForm.control} name="title" render={({ field }) => (
-              <FormItem className={targetType === 'general' ? 'sm:col-span-1' : 'sm:col-span-2'}><FormLabel>Title</FormLabel><FormControl><Input placeholder="Replaced air filter" {...field} /></FormControl><FormMessage /></FormItem>
-            )} />
             <FormField control={logForm.control} name="date" render={({ field }) => (
               <FormItem><FormLabel>Date</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
             )} />
-            <FormField control={logForm.control} name="type" render={({ field }) => (
-              <FormItem><FormLabel>Type</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{logTypes.map(type => <SelectItem key={type} value={type}>{humanizeLabel(type)}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
-            )} />
             <FormField control={logForm.control} name="cost" render={({ field }) => (
-              <FormItem><FormLabel>Cost</FormLabel><FormControl><Input type="number" min="0" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
+              <FormItem><FormLabel>Cost</FormLabel><FormControl><Input type="number" inputMode="decimal" min="0" step="0.01" {...field} /></FormControl><FormMessage /></FormItem>
             )} />
-            <FormField control={logForm.control} name="serviceProvider" render={({ field }) => (
-              <FormItem><FormLabel>Service Provider</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-            )} />
-            <FormField control={logForm.control} name="partsUsed" render={({ field }) => (
-              <FormItem className={targetType === 'vehicle' ? '' : 'sm:col-span-2'}><FormLabel>Parts Used</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
-            )} />
-            {targetType === 'vehicle' && (
+            {shown.has('mileage') && targetType === 'vehicle' && (
               <FormField control={logForm.control} name="mileage" render={({ field }) => (
                 <FormItem><FormLabel>Mileage</FormLabel><FormControl><Input type="number" inputMode="numeric" min="0" step="1" {...field} /></FormControl><FormMessage /></FormItem>
               )} />
             )}
             <MileageWarning message={mileageMessage} />
-            <FormField control={logForm.control} name="notes" render={({ field }) => (
-              <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={4} placeholder="Describe what happened, what was done, and any follow-up needed." {...field} /></FormControl><FormMessage /></FormItem>
-            )} />
+            {shown.has('type') && (
+              <FormField control={logForm.control} name="type" render={({ field }) => (
+                <FormItem><FormLabel>Type</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>{logTypes.map(type => <SelectItem key={type} value={type}>{humanizeLabel(type)}</SelectItem>)}</SelectContent></Select><FormMessage /></FormItem>
+              )} />
+            )}
+            {shown.has('serviceProvider') && (
+              <FormField control={logForm.control} name="serviceProvider" render={({ field }) => (
+                <FormItem><FormLabel>Service Provider</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
+              )} />
+            )}
+            {shown.has('partsUsed') && (
+              <FormField control={logForm.control} name="partsUsed" render={({ field }) => (
+                <FormItem className="sm:col-span-2"><FormLabel>Parts Used</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
+              )} />
+            )}
+            {shown.has('notes') && (
+              <FormField control={logForm.control} name="notes" render={({ field }) => (
+                <FormItem className="sm:col-span-2"><FormLabel>Notes</FormLabel><FormControl><AutoResizeTextarea rows={4} placeholder="Describe what happened, what was done, and any follow-up needed." {...field} /></FormControl><FormMessage /></FormItem>
+              )} />
+            )}
+            {!expanded && shown.size < allDetails && (
+              <DetailsToggle label={detailsToggleLabel(!record, emptyCount)} controls="log-details" onClick={() => setExpanded(true)} />
+            )}
+            {canAttach && (
+              <ReceiptPicker
+                disabled={busy}
+                editedFields={editedFields}
+                onApply={applyReceipt}
+              />
+            )}
             </div>
           </div>
-          <DialogFooter className="border-t px-6 py-4">
-            <Button type="button" variant="secondary" disabled={busy} onClick={onCancel}>Cancel</Button>
+          <DialogFooter className={FORM_FOOTER_CLASSES}>
+            <Button type="button" variant="secondary" disabled={busy} onClick={() => cancel()}>Cancel</Button>
             <Button type="submit" disabled={busy}>
               {busy && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
               {mileageMessage ? 'Save anyway' : record ? 'Update Log' : 'Save Log'}

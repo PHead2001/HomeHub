@@ -1,10 +1,10 @@
 'use client';
 
 import * as React from 'react';
+import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -12,122 +12,147 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
+import { FieldError } from '@/components/field-error';
+import { deleteActionLabel } from '@/lib/maintenance/attachments';
 import type { HomeAsset, MaintenanceAttachment, MaintenanceLog, Vehicle } from '@/lib/types';
-import { getLogTitle } from './page-model';
+import { getAttachmentsForTarget, getLogTitle } from './page-model';
+import type { DeleteOutcome } from './use-maintenance-records';
 
-/** The page's delete confirmations: attachment, home asset, log and vehicle. */
+type DeleteCall = () => Promise<DeleteOutcome | void>;
+
+/**
+ * One delete confirmation (MA-11a): the action keeps the dialog open with a spinner until the
+ * operation answers; a failure is shown inside the dialog (Cancel and the action stay usable, so
+ * it can be retried); only success closes it (the caller clears the record).
+ */
+function ConfirmDelete({
+  open, onClose, title, description, actionLabel, busy, run, testId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  description: React.ReactNode;
+  actionLabel: string;
+  busy: boolean;
+  run: DeleteCall;
+  testId: string;
+}) {
+  // The error belongs to one opening: closing clears it (onClose), so a new opening starts clean.
+  const [error, setError] = useState('');
+  const confirm = async () => {
+    setError('');
+    const outcome = await run();
+    if (outcome && !outcome.ok) setError(outcome.message);
+  };
+  return (
+    <AlertDialog open={open} onOpenChange={(next) => { if (!next && !busy) { setError(''); onClose(); } }}>
+      <AlertDialogContent data-testid={testId} onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <FieldError id={`${testId}-error`} role="alert">{error}</FieldError>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          {/* A plain button: AlertDialogAction would close the dialog before the answer. */}
+          <Button
+            type="button"
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            disabled={busy}
+            aria-busy={busy || undefined}
+            onClick={() => void confirm()}
+          >
+            {busy && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+            {actionLabel}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/**
+ * The page's delete confirmations: attachment, home asset, log and vehicle. A record is deleted
+ * with its own files in one operation (MA-22, MA-4c); its logs stay as history and keep theirs.
+ * `attachments` (optional) lets the action name how many files go with it.
+ */
 export const DeleteDialogs = React.memo(function DeleteDialogs({
   attachmentToDelete, setAttachmentToDelete, deleteAttachment, deletingAttachmentId,
   assetToDelete, setAssetToDelete, deleteAsset,
   logToDelete, setLogToDelete, deleteLog,
   vehicleToDelete, setVehicleToDelete, deleteVehicle,
   deletingRecord,
+  attachments,
 }: {
   attachmentToDelete: MaintenanceAttachment | null;
   setAttachmentToDelete: (attachment: MaintenanceAttachment | null) => void;
-  deleteAttachment: (attachment: MaintenanceAttachment) => Promise<void>;
+  deleteAttachment: (attachment: MaintenanceAttachment) => Promise<DeleteOutcome | void>;
   deletingAttachmentId: string | null;
   assetToDelete: HomeAsset | null;
   setAssetToDelete: (asset: HomeAsset | null) => void;
-  deleteAsset: () => Promise<void>;
+  deleteAsset: DeleteCall;
   logToDelete: MaintenanceLog | null;
   setLogToDelete: (log: MaintenanceLog | null) => void;
-  deleteLog: () => Promise<void>;
+  deleteLog: DeleteCall;
   vehicleToDelete: Vehicle | null;
   setVehicleToDelete: (vehicle: Vehicle | null) => void;
-  deleteVehicle: () => Promise<void>;
+  deleteVehicle: DeleteCall;
   /** `{kind}:{id}` of the record being deleted. */
   deletingRecord: string | null;
+  /** All attachments (live): the confirmations count the record's own files. */
+  attachments?: MaintenanceAttachment[];
 }) {
+  const count = (targetType: 'home_asset' | 'vehicle' | 'maintenance_log', id: string | undefined) =>
+    attachments && id ? getAttachmentsForTarget(attachments, targetType, id).length : 0;
+  const assetFiles = count('home_asset', assetToDelete?.id);
+  const vehicleFiles = count('vehicle', vehicleToDelete?.id);
+  const logFiles = count('maintenance_log', logToDelete?.id);
+  const filesLine = (files: number, noun: string) => (attachments
+    ? files > 0 ? ` Its ${files} ${files === 1 ? 'attachment is' : 'attachments are'} deleted with the ${noun}.` : ''
+    : ` Its attachments are deleted with the ${noun}.`);
   return (
     <>
-    <AlertDialog open={!!attachmentToDelete} onOpenChange={(open) => !open && setAttachmentToDelete(null)}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete attachment {attachmentToDelete?.fileName}?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This permanently deletes the file and its maintenance attachment record. This action cannot be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={Boolean(deletingAttachmentId)}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            disabled={Boolean(deletingAttachmentId)}
-            onClick={() => attachmentToDelete && void deleteAttachment(attachmentToDelete)}
-          >
-            {deletingAttachmentId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Delete Attachment
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-
-    <AlertDialog open={!!assetToDelete} onOpenChange={(open) => !open && setAssetToDelete(null)}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete home asset {assetToDelete?.name}?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This removes the asset and its schedules. Historical logs remain as general maintenance records, and active reminders for this asset are resolved. Remove direct attachments first.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={Boolean(deletingRecord)}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            disabled={Boolean(deletingRecord)}
-            onClick={() => void deleteAsset()}
-          >
-            {deletingRecord?.startsWith('home_asset:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Delete Home Asset
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-
-    <AlertDialog open={!!logToDelete} onOpenChange={(open) => !open && setLogToDelete(null)}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete maintenance log?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This will permanently delete &quot;{logToDelete ? getLogTitle(logToDelete) : 'this log'}&quot;. This cannot be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            disabled={Boolean(deletingRecord)}
-            onClick={deleteLog}
-          >
-            {deletingRecord?.startsWith('log:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Delete Log
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-
-    <AlertDialog open={!!vehicleToDelete} onOpenChange={(open) => !open && setVehicleToDelete(null)}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete vehicle?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This removes &quot;{vehicleToDelete?.nickname || 'this vehicle'}&quot; and its schedules. Historical service logs remain as general maintenance records, and active reminders for this vehicle are resolved. Remove direct attachments first.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={Boolean(deletingRecord)}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            disabled={Boolean(deletingRecord)}
-            onClick={deleteVehicle}
-          >
-            {deletingRecord?.startsWith('vehicle:') && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Delete Vehicle
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+      <ConfirmDelete
+        open={!!attachmentToDelete}
+        onClose={() => setAttachmentToDelete(null)}
+        title={`Delete attachment ${attachmentToDelete?.fileName ?? ''}?`}
+        description="This permanently deletes the file and its maintenance attachment record. This action cannot be undone."
+        actionLabel="Delete Attachment"
+        busy={Boolean(deletingAttachmentId)}
+        run={() => (attachmentToDelete ? deleteAttachment(attachmentToDelete) : Promise.resolve())}
+        testId="delete-attachment-dialog"
+      />
+      <ConfirmDelete
+        open={!!assetToDelete}
+        onClose={() => setAssetToDelete(null)}
+        title={`Delete home asset ${assetToDelete?.name ?? ''}?`}
+        description={`This removes the asset and its schedules.${filesLine(assetFiles, 'asset')} Historical logs remain as general maintenance records and keep their files, and active reminders for this asset are resolved. This cannot be undone.`}
+        actionLabel={attachments ? deleteActionLabel('home_asset', assetToDelete?.name ?? '', assetFiles) : 'Delete Home Asset'}
+        busy={Boolean(deletingRecord?.startsWith('home_asset:'))}
+        run={deleteAsset}
+        testId="delete-asset-dialog"
+      />
+      <ConfirmDelete
+        open={!!logToDelete}
+        onClose={() => setLogToDelete(null)}
+        title="Delete maintenance log?"
+        description={`This will permanently delete "${logToDelete ? getLogTitle(logToDelete) : 'this log'}".${attachments ? (logFiles > 0 ? ` Its ${logFiles} ${logFiles === 1 ? 'file is' : 'files are'} deleted too.` : '') : ' Its files are deleted too.'} This cannot be undone.`}
+        actionLabel={attachments ? deleteActionLabel('maintenance_log', '', logFiles) : 'Delete Log'}
+        busy={Boolean(deletingRecord?.startsWith('log:'))}
+        run={deleteLog}
+        testId="delete-log-dialog"
+      />
+      <ConfirmDelete
+        open={!!vehicleToDelete}
+        onClose={() => setVehicleToDelete(null)}
+        title="Delete vehicle?"
+        description={`This removes "${vehicleToDelete?.nickname || 'this vehicle'}" and its schedules.${filesLine(vehicleFiles, 'vehicle')} Historical service logs remain as general maintenance records and keep their files, and active reminders for this vehicle are resolved. This cannot be undone.`}
+        actionLabel={attachments ? deleteActionLabel('vehicle', vehicleToDelete?.nickname ?? '', vehicleFiles) : 'Delete Vehicle'}
+        busy={Boolean(deletingRecord?.startsWith('vehicle:'))}
+        run={deleteVehicle}
+        testId="delete-vehicle-dialog"
+      />
     </>
   );
 });

@@ -305,12 +305,6 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     let deleteDialog = page.getByRole('alertdialog', { name: 'Delete home asset Test Boiler E2E?' });
     await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
     expect((await assetRef.get()).exists).toBe(true);
-    await page.getByRole('button', { name: 'Delete home asset Test Boiler E2E' }).click();
-    await page.getByRole('alertdialog', { name: 'Delete home asset Test Boiler E2E?' }).getByRole('button', { name: 'Delete Home Asset' }).click();
-    // The toast title itself: Radix also mirrors the toast into an assertive live region ("Notification Remove…").
-    await expect(page.getByText('Remove attachments first', { exact: true })).toBeVisible();
-    expect((await assetRef.get()).exists).toBe(true);
-
     await attachmentPanel.getByRole('button', { name: 'Delete attachment boiler-note.txt' }).click();
     deleteDialog = page.getByRole('alertdialog', { name: 'Delete attachment boiler-note.txt?' });
     await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
@@ -318,9 +312,17 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await page.getByRole('alertdialog', { name: 'Delete attachment boiler-note.txt?' }).getByRole('button', { name: 'Delete Attachment' }).click();
     await expect.poll(async () => (await household.collection('maintenance-attachments').where('targetId', '==', assetId).get()).size).toBe(0);
 
+    // MA-22: an asset with files is deleted with them in one confirmed operation (no longer blocked).
+    await attachmentPanel.locator('input[type="file"]').setInputFiles({
+      name: 'boiler-manual.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('Emulator-only maintenance manual.'),
+    });
+    await expect(attachmentPanel.getByText('boiler-manual.txt', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Delete home asset Test Boiler E2E' }).click();
-    await page.getByRole('alertdialog', { name: 'Delete home asset Test Boiler E2E?' }).getByRole('button', { name: 'Delete Home Asset' }).click();
+    await page.getByRole('alertdialog', { name: 'Delete home asset Test Boiler E2E?' }).getByRole('button', { name: /^Delete (Home Asset|Test Boiler E2E and its 1 attachment)$/ }).click();
     await expect.poll(async () => (await assetRef.get()).exists).toBe(false);
+    await expect.poll(async () => (await household.collection('maintenance-attachments').where('targetId', '==', assetId).get()).size).toBe(0);
     const preservedLog = await createdLog.docs[0].ref.get();
     expect(preservedLog.data()).toMatchObject({ targetType: 'general', formerTargetType: 'home_asset', formerTargetName: 'Test Boiler E2E' });
     expect(preservedLog.data()?.assetId).toBeUndefined();

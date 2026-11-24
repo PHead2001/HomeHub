@@ -20,6 +20,7 @@ import type { MarkDoneResult } from './reminder-list';
 import { formatDate, getScheduleCompletionName, trimOptional, type SaveNoticeState } from './page-model';
 import { useStableHandler } from './use-stable-handler';
 import { createPendingRequests } from '@/lib/maintenance/action-call';
+import { commitStagedReceipts, savedLogIdOf } from './receipt-staging';
 
 /** An unanswered request kept for the next press: same op id, same call, same handling. */
 type HeldRequest<T, R> = {
@@ -82,7 +83,11 @@ export function useMaintenanceOps({ householdId, onTargetSettled }: {
       const outcome = await callMaintenanceAction(householdId, call);
       if (outcome.kind === 'ok') {
         pendingRef.current.settle(key);
-        return { kind: 'ok', value: await handle(outcome.data) };
+        const value = await handle(outcome.data);
+        // Receipts picked in the log form go to the log the server just saved (MA-16).
+        const logId = key === 'log' ? savedLogIdOf(outcome.data) : null;
+        if (logId) commitStagedReceipts(logId);
+        return { kind: 'ok', value };
       }
       if (outcome.kind === 'failed') {
         pendingRef.current.settle(key);
