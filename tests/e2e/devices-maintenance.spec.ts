@@ -54,6 +54,11 @@ const forget = async (page: Page) => {
 const openMaintenance = async (page: Page) => {
   // The tablet page is shared by the tests: when an earlier test left it on Maintenance, stay there
   // (start over on Home first so each test begins from the default room view).
+  // A record sheet or prompt an earlier test left open is modal: close it first.
+  for (let i = 0; i < 3 && (await page.getByRole('dialog').count()) > 0; i++) {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+  }
   if (await page.getByTestId('tablet-view-maintenance').isVisible().catch(() => false)) {
     await page.getByRole('button', { name: 'Home', exact: true }).click();
   }
