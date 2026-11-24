@@ -130,6 +130,7 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
 
   test('MA-16/MA-30: a receipt is read with AI, confirmed without overwriting what was typed, and attached on save', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
+    test.setTimeout(90_000);
     await open(page, '/maintenance');
     // The page header's button (the dialog is titled "Add Maintenance Log").
     await page.getByRole('button', { name: 'Add Log', exact: true }).first().click();
@@ -148,6 +149,11 @@ test.describe('maintenance forms, receipts and deletes (M5/M6)', () => {
 
     await picker.getByRole('button', { name: 'Read receipt' }).click();
     const result = dialog.getByTestId('receipt-read-result');
+    const readError = dialog.getByTestId('receipt-read-error');
+    // The first call compiles the new server action in the dev server, which can take longer than
+    // the default 10 s; the reading itself is bounded at 30 s (then the error note shows instead).
+    await expect(result.or(readError)).toBeVisible({ timeout: 40_000 });
+    await expect(readError).toHaveCount(0);
     await expect(result).toContainText('Comfort Air Services');
     await expect(result).toContainText('you already entered one; yours stays');
     await result.getByRole('button', { name: 'Use these' }).click();

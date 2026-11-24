@@ -13,7 +13,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { downscaleImage } from '@/lib/images/downscale';
 import { RECEIPT_ACCEPT, checkMaintenanceFile, isHeicType } from '@/lib/maintenance/attachments';
 import {
-  RECEIPT_FIELD_LABELS, RECEIPT_READ_MAX_BYTES, RECEIPT_READ_MAX_EDGE, createReceiptReadGuard, receiptFieldsKept,
+  RECEIPT_FIELD_LABELS, RECEIPT_READ_MAX_BYTES, RECEIPT_READ_TIMEOUT, withReceiptReadDeadline, RECEIPT_READ_MAX_EDGE, createReceiptReadGuard, receiptFieldsKept,
   sanitizeReceiptFields, type ReceiptFields,
 } from '@/lib/maintenance/receipt-fill';
 import { OFFLINE_MESSAGE } from './maintenance-action-client';
@@ -114,6 +114,8 @@ export function ReceiptPicker({
     const token = guard.current.start();
     setRead({ kind: 'reading' });
     try {
+      // Never waits forever (MA-11k): the whole reading (downsizing, upload, model) is bounded.
+      const result = await withReceiptReadDeadline((async () => {
       const check = checkMaintenanceFile(entry.file);
       let payload: Blob = entry.file;
       let contentType = check.ok ? check.contentType : '';
@@ -129,10 +131,11 @@ export function ReceiptPicker({
         throw new Error(isHeicType(contentType) ? 'heic' : 'too_large');
       }
       const data = await toBase64(payload);
-      const result = unwrapAiActionResult(await readMaintenanceReceipt(
+      return unwrapAiActionResult(await readMaintenanceReceipt(
         { fileName: entry.file.name.slice(0, 200) || 'receipt', contentType: contentType as 'image/jpeg', dataBase64: data },
         await getAiActionContext(householdId),
       ));
+      })());
       if (!guard.current.isCurrent(token)) return;
       const fields = sanitizeReceiptFields(result);
       if (Object.keys(fields).length === 0) {
@@ -143,7 +146,9 @@ export function ReceiptPicker({
     } catch (readError) {
       if (!guard.current.isCurrent(token)) return;
       const reason = readError instanceof Error ? readError.message : '';
-      const message = reason === 'heic'
+      const message = reason === RECEIPT_READ_TIMEOUT
+        ? "No answer from the receipt reader. Fill in the details yourself; the receipt stays attached."
+        : reason === 'heic'
         ? "This browser can't read HEIC photos. Fill in the details yourself; the photo stays attached."
         : reason === 'too_large'
           ? 'This file is too large to read. Fill in the details yourself; it stays attached.'

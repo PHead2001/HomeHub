@@ -10,7 +10,7 @@ import {
 } from '../../src/lib/maintenance/form-sections';
 import { mileageFreshness, parseMileageInput } from '../../src/lib/maintenance/mileage-freshness';
 import {
-  RECEIPT_TEXT_LIMITS, createReceiptReadGuard, receiptFieldsKept, receiptFillPatch, sanitizeReceiptFields,
+  RECEIPT_READ_TIMEOUT, RECEIPT_TEXT_LIMITS, createReceiptReadGuard, withReceiptReadDeadline, receiptFieldsKept, receiptFillPatch, sanitizeReceiptFields,
 } from '../../src/lib/maintenance/receipt-fill';
 import { notesHash, storedSummaryOf } from '../../src/lib/maintenance/summary';
 import {
@@ -149,6 +149,12 @@ describe('reading a receipt (MA-30)', () => {
     assert.deepEqual(receiptFillPatch(fields, { cost: true }), { serviceProvider: 'Comfort Air', partsUsed: 'Filter' });
     assert.deepEqual(receiptFillPatch(fields, {}, { cost: true, serviceProvider: false, partsUsed: true }), { cost: '129.95', partsUsed: 'Filter' });
     assert.deepEqual(receiptFieldsKept(fields, { serviceProvider: true }), ['serviceProvider']);
+  });
+
+  test('a reading never hangs: it fails with the timeout after the deadline, and passes through in time', async () => {
+    await assert.rejects(withReceiptReadDeadline(new Promise(() => undefined), 20), (error: unknown) => (error as Error).message === RECEIPT_READ_TIMEOUT);
+    assert.equal(await withReceiptReadDeadline(Promise.resolve('ok'), 1_000), 'ok');
+    await assert.rejects(withReceiptReadDeadline(Promise.reject(new Error('boom')), 1_000), /boom/);
   });
 
   test('a late answer is ignored after the receipt changed, was removed, or the form closed', () => {

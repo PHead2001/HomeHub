@@ -106,3 +106,20 @@ export const RECEIPT_READ_MAX_BYTES = 512 * 1024;
 export const RECEIPT_READ_MAX_EDGE = 1600;
 /** Types the reader accepts. HEIC is read only after the browser converted it to JPEG. */
 export const RECEIPT_READ_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] as const;
+
+/** The longest a receipt reading may take before the form says so (the server's own AI timeout is 20 s). */
+export const RECEIPT_READ_DEADLINE_MS = 30_000;
+export const RECEIPT_READ_TIMEOUT = 'receipt_read_timeout';
+
+/**
+ * Bounds a reading (MA-11k: never hangs): after `ms` it rejects with RECEIPT_READ_TIMEOUT, so the
+ * form shows a truthful failure and stays usable; a late answer is then ignored by the read guard.
+ */
+export const withReceiptReadDeadline = async <T,>(work: Promise<T>, ms = RECEIPT_READ_DEADLINE_MS): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(RECEIPT_READ_TIMEOUT)), ms); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
