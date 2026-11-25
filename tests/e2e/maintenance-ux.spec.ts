@@ -300,6 +300,26 @@ test.describe('maintenance center UX', () => {
     expect(await page.evaluate(() => Date.now())).toBeGreaterThanOrEqual(midnight);
   });
 
+  test('the Undo toast leaves the page header reachable: Add Log takes a tap while it shows', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await open(page, '/maintenance?tab=reminders');
+    const filter = page.getByTestId('reminders-list').getByRole('listitem').filter({ hasText: 'Replace air filter' });
+    await filter.getByRole('checkbox', { name: 'Mark done: Replace air filter for Main HVAC System' }).click();
+    const toast = page.getByRole('region', { name: /Notifications/ }).getByRole('status').filter({ hasText: 'Marked done' });
+    await expect(toast).toBeVisible();
+    const add = page.getByRole('button', { name: 'Add Log' }).first();
+    const a = await add.boundingBox();
+    // Settled (the entrance slides in from above), the toast starts below Add Log.
+    await expect.poll(async () => (await toast.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(a!.y + a!.height);
+    // The header's own buttons are clear too, and Add Log takes the tap at its centre.
+    const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('button')?.textContent?.trim(), { x: a!.x + a!.width / 2, y: a!.y + a!.height / 2 });
+    expect(hit).toContain('Add Log');
+    await toast.getByRole('button', { name: 'Undo' }).click();
+    await expect.poll(async () => (await household.collection('home-assets').doc('hvac-main').get()).get('schedules')?.[0]?.nextDueDate).toBe('2026-08-01');
+  });
+
   test('M1: Mark done offers Undo for 10 s, which puts the schedule back and removes the log', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     await open(page, '/maintenance?tab=reminders');

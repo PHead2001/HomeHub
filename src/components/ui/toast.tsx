@@ -22,8 +22,11 @@ const ToastViewport = React.forwardRef<
       // notch/status bar; the viewport itself ignores pointer events so its empty
       // padding never blocks the header underneath. On a registered wall tablet
       // (`data-kiosk` on <html>) it starts below the 56 px top bar, so an Undo toast
-      // never covers Done, notices or settings there.
-      "pointer-events-none fixed inset-x-0 top-0 z-[100] mx-auto flex max-h-screen w-full max-w-[420px] flex-col gap-2 pb-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[calc(env(safe-area-inset-top)+0.75rem)] md:left-auto md:right-0 md:mx-0 md:pt-[calc(env(safe-area-inset-top)+1rem)] [[data-kiosk]_&]:top-14",
+      // never covers Done, notices or settings there. From md on a personal screen the first
+      // toast starts 9 rem down (top 8 rem plus the 1 rem padding), below the 56 px app header
+      // and the page-header row, so an Undo toast never
+      // covers the header's search and account buttons or a page's primary action (Add Log).
+      "pointer-events-none fixed inset-x-0 top-0 z-[100] mx-auto flex max-h-screen w-full max-w-[420px] flex-col gap-2 pb-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[calc(env(safe-area-inset-top)+0.75rem)] md:left-auto md:right-0 md:mx-0 md:top-32 md:max-h-[calc(100dvh-8rem)] md:pt-[calc(env(safe-area-inset-top)+1rem)] [[data-kiosk]_&]:top-14",
       className
     )}
     {...props}
