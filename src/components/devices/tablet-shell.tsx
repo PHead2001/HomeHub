@@ -48,7 +48,7 @@ import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
 import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tablet';
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
 import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, noTabletPinMessage, type DeviceRefusal } from '@/lib/devices/action-policy';
-import { rosterFrom, isOwnerOrAdmin, personMay, type RosterPerson } from '@/lib/devices/roster';
+import { rosterFrom, isOwnerOrAdmin, personMayUse, type RosterPerson } from '@/lib/devices/roster';
 import {
   currentActor,
   initialShellState,
@@ -692,7 +692,7 @@ function TabletFrame(props: {
     const policy = policyOf(request.capability);
     const sendable = canSend(request.capability);
     if (policy.levelClass === 'not_on_tablets' || policy.levelClass === 'never' || (!request.execute && !sendable)) {
-      // Not offered on tablets (everything but chores and Pets; pet create and photos too), as on the server.
+      // Not offered on tablets (shopping, pet create and photos, maintenance attachments, renewals and Update mileage, ...), as on the server.
       message('not_on_tablets');
       return { ok: false };
     }
@@ -706,7 +706,7 @@ function TabletFrame(props: {
       for (let attempt = 0; who && !actor; attempt += 1) {
         apply({ type: 'pick', memberUid: who.uid, now: Date.now() });
         // A face gets only that person's options (a child's face a child's, PE-17e); the server decides again.
-        if (!personMay(who, policy.permissions)) {
+        if (!personMayUse(who, policy)) {
           message('forbidden', who);
           return { ok: false };
         }

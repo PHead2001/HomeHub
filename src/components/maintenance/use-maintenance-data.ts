@@ -20,7 +20,17 @@ import {
  * listeners, so nothing re-reads after a write. `key` names the household and member; when
  * it changes or is null the listeners stop and nothing of the old key is shown.
  */
-export function useMaintenanceLiveData(householdId: string | null | undefined, key: string | null): MaintenanceLiveView & { retry: () => void } {
+export function useMaintenanceLiveData(
+  householdId: string | null | undefined,
+  key: string | null,
+  /**
+   * `recoverUnauthorizedAfterMs`: a registered wall tablet subscribes again this long after a
+   * settled refusal (`TABLET_DENIED_RECOVERY_MS`), as its other listeners do, instead of
+   * staying quiet (a section switched off and on again, M8b). Personal pages leave it unset.
+   */
+  options: { recoverUnauthorizedAfterMs?: number } = {},
+): MaintenanceLiveView & { retry: () => void } {
+  const recoverAfter = options.recoverUnauthorizedAfterMs;
   const [state, dispatch] = useReducer(liveReducer, key, (initialKey) => initialLiveState(initialKey));
   const handles = useRef<ResilientHandle[]>([]);
 
@@ -49,9 +59,16 @@ export function useMaintenanceLiveData(householdId: string | null | undefined, k
             });
           },
           confirmed: (snapshot) => !snapshot.metadata.fromCache,
+          ...(recoverAfter !== undefined ? { recoverUnauthorizedAfterMs: recoverAfter } : {}),
           status: (status) => {
             if (status.kind === 'live') return;
             if (status.kind === 'retrying') console.warn(`Maintenance ${name} listener failed; retrying in ${status.delayMs} ms.`);
+            // A refused listener that subscribes again (a tablet's recovery) must pass on its first
+            // answer, even an empty one: that answer ends the refusal (liveReducer).
+            if (status.kind === 'unauthorized') {
+              answered = false;
+              fromServer = false;
+            }
             dispatch({ type: 'failure', key, session, collection: name, failure: status.kind });
           },
         },
@@ -62,7 +79,7 @@ export function useMaintenanceLiveData(householdId: string | null | undefined, k
       started.forEach((handle) => handle.stop());
       if (handles.current === started) handles.current = [];
     };
-  }, [householdId, key]);
+  }, [householdId, key, recoverAfter]);
 
   const view = useMemo(() => liveView(state, key), [state, key]);
   const retry = useMemo(() => () => handles.current.forEach((handle) => handle.retryNow()), []);

@@ -4,17 +4,18 @@
 // shell"). Home is the household resting view: the dashboard drawn for the household
 // (the house, the household brief with household totals and no greeting by name, the
 // tiles of the sections that are on; HP-3b, HP-21, HP-32b, WT-5a). The section views are
-// read-only (Shopping, Maintenance and Calendar stay read-only on tablets, JC-24) except
-// Chores, whose rows have Done and Take (device actions, F4a), and Pets, whose rows have Feed
-// (and hold) and Care (F4b-1), built from the same live
-// household data, so they show only what the tablet's rules let it read.
+// read-only (Shopping and Calendar stay read-only on tablets, JC-24) except Chores, whose rows
+// have Done and Take (device actions, F4a), Pets, whose rows have Feed (and hold) and Care
+// (F4b-1), and Maintenance (M8b: tablet-maintenance.tsx, the personal page's Needs doing with
+// Done, Snooze and Log service), built from the same live household data, so they show only
+// what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
 import { tabletListener } from '@/lib/devices/tablet-listener';
 import type { QuerySnapshot } from 'firebase/firestore';
-import { Bell, CalendarDays, Check, CheckSquare, Clock, Hand, HeartPulse, PawPrint, ShoppingCart, UtensilsCrossed, Wrench } from 'lucide-react';
+import { Bell, CalendarDays, Check, CheckSquare, Clock, Hand, HeartPulse, PawPrint, ShoppingCart, UtensilsCrossed } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -33,11 +34,11 @@ import { cn } from '@/lib/utils';
 import {
   calendarSection,
   choresSection,
-  maintenanceSection,
   petsSection,
   shoppingListsSection,
 } from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
+import { TabletMaintenanceView } from './tablet-maintenance';
 import { TabletMedicationChips, TabletPetSheet, usePetDocument } from './tablet-pet-sheet';
 import { useTabletSubmit } from './use-tablet-submit';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -417,19 +418,6 @@ function ShoppingView({ listId }: { listId?: string }) {
   );
 }
 
-function MaintenanceView() {
-  const { data } = useTablet();
-  const items = maintenanceSection(data.sectionFacts ?? {});
-  const status = loadingOr(Boolean(items), data.failed.has('maintenance'));
-  return (
-    <Section title="Maintenance" icon={Wrench} testId="tablet-view-maintenance" empty={status ?? (items && items.length === 0 ? 'Nothing needs attention.' : null)}>
-      <ul className="space-y-2">
-        {items?.map((item, index) => <Row key={`${item.label}-${index}`} title={item.label} detail={`${item.statusLabel} · ${item.detail}`} tone={item.overdue ? 'warn' : null} />)}
-      </ul>
-    </Section>
-  );
-}
-
 /** Calendar has no data of its own: upcoming chores and maintenance from the sections that are on. */
 function CalendarView() {
   const { data, settings } = useTablet();
@@ -478,7 +466,7 @@ export function TabletView() {
     case 'shopping':
       return <ShoppingView listId={view.listId} />;
     case 'maintenance':
-      return <MaintenanceView />;
+      return <TabletMaintenanceView />;
     case 'calendar':
       return <CalendarView />;
     default:

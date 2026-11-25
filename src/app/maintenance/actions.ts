@@ -24,10 +24,12 @@ import {
   undoMaintenanceCompletionAs,
   undoMaintenanceSnoozeAs,
   renewVehicleDocumentAs,
+  undoMaintenanceLogAs,
   undoVehicleMileageAs,
   undoVehicleRenewalAs,
   updateVehicleMileageAs,
   type CompleteInput,
+  type LogUndoResult,
   type MileageInput,
   type MileageResult,
   type RenewInput,
@@ -154,6 +156,11 @@ export async function saveMaintenanceLog(input: Context & { save: SaveInput }): 
     // The reading raises the vehicle's odometer only for members who may edit vehicles.
     user => saveMaintenanceLogAs(adminDb, user.householdId, input.save, contextOf(user), { applyVehicleReading: Boolean(user.permissions['maintenance.edit']) }),
   );
+}
+
+/** Undoes the caller's own new log within the Undo window (maintenance.createLogs, as creating it). */
+export async function undoMaintenanceLog(input: Context & { opId: string }): Promise<MaintenanceActionResult<LogUndoResult>> {
+  return run(input, { opId: input?.opId }, () => ['maintenance.createLogs'], user => undoMaintenanceLogAs(adminDb, user.householdId, { opId: input.opId }, contextOf(user)));
 }
 
 /** Creates or edits a home asset (maintenance.edit). */

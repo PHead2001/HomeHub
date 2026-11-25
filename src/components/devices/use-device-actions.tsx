@@ -74,6 +74,17 @@ import {
   type DoseIntent,
   type FeedIntent,
 } from '@/app/pets/device-actions';
+import {
+  completeFromTabletAction,
+  deleteLogFromTabletAction as deleteMaintenanceLogFromTabletAction,
+  deleteRecordFromTabletAction,
+  editSchedulesFromTabletAction,
+  logFromTabletAction,
+  snoozeFromTabletAction,
+  undoCompleteFromTabletAction,
+  undoLogFromTabletAction,
+  undoSnoozeFromTabletAction,
+} from '@/app/maintenance/device-actions';
 import type { TabletActor } from './tablet-context';
 
 type Answer = { ok: true; data: unknown } | { ok: false; code: DeviceRefusal; retryAfterSec?: number };
@@ -116,9 +127,28 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
   'pets.slots.edit': (base, intent) => saveMealPlanFromTabletAction({ ...base, petId: String(intent.petId ?? ''), rows: Array.isArray(intent.rows) ? intent.rows : [] }),
   'pets.profile.edit': (base, intent) => editPetProfileFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof editPetProfileFromTabletAction>[0]), ...base }),
   'pets.pet.delete': (base, intent) => deletePetFromTabletAction({ ...base, petId: String(intent.petId ?? '') }),
+  // Maintenance (M8b): Done, Log service and Snooze with their Undo (face), the schedule edit and
+  // the deletes (PIN). An Undo that changed nothing (files on the log, completed again since) is a
+  // refusal here, so the tablet never says "Undone." for it.
+  'maintenance.complete': (base, intent) => completeFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof completeFromTabletAction>[0]), ...base }),
+  'maintenance.complete.undo': (base) => undoCompleteFromTabletAction(base).then(maintenanceUndoAnswer),
+  'maintenance.log': (base, intent) => logFromTabletAction({ ...base, values: (intent.values ?? {}) as Parameters<typeof logFromTabletAction>[0]['values'] }),
+  'maintenance.log.undo': (base) => undoLogFromTabletAction(base).then(maintenanceUndoAnswer),
+  'maintenance.snooze': (base, intent) => snoozeFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof snoozeFromTabletAction>[0]), ...base }),
+  'maintenance.snooze.undo': (base) => undoSnoozeFromTabletAction(base).then(maintenanceUndoAnswer),
+  'maintenance.editSchedules': (base, intent) => editSchedulesFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof editSchedulesFromTabletAction>[0]), ...base }),
+  'maintenance.log.delete': (base, intent) => deleteMaintenanceLogFromTabletAction({ ...base, logId: String(intent.logId ?? '') }),
+  'maintenance.record.delete': (base, intent) => deleteRecordFromTabletAction({ ...base, targetType: intent.targetType === 'vehicle' ? 'vehicle' : 'home_asset', targetId: String(intent.targetId ?? '') }),
 };
 
 export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDERS[capability]);
+
+/** A maintenance Undo answered without undoing (`has_attachments`): a refusal, never "Undone.". */
+function maintenanceUndoAnswer(answer: Answer): Answer {
+  if (!answer.ok) return answer;
+  const status = (answer.data as { status?: unknown } | null)?.status;
+  return status === 'has_attachments' ? { ok: false, code: 'not_undoable' } : answer;
+}
 
 const SYNC_EVERY_MS = 30_000;
 const UUID_OP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

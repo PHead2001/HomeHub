@@ -9,12 +9,16 @@ import { queueAllowed } from '../../src/lib/devices/offline-queue';
 // and queue decisions that follow from the proven Undo and the points-PIN setting.
 
 describe('what the tablet sends', () => {
-  it('sends the chore capabilities and every Pets capability (F4b-1, F4b-2) but pet create, photos and the separate slot confirmation', () => {
+  it('sends the chore capabilities, every Pets capability (F4b-1, F4b-2) but pet create, photos and the separate slot confirmation, and the maintenance actions with a tablet action (M8b)', () => {
     const notSent = new Set(['pets.pet.create', 'pets.photo.upload', 'pets.slots.confirm']);
     const expected = [
       'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
       ...DEVICE_CAPABILITIES.filter((capability) => capability.startsWith('pets.') && !notSent.has(capability)),
+      'maintenance.complete', 'maintenance.complete.undo', 'maintenance.log', 'maintenance.log.undo', 'maintenance.snooze', 'maintenance.snooze.undo',
+      'maintenance.editSchedules', 'maintenance.log.delete', 'maintenance.record.delete',
     ].sort();
+    // Attachments are not on tablets: their delete is classified but never sent.
+    assert.equal(SENDABLE_CAPABILITIES.has('maintenance.attachment.delete'), false);
     assert.deepEqual([...SENDABLE_CAPABILITIES].sort(), expected);
     for (const capability of notSent) assert.equal(SENDABLE_CAPABILITIES.has(capability as never), false, capability);
   });

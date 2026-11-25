@@ -173,8 +173,8 @@ describe("a face gets only that person's options (PE-17e)", () => {
   });
 
   it('guards: the shell refuses an option the chosen person lacks before sending; quick add offers only theirs', () => {
-    assert.match(read('src/components/devices/tablet-shell.tsx'), /if \(!personMay\(who, policy\.permissions\)\) \{\s*message\('forbidden', who\);/);
-    assert.match(read('src/components/devices/tablet-quick-add.tsx'), /personMay\(remembered, policyOf\(intent\.capability\)\.permissions\)/);
+    assert.match(read('src/components/devices/tablet-shell.tsx'), /if \(!personMayUse\(who, policy\)\) \{\s*message\('forbidden', who\);/);
+    assert.match(read('src/components/devices/tablet-quick-add.tsx'), /personMayUse\(remembered, policyOf\(intent\.capability\)\)/);
   });
 });
 
