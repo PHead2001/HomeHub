@@ -196,7 +196,10 @@ function TabletLogServiceDialog({ entry, assets, vehicles, today, onReverted, on
   const [mileage, setMileage] = useState(typeof vehicle?.currentMileage === 'number' ? String(vehicle.currentMileage) : '');
   const [error, setError] = useState<string | null>(null);
   const form = useTabletSubmit();
-  useUnsavedInput(notes.trim().length > 0 || cost.trim().length > 0 || provider.trim().length > 0);
+  // Every editable field counts, against the values the form opened with (PR #212 review).
+  const [initial] = useState(() => ({ title, mileage }));
+  useUnsavedInput(title !== initial.title || mileage !== initial.mileage
+    || notes.trim().length > 0 || cost.trim().length > 0 || provider.trim().length > 0);
   useBackCloses(true, onClose);
   const name = asset?.name ?? vehicle?.nickname ?? 'General';
   const save = async () => {

@@ -100,4 +100,10 @@ describe('unsaved schedule edits on a tablet (PR #212 review)', () => {
     assert.match(dialog.slice(0, 2000), /useUnsavedInput\(dirty\)/);
     assert.match(dialog.slice(0, 2000), /const dirty = name !== initial\.name/);
   });
+
+  it('the log form counts its title and odometer reading as unsaved input too', () => {
+    const source = readFileSync('src/components/devices/tablet-maintenance.tsx', 'utf8');
+    const dialog = source.slice(source.indexOf('function TabletLogServiceDialog'));
+    assert.match(dialog.slice(0, 2500), /useUnsavedInput\(title !== initial\.title \|\| mileage !== initial\.mileage/);
+  });
 });
