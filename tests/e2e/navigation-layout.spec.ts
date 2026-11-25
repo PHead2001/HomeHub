@@ -89,13 +89,7 @@ test.describe('navigation and layout regressions', () => {
           // The sticky detail column scrolls on its own: its last control can be brought into view.
           const detail = page.getByTestId(tab === 'assets' ? 'asset-detail' : 'vehicle-detail');
           await expect(detail).toBeVisible();
-          const bottom = await detail.evaluate((element) => {
-            const column = element.parentElement!;
-            column.scrollTop = column.scrollHeight;
-            return { columnBottom: column.getBoundingClientRect().bottom, detailBottom: element.getBoundingClientRect().bottom };
-          });
-          // Scroll the page to the end too (the column is sticky inside it).
-          // Scroll to the real end: the page can still grow while it settles (late images, counts), so
+          // Scroll the page to its real end: the page can still grow while it settles (late images, counts), so
           // scroll again until the bottom is reached.
           for (let i = 0; i < 10; i++) {
             const atEnd = await page.evaluate(() => {
@@ -105,15 +99,20 @@ test.describe('navigation and layout regressions', () => {
             await page.waitForTimeout(150);
             if (atEnd && await page.evaluate(() => Math.ceil(scrollY + innerHeight) >= document.documentElement.scrollHeight - 1)) break;
           }
-          const after = await detail.evaluate((element) => element.getBoundingClientRect().bottom);
-          // On failure, say what the page looked like (scroll height, position, the column's box).
-          const metrics = await detail.evaluate((element) => {
-            const column = element.parentElement!.getBoundingClientRect();
-            return { docH: document.documentElement.scrollHeight, scrollY: Math.round(scrollY), innerH: innerHeight,
-              colTop: Math.round(column.top), colH: Math.round(column.height), bodyOverflow: getComputedStyle(document.body).overflow,
-              dialogs: document.querySelectorAll('[role="dialog"]').length };
+          // Reachable means: at the page's end the scrolling column is wholly on screen, and its own
+          // content scrolls to its last line inside it (measured together, after any re-render).
+          const reach = await detail.evaluate((element) => {
+            const column = element.parentElement!;
+            column.scrollTop = column.scrollHeight;
+            const box = column.getBoundingClientRect();
+            return {
+              columnBottom: Math.round(box.bottom),
+              contentEnd: Math.round(element.getBoundingClientRect().bottom),
+              docH: document.documentElement.scrollHeight, scrollY: Math.round(scrollY), colTop: Math.round(box.top), colH: Math.round(box.height),
+            };
           });
-          expect(Math.min(bottom.detailBottom, after), `${tab} at ${width}x${height}: the detail's bottom is reachable ${JSON.stringify(metrics)}`).toBeLessThanOrEqual(height + 1);
+          expect(reach.columnBottom, `${tab} at ${width}x${height}: the detail column is wholly on screen ${JSON.stringify(reach)}`).toBeLessThanOrEqual(height + 1);
+          expect(reach.contentEnd, `${tab} at ${width}x${height}: the detail scrolls to its end inside the column ${JSON.stringify(reach)}`).toBeLessThanOrEqual(reach.columnBottom + 1);
         }
       }
     }
