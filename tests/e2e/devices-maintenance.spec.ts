@@ -19,7 +19,8 @@ import {
 // README.md, "Maintenance on the tablet"; WT-4, WT-6, WT-20, WT-22, MA-26): at 1263x818 the
 // paired tablet shows Maintenance when its section is on, Needs doing filtered to the tablet's
 // room with "All rooms"; Done for a face-chosen person with Undo; a person without the
-// permission sees the refusal; a schedule edit asks for the PIN; offline Done waits and syncs
+// permission sees the refusal; a schedule edit asks for the PIN; Snooze (face, Undo) and Log
+// service with the odometer on a vehicle (face, Undo); offline Done waits and syncs
 // once; the section switched off leaves the rail; a removed tablet stops.
 
 const desktopOnly = (testInfo: TestInfo) => test.skip(testInfo.project.name !== 'desktop-chromium', 'tablet journeys run once, in their own tablet-sized browser');
@@ -44,6 +45,24 @@ const seedAsset = async (id: string, name: string, location: string) => {
   });
 };
 const filterOf = async (id: string) => ((await asset(id).get()).get('schedules') as Array<Record<string, unknown>>)[0];
+
+// A vehicle (vehicles have no room: shown under All rooms) with an oil change due today by
+// date and every 5,000 mi, so completing it asks for the odometer (MA-6a). Named like the
+// "Test … E2E" records the maintenance-ux spec sweeps up if a run leaves it behind.
+const CAR_ID = 'tab-car';
+const CAR_NAME = 'Test Tablet Car E2E';
+const car = () => householdRef.collection('vehicles').doc(CAR_ID);
+const seedCar = async () => {
+  await car().set({
+    householdId: householdRef.id, nickname: CAR_NAME, make: 'Honda', model: 'Fit', year: 2018, status: 'active', currentMileage: 24_000, createdAt: 'x', updatedAt: 'x',
+    serviceSchedules: [{ id: 'oil', mode: 'scheduled', serviceName: 'Oil change tab-car', intervalMiles: 5000, lastCompletedMileage: 20_000, nextDueMileage: 25_000, nextDueDate: chicagoDay() }],
+  });
+};
+const oilOf = async () => ((await car().get()).get('serviceSchedules') as Array<Record<string, unknown>>)[0];
+const chicagoDayPlus = (days: number) => {
+  const [year, month, day] = chicagoDay().split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+};
 
 // Ends the remembered face, if one is showing (a click on an absent button would wait out the test).
 const forget = async (page: Page) => {
@@ -90,7 +109,9 @@ test.afterAll(async () => {
   await Promise.all(seeded.map((id) => asset(id).delete().catch(() => undefined)));
   const logs = await householdRef.collection('maintenance').where('assetId', 'in', ['tab-furnace', 'tab-garage', 'tab-offline']).get();
   // (the record-sheet logs tab-log-2020..2025 are on tab-furnace)
-  await Promise.all(logs.docs.map((d) => d.ref.delete()));
+  const carLogs = await householdRef.collection('maintenance').where('vehicleId', '==', CAR_ID).get();
+  await Promise.all([...logs.docs, ...carLogs.docs].map((d) => d.ref.delete()));
+  await car().delete().catch(() => undefined);
   await householdRef.update({ devicePolicy: { pointsPin: 'off' } }).catch(() => undefined);
   await restoreHousehold();
 });
@@ -196,6 +217,67 @@ test('the record sheet lists the newest logs; a delete is confirmed first, even 
   if (await page.getByTestId('pin-pad').isVisible().catch(() => false)) await enterPin(page, OWNER_PIN);
   await expect.poll(async () => (await logs.doc('tab-log-2025').get()).exists, { timeout: 15_000 }).toBe(false);
   await page.keyboard.press('Escape');
+});
+
+test('Snooze for a face-chosen person (no PIN): "Snoozed until" shows, and Undo puts the due day back', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  await seedAsset('tab-snooze', 'Kitchen vent', 'Kitchen');
+  const page = tabletPage();
+  await forget(page);
+  await openMaintenance(page);
+  await page.getByRole('button', { name: 'Snooze 1 week: Filter tab-snooze for Kitchen vent' }).click();
+  await pick(page, OWNER_UID);
+  await expect(page.getByTestId('pin-pad')).toHaveCount(0);
+  const week = chicagoDayPlus(7);
+  await expect.poll(async () => (await filterOf('tab-snooze')).snoozedUntil, { timeout: 15_000 }).toBe(week);
+  expect((await filterOf('tab-snooze')).nextDueDate).toBe(week);
+  // The card stays in Needs doing, muted, saying until when (once the due-today card has
+  // finished leaving: its status is part of its key, so the old card animates out).
+  const card = page.getByTestId('tablet-maintenance-needs').getByRole('listitem').filter({ hasText: 'Filter tab-snooze' });
+  await expect(card).toHaveCount(1);
+  await expect(card).toHaveAttribute('data-snoozed', 'true');
+  await expect(card).toContainText('Snoozed until');
+  // This snooze's own Undo (an earlier toast may still be up).
+  await page.locator('li').filter({ hasText: 'Filter tab-snooze for Kitchen vent' }).getByTestId('tablet-undo').first().click();
+  await expect.poll(async () => (await filterOf('tab-snooze')).nextDueDate, { timeout: 15_000 }).toBe(chicagoDay());
+  expect((await filterOf('tab-snooze')).snoozedUntil).toBeUndefined();
+  await expect(card).toHaveCount(1);
+  await expect(card).not.toContainText('Snoozed until');
+});
+
+test('Log service on a vehicle service due by mileage asks for the odometer, records the tablet and raises the odometer; Undo reverts', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  await seedCar();
+  const page = tabletPage();
+  await forget(page);
+  await openMaintenance(page);
+  // Vehicles have no room: they are listed under All rooms.
+  await page.getByRole('button', { name: 'All rooms' }).click();
+  await page.getByRole('button', { name: `Log service: Oil change tab-car for ${CAR_NAME}` }).click();
+  const dialog = page.getByTestId('tablet-maintenance-log');
+  await expect(dialog).toBeVisible();
+  // The odometer prompt, prefilled with the recorded reading.
+  const odometer = dialog.getByTestId('tablet-maintenance-log-mileage');
+  await expect(odometer).toHaveValue('24000');
+  await odometer.fill('25100');
+  await dialog.getByTestId('tablet-maintenance-log-save').click();
+  await pick(page, OWNER_UID);
+  await expect(page.getByTestId('pin-pad')).toHaveCount(0);
+  await expect.poll(async () => ((await oilOf()).lastCompletion as { byUid?: string } | undefined)?.byUid, { timeout: 15_000 }).toBe(OWNER_UID);
+  expect(await oilOf()).toMatchObject({ lastCompletedMileage: 25_100, nextDueMileage: 30_100, lastCompletedDate: chicagoDay() });
+  // The owner holds maintenance.edit: the reading raises the vehicle's odometer.
+  expect((await car().get()).get('currentMileage')).toBe(25_100);
+  const logs = await householdRef.collection('maintenance').where('vehicleId', '==', CAR_ID).get();
+  expect(logs.size).toBe(1);
+  expect(logs.docs[0].get('mileage')).toBe(25_100);
+  expect(logs.docs[0].get('doneByUid')).toBe(OWNER_UID);
+  expect(logs.docs[0].get('deviceAttribution')).toMatchObject({ deviceId: tablet!.deviceId, actorUid: OWNER_UID, level: 'face' });
+  await page.locator('li').filter({ hasText: `Oil change tab-car for ${CAR_NAME}` }).getByTestId('tablet-undo').first().click();
+  await expect.poll(async () => (await householdRef.collection('maintenance').where('vehicleId', '==', CAR_ID).get()).size, { timeout: 15_000 }).toBe(0);
+  expect(await oilOf()).toMatchObject({ lastCompletedMileage: 20_000, nextDueMileage: 25_000, nextDueDate: chicagoDay() });
+  expect((await oilOf()).lastCompletion).toBeUndefined();
+  expect((await car().get()).get('currentMileage')).toBe(24_000);
+  await page.getByRole('button', { name: /^Kitchen, / }).click();
 });
 
 test('offline: Done waits on the tablet and syncs once when the connection is back', async ({}, testInfo) => {

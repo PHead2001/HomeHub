@@ -17,10 +17,12 @@
  * - repeating chores: a chore template with the Chores dialog's recurrence shape
  *   (`repeatingChoreTemplate`), an id that is always new (`quickCreateId`), and the
  *   same "new repeating chore" notification; server upkeep creates the instances;
- * - maintenance logs: a routine log like the Maintenance "Add log" form
- *   (`quickMaintenanceLog`), with the odometer reading on the vehicle's log.
- * Firestore rules check the same permissions as on those screens (chores.create,
- * maintenance.createLogs). Nothing is written until the person confirms the preview.
+ * - maintenance logs: the Maintenance "Add log" form's server operation
+ *   (`saveMaintenanceLog`, values from `quickMaintenanceValues`), with the odometer
+ *   reading on the vehicle's log; offline, a queued client write (`quickMaintenanceLog`).
+ * Firestore rules (and the server operation) check the same permissions as on those
+ * screens (chores.create, maintenance.createLogs). Nothing is written until the person
+ * confirms the preview.
  */
 import { Timestamp, collection, doc, limit, orderBy, query, setDoc, where, writeBatch } from 'firebase/firestore';
 import type { QuickAddPet } from '@/lib/dashboard/quick-add';
@@ -47,7 +49,12 @@ import { assigneeFields } from '@functions/shared/assignee';
 import { publicDisplayName } from '@/lib/member-directory';
 import type { Chore, ShoppingListItem, User } from '@/lib/types';
 import type { MaintenanceTarget, QuickAddList, QuickAddMember, QuickAddRepeat, QuickAddRoom } from '@/lib/dashboard/quick-add';
-import { quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '@/lib/dashboard/quick-add-writes';
+import {
+  quickCreateId, quickMaintenanceLog, quickMaintenanceNext, quickMaintenanceValues, recurrenceFromRepeat, repeatingChoreTemplate, type QuickMaintenanceRequest, type QuickMaintenanceValues,
+} from '@/lib/dashboard/quick-add-writes';
+import { saveMaintenanceLog } from '@/app/maintenance/actions';
+import { callMaintenanceAction, newOpId } from '@/components/maintenance/maintenance-action-client';
+import { householdToday } from '@/lib/household-zone';
 
 export async function addShoppingItems(
   householdId: string,
@@ -318,31 +325,58 @@ export async function createRepeatingChore({
   return { templateId, status };
 }
 
-/** A maintenance log, as the Maintenance "Add log" form writes it (routine, dated today). */
+export type QuickMaintenanceOutcome =
+  /** The server saved it (or had saved it: a replay of the same op id). */
+  | { status: 'saved'; logId: string; values: QuickMaintenanceValues }
+  /** Offline before sending: the client write is queued and syncs on reconnect. */
+  | { status: 'queued'; logId: string; values: QuickMaintenanceValues }
+  /** No answer in time: it may have been saved. Confirm resends `request` (same op id). */
+  | { status: 'no_answer'; request: QuickMaintenanceRequest }
+  /** Offline after an unanswered try: nothing is queued, so it can never be saved twice. */
+  | { status: 'needs_connection'; request: QuickMaintenanceRequest }
+  /** A definite refusal from the server, in its own words. */
+  | { status: 'failed'; message: string };
+
+/**
+ * A maintenance log from the palette, through the same server operation as the Maintenance
+ * "Add log" form (`saveMaintenanceLog`, MA-6c/MA-20): `doneByUid`/`doneByName` from the
+ * verified caller, a vehicle reading raising `currentMileage` by the max rule for members
+ * with `maintenance.edit`, and exactly once per op id. `held` is the request of an earlier
+ * unanswered try of the same preview: it is resent as is. Offline before sending (and with
+ * nothing held), the log is written with the client SDK and queued, as before; that log has
+ * no `doneBy` and does not raise the odometer.
+ */
 export async function logMaintenance({
   householdId,
   title,
   mileage,
   target,
+  timeZone,
+  held = null,
   onLateError,
 }: {
   householdId: string;
   title: string;
   mileage: number | null;
   target: MaintenanceTarget | null;
+  timeZone?: string | null;
+  held?: QuickMaintenanceRequest | null;
   onLateError: (error: unknown) => void;
-}): Promise<{ logId: string; status: 'saved' | 'queued' }> {
+}): Promise<QuickMaintenanceOutcome> {
+  const date = householdToday(timeZone);
+  const request: QuickMaintenanceRequest = held ?? { opId: newOpId(), values: quickMaintenanceValues({ title, date, mileage, target }) };
+  const outcome = await callMaintenanceAction(householdId, (context) => saveMaintenanceLog({ ...context, save: { opId: request.opId, values: request.values } }));
+  const next = quickMaintenanceNext(outcome.kind, held !== null);
+  // The values actually sent (a resent request keeps the target it was first confirmed with).
+  if (next === 'saved' && outcome.kind === 'ok') return { status: 'saved', logId: outcome.data.id, values: request.values };
+  if (next === 'failed' && outcome.kind === 'failed') return { status: 'failed', message: outcome.message };
+  if (next === 'hold') return { status: 'no_answer', request };
+  if (next === 'needs_connection') return { status: 'needs_connection', request };
+
   const logs = collection(db, 'households', householdId, 'maintenance');
   // Always a new document (see createRepeatingChore): never overwrites a log.
   const logId = quickCreateId(title, doc(logs).id, 'log');
-  const data = quickMaintenanceLog({
-    householdId,
-    title,
-    date: format(new Date(), 'yyyy-MM-dd'),
-    mileage,
-    target,
-    nowIso: new Date().toISOString(),
-  });
+  const data = quickMaintenanceLog({ householdId, title, date, mileage, target, nowIso: new Date().toISOString() });
   const status = await awaitWriteUnlessOffline(setDoc(doc(logs, logId), data), onLateError);
-  return { logId, status };
+  return { status, logId, values: request.values };
 }

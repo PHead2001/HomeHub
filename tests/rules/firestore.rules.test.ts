@@ -2718,7 +2718,7 @@ describe('content shapes: maintenance', () => {
   const ref = (user: Identity, name: string, id: string) => doc(col(user, name), id);
   const nowIso = '2026-08-01T12:00:00.000Z';
   // Shapes older pages wrote (handleSaveLog after cleanForFirestore, applyScheduleCompletion; now server actions,
-  // M1) and the palette still writes (quick-add-writes.ts quickMaintenanceLog); offline queues can still replay them.
+  // M1) and the palette still writes offline (quick-add-writes.ts quickMaintenanceLog; online it uses the server action); offline queues can still replay them.
   const formLog = (overrides: Record<string, unknown> = {}) => ({
     householdId: householdA, targetType: 'vehicle', vehicleId: 'car', title: 'Oil change', item: 'Oil change',
     date: '2026-08-01', type: 'routine', notes: 'Synthetic', cost: 79.99, partsUsed: 'Filter', serviceProvider: 'Shop',
