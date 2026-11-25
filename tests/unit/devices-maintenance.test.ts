@@ -77,7 +77,8 @@ describe('answers', () => {
     const source = readFileSync('src/components/devices/use-device-actions.tsx', 'utf8');
     assert.match(source, /status === 'has_attachments' \? \{ ok: false, code: 'not_undoable' \}/);
     for (const undo of ['maintenance.complete.undo', 'maintenance.log.undo', 'maintenance.snooze.undo']) {
-      assert.match(source, new RegExp(`'${undo.replace(/\./g, '\\.')}': \\(base\\) => [a-zA-Z]+\\(base\\)\\.then\\(maintenanceUndoAnswer\\)`), undo);
+      const escaped = undo.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+      assert.match(source, new RegExp(`'${escaped}': \\(base\\) => [a-zA-Z]+\\(base\\)\\.then\\(maintenanceUndoAnswer\\)`), undo);
     }
   });
 });
@@ -89,5 +90,14 @@ describe('the room the view starts in (MA-26)', () => {
     // The record's room changed since "All rooms" was chosen: the new room applies again.
     assert.deepEqual(maintenanceRoomView('Garage', { room: 'Kitchen', all: true }), { room: 'Garage', all: false });
     assert.deepEqual(maintenanceRoomView('  ', null), { room: null, all: true });
+  });
+});
+
+describe('unsaved schedule edits on a tablet (PR #212 review)', () => {
+  it('the schedule dialog registers its unsaved input, so idle return and reloads wait for it', () => {
+    const source = readFileSync('src/components/devices/tablet-maintenance.tsx', 'utf8');
+    const dialog = source.slice(source.indexOf('function TabletScheduleEditDialog'));
+    assert.match(dialog.slice(0, 2000), /useUnsavedInput\(dirty\)/);
+    assert.match(dialog.slice(0, 2000), /const dirty = name !== initial\.name/);
   });
 });

@@ -405,6 +405,11 @@ function TabletScheduleEditDialog({ target, onClose }: { target: ScheduleComplet
   const [error, setError] = useState<string | null>(null);
   const form = useTabletSubmit();
   useBackCloses(true, onClose);
+  // Unsaved edits keep the tablet from idle-returning or reloading under the form (PR #212 review).
+  const [initial] = useState(() => ({ name, interval, frequency, miles, nextDue }));
+  const dirty = name !== initial.name || interval !== initial.interval || frequency !== initial.frequency
+    || miles !== initial.miles || nextDue !== initial.nextDue;
+  useUnsavedInput(dirty);
   const whole = (value: string) => (value.trim() ? Number(value) : null);
   const save = async () => {
     setError(null);
