@@ -176,5 +176,7 @@ describe('shared UI sources', () => {
     assert.doesNotMatch(viewport, /bottom-0/);
     assert.match(viewport, /safe-area-inset-top/);
     assert.doesNotMatch(toast, /slide-in-from-bottom/);
+    // From md, below the app header and the page-header row (Add Log, search, account).
+    assert.match(viewport, /md:top-32\b/);
   });
 });
