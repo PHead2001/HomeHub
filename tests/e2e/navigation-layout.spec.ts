@@ -96,8 +96,16 @@ test.describe('navigation and layout regressions', () => {
           });
           // Scroll the page to the end too (the column is sticky inside it).
           await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+          await page.waitForTimeout(100);
           const after = await detail.evaluate((element) => element.getBoundingClientRect().bottom);
-          expect(Math.min(bottom.detailBottom, after), `${tab} at ${width}x${height}: the detail's bottom is reachable`).toBeLessThanOrEqual(height + 1);
+          // On failure, say what the page looked like (scroll height, position, the column's box).
+          const metrics = await detail.evaluate((element) => {
+            const column = element.parentElement!.getBoundingClientRect();
+            return { docH: document.documentElement.scrollHeight, scrollY: Math.round(scrollY), innerH: innerHeight,
+              colTop: Math.round(column.top), colH: Math.round(column.height), bodyOverflow: getComputedStyle(document.body).overflow,
+              dialogs: document.querySelectorAll('[role="dialog"]').length };
+          });
+          expect(Math.min(bottom.detailBottom, after), `${tab} at ${width}x${height}: the detail's bottom is reachable ${JSON.stringify(metrics)}`).toBeLessThanOrEqual(height + 1);
         }
       }
     }
