@@ -50,7 +50,8 @@ import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
 import { assignableMembers, describeRepeat, parseQuickAdd, createSettlementGuard, planUnconfirmedSettlement, quickAddRetryMessage, resolveChoreAssignee, unconfirmedShoppingMessage, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
-import { mileageNote } from '@/lib/dashboard/quick-add-writes';
+import { mileageNote, type QuickMaintenanceRequest } from '@/lib/dashboard/quick-add-writes';
+import { NO_ANSWER_MESSAGE } from '@/components/maintenance/maintenance-action-client';
 import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker, type IndexSection } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
@@ -161,6 +162,9 @@ export function CommandPalette({
   // One operation id per previewed feeding: pressing Confirm again (a retry, or
   // "Feed again") reuses it, so the feeding is recorded once (PE-23h).
   const feedOp = useRef<{ intent: QuickAddIntent; opId: string } | null>(null);
+  // A maintenance log whose server call got no answer: Confirm on the same preview resends this
+  // exact request (same op id), so it is saved once (MA-20).
+  const maintenanceOp = useRef<{ intent: QuickAddIntent; request: QuickMaintenanceRequest } | null>(null);
   // "Last fed 10 min ago by Sam (wet)" in the feeding preview before saving (PE-23e).
   const [lastFed, setLastFed] = useState<{ intent: QuickAddIntent; line: string } | null>(null);
   const lastFedText = lastFed && lastFed.intent === pending ? lastFed.line : null;
@@ -528,9 +532,28 @@ export function CommandPalette({
           toast({ title: status === 'queued' ? 'Saved offline' : 'Chore added', description: status === 'queued' ? `${current.task} will sync when you're back online.` : `${current.task} for ${assignee.name}.` });
         }
       } else if (current.kind === 'maintenance') {
-        const { status } = await logMaintenance({ householdId, title: current.title, mileage: current.mileage, target: choices.target, onLateError: lateError });
+        const held = maintenanceOp.current?.intent === current ? maintenanceOp.current.request : null;
+        const result = await logMaintenance({
+          householdId, title: current.title, mileage: current.mileage, target: choices.target, timeZone: household?.timeZone ?? null, held, onLateError: lateError,
+        });
+        if (result.status === 'no_answer' || result.status === 'needs_connection') {
+          // Unknown outcome: the preview stays open and Confirm resends the same request.
+          maintenanceOp.current = { intent: current, request: result.request };
+          setRetryMessage(result.status === 'no_answer'
+            ? `${NO_ANSWER_MESSAGE} Confirm checks again without saving it twice.`
+            : 'Needs a connection to check whether it was saved. Confirm again once you are back online.');
+          return;
+        }
+        maintenanceOp.current = null;
+        if (result.status === 'failed') {
+          setRetryMessage(result.message);
+          return;
+        }
+        const { status, values } = result;
         notifyDataChanged({ module: 'maintenance', householdId });
-        const where = targetName(choices.target);
+        // Named only when it is the record the log was saved for (a resent request keeps its first target).
+        const chosenId = choices.target?.kind === 'vehicle' ? choices.target.vehicle.id : choices.target?.kind === 'asset' ? choices.target.asset.id : undefined;
+        const where = (values.vehicleId ?? values.assetId) === chosenId ? targetName(choices.target) : null;
         toast({ title: status === 'queued' ? 'Saved offline' : 'Maintenance logged', description: `${current.title}${where ? ` for ${where}` : ''}${current.mileage ? ` at ${current.mileage.toLocaleString()} miles` : ''}.` });
       }
       playFeedback('add');

@@ -98,6 +98,10 @@ async function restoreMaintenanceSeed() {
   ]);
 }
 
+/** The HVAC unit's own filter in a reminders group: other specs in the same shard can add another "Replace air filter" schedule to the seeded household. */
+const hvacFilterIn = (page: Page, testId: string) => page.getByTestId(testId).getByRole('listitem')
+  .filter({ hasText: 'Replace air filter' }).filter({ hasText: 'Main HVAC System' });
+
 async function open(page: Page, path: string) {
   await page.clock.setFixedTime(fixedNow);
   await page.goto(path);
@@ -257,15 +261,12 @@ test.describe('maintenance center UX', () => {
     // One minute before midnight on Aug 1 in the household's zone (the seed household has none,
     // so the server default, America/Chicago: midnight is 05:00 UTC). The time is fixed, not
     // installed, so the page's own timers and animations keep running in real time. The timer
-    // to the next household midnight is covered by tests/unit/household-day.test.ts; here the
-    // page is shown again after midnight (visibilitychange), the other way "today" is re-read.
+    // to the next household midnight is covered by the next test (and tests/unit/household-day.test.ts);
+    // here the page is shown again after midnight (visibilitychange), the other way "today" is re-read.
     await page.clock.setFixedTime(new Date('2026-08-02T04:59:00.000Z'));
     await page.goto('/maintenance?tab=reminders');
     await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
-    // The HVAC unit's own filter: other specs in the same shard can add another
-    // "Replace air filter" schedule to the seeded household.
-    const filterIn = (testId: string) => page.getByTestId(testId).getByRole('listitem')
-      .filter({ hasText: 'Replace air filter' }).filter({ hasText: 'Main HVAC System' });
+    const filterIn = (testId: string) => hvacFilterIn(page, testId);
     // The HVAC filter is due Aug 1: due today.
     await expect(filterIn('reminders-group-due_today')).toHaveCount(1);
     await expect(filterIn('reminders-group-overdue')).toHaveCount(0);
@@ -275,6 +276,28 @@ test.describe('maintenance center UX', () => {
     // Aug 2 in the household: overdue, without a reload or any data change.
     await expect(filterIn('reminders-group-overdue')).toHaveCount(1);
     await expect(filterIn('reminders-group-due_today')).toHaveCount(0);
+  });
+
+  test("MA-1: the page's own midnight timer rolls the day over in real time", async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // The household zone is the server default, America/Chicago: Aug 2 begins at 05:00 UTC.
+    const midnight = new Date('2026-08-02T05:00:00.000Z').getTime();
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    // An installed clock (fake Date and timers) that flows in real time, never jumped (a jump
+    // fires the data layer's own timers at once). It starts 25 s early; the page must be seen
+    // due today before midnight, so a slow load fails here rather than passing without the timer.
+    await page.clock.install({ time: new Date(midnight - 25_000) });
+    await page.goto('/maintenance?tab=reminders');
+    await expect(page.getByRole('heading', { name: 'Maintenance Center', exact: true })).toBeVisible();
+    // The HVAC filter is due Aug 1: due today, once.
+    await expect(hvacFilterIn(page, 'reminders-group-due_today')).toHaveCount(1);
+    await expect(hvacFilterIn(page, 'reminders-group-overdue')).toHaveCount(0);
+    expect(await page.evaluate(() => Date.now())).toBeLessThan(midnight);
+    // No visibilitychange, focus or reload: only the page's own timer to the household
+    // midnight (watchHouseholdDay) moves it to Aug 2, where it is overdue, exactly once.
+    await expect(hvacFilterIn(page, 'reminders-group-overdue')).toHaveCount(1, { timeout: 35_000 });
+    await expect(hvacFilterIn(page, 'reminders-group-due_today')).toHaveCount(0);
+    expect(await page.evaluate(() => Date.now())).toBeGreaterThanOrEqual(midnight);
   });
 
   test('M1: Mark done offers Undo for 10 s, which puts the schedule back and removes the log', async ({ page }, testInfo) => {

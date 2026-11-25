@@ -1,6 +1,6 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
 import { fixedNow } from './test-helpers';
@@ -107,12 +107,57 @@ test.describe('H13: natural-language quick add writes what it says', () => {
       await expect(preview.getByTestId('quick-add-blocker')).toHaveCount(0);
       await expect(preview.getByTestId('quick-add-confirm')).toBeEnabled();
       await preview.getByTestId('quick-add-confirm').click();
-      await expect(palette).toHaveCount(0);
+      // Closes on the server's answer (a server action round trip).
+      await expect(palette).toHaveCount(0, { timeout: 30_000 });
       await expect.poll(async () => (await household.collection('maintenance').where('title', '==', 'Oil change').get()).size).toBe(1);
       const log = (await household.collection('maintenance').where('title', '==', 'Oil change').get()).docs[0].data();
       expect(log).toMatchObject({ targetType: 'vehicle', vehicleId: 'family-suv', mileage: 48_200, type: 'routine', item: 'Oil change' });
+      // Saved by the server operation (MA-20): who did it, from the verified caller, and its op id.
+      expect(log.doneByUid).toBe('e2e-owner-uid');
+      expect(typeof log.opId).toBe('string');
+      // A lower reading stays on the log; the vehicle keeps the higher one (max rule, MA-6).
+      expect((await household.collection('vehicles').doc('family-suv').get()).get('currentMileage')).toBe(48_750);
     } finally {
       await removeLogs('Oil change');
+    }
+  });
+
+  test('a palette vehicle log raises the odometer for an editor and records who did it (MA-6c, MA-20)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const suv = household.collection('vehicles').doc('family-suv');
+    const before = (await suv.get()).data() ?? {};
+    await removeLogs('Tire rotation');
+    try {
+      await openDashboard(page);
+      const { palette, input } = await openPalette(page);
+      await input.fill('tire rotation 49,300 miles');
+      await expect(palette.getByTestId('palette-quick-add')).toContainText('Log maintenance: Tire rotation');
+      await input.press('Enter');
+      const preview = palette.getByTestId('quick-add-preview');
+      await expect(preview.getByRole('combobox', { name: 'Vehicle' })).toHaveValue('vehicle:family-suv');
+      // Above the recorded 48,750: no warning.
+      await expect(preview.getByTestId('quick-add-mileage-note')).toHaveCount(0);
+      await expect(preview.getByTestId('quick-add-confirm')).toBeEnabled();
+      await preview.getByTestId('quick-add-confirm').click();
+      // Closes on the server's answer (a server action round trip).
+      await expect(palette).toHaveCount(0, { timeout: 30_000 });
+      // "Maintenance logged" only on the server's answer.
+      await expect(page.getByText('Maintenance logged', { exact: true })).toBeVisible();
+      await expect.poll(async () => (await household.collection('maintenance').where('title', '==', 'Tire rotation').get()).size).toBe(1);
+      const log = (await household.collection('maintenance').where('title', '==', 'Tire rotation').get()).docs[0].data();
+      expect(log).toMatchObject({ targetType: 'vehicle', vehicleId: 'family-suv', mileage: 49_300, type: 'routine', doneByUid: 'e2e-owner-uid' });
+      expect(String(log.doneByName ?? '')).not.toBe('');
+      expect(String(log.doneByName)).not.toContain('@');
+      // The owner holds maintenance.edit: the reading raises the vehicle's odometer, dated.
+      const vehicle = (await suv.get()).data() ?? {};
+      expect(vehicle.currentMileage).toBe(49_300);
+      expect(typeof vehicle.mileageUpdatedAt).toBe('string');
+    } finally {
+      await removeLogs('Tire rotation');
+      await suv.update({
+        currentMileage: before.currentMileage ?? 48_750,
+        mileageUpdatedAt: before.mileageUpdatedAt ?? FieldValue.delete(),
+      });
     }
   });
 

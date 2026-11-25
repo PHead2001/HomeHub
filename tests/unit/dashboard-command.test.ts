@@ -4,7 +4,7 @@ import { parseQuickAdd, findRoom, findMaintenanceTarget, firstDateForRepeat, nor
 import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, quickAddConfirmBlocker, sectionUnreadable, INDEX_SECTIONS } from '../../src/lib/dashboard/quick-add-preview';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, modelSafeName, runLatest, shouldOfferAiParse } from '../../src/lib/dashboard/quick-add-ai';
 import { containsEmail, redactEmails } from '../../src/ai/redact';
-import { mileageNote, quickCreateId, quickMaintenanceLog, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
+import { mileageNote, quickCreateId, quickMaintenanceLog, quickMaintenanceNext, quickMaintenanceValues, recurrenceFromRepeat, repeatingChoreTemplate } from '../../src/lib/dashboard/quick-add-writes';
 import { dayKey } from '../../src/lib/dashboard/dates';
 import { GO_TARGETS, SHORTCUTS, ariaKeyShortcuts, isShortcutSequence, shortcutById, shortcutText } from '../../src/lib/dashboard/shortcuts';
 import { notificationDestination } from '../../src/lib/dashboard/notification-display';
@@ -137,6 +137,32 @@ describe('quick add writes: same shapes as the module screens', () => {
     const asset = quickMaintenanceLog({ householdId: 'h1', title: 'Filter', date: '2026-08-01', mileage: null, target: { kind: 'asset', asset: { id: 'furnace', name: 'Furnace' } }, nowIso });
     assert.equal(asset.targetType, 'home_asset');
     assert.equal(asset.assetId, 'furnace');
+  });
+
+  it('sends the Add log values to the server operation: the reading on the vehicle, else in the notes', () => {
+    const vehicle = { kind: 'vehicle' as const, vehicle: context.vehicles![0] };
+    // Only the operation's log fields (no householdId, item or timestamps: the server writes those, with doneBy).
+    assert.deepEqual(quickMaintenanceValues({ title: ' Oil change ', date: '2026-08-01', mileage: 48_200, target: vehicle }), {
+      targetType: 'vehicle', vehicleId: 'civic', title: 'Oil change', date: '2026-08-01', type: 'routine', mileage: 48_200,
+    });
+    assert.deepEqual(quickMaintenanceValues({ title: 'Oil change', date: '2026-08-01', mileage: 48_200, target: null }), {
+      targetType: 'general', title: 'Oil change', date: '2026-08-01', type: 'routine', notes: 'Odometer: 48,200 mi',
+    });
+    assert.deepEqual(quickMaintenanceValues({ title: 'Filter', date: '2026-08-01', mileage: null, target: { kind: 'asset', asset: { id: 'furnace', name: 'Furnace' } } }), {
+      targetType: 'home_asset', assetId: 'furnace', title: 'Filter', date: '2026-08-01', type: 'routine',
+    });
+  });
+
+  it('saves a palette log once: no answer holds the request, and offline never queues a held one', () => {
+    assert.equal(quickMaintenanceNext('ok', false), 'saved');
+    assert.equal(quickMaintenanceNext('ok', true), 'saved');
+    assert.equal(quickMaintenanceNext('failed', true), 'failed');
+    assert.equal(quickMaintenanceNext('no_answer', false), 'hold');
+    assert.equal(quickMaintenanceNext('no_answer', true), 'hold');
+    // Offline before anything was sent: the queued client write, as before.
+    assert.equal(quickMaintenanceNext('offline', false), 'queue');
+    // Offline after an unanswered try: that try may have been saved, so nothing is queued.
+    assert.equal(quickMaintenanceNext('offline', true), 'needs_connection');
   });
 
   it('warns when a reading is below the recorded odometer', () => {
