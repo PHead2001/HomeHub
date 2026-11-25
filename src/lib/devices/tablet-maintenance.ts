@@ -88,7 +88,11 @@ export const scheduleEditIntentOf = (target: ScheduleCompletionTarget, changes: 
   const id = scheduleIdOf(target);
   const base = { ...(target.schedule as StoredSchedule), id };
   delete (base as Record<string, unknown>).lastCompletion;
-  return { ownerType: target.targetType, ownerId: ownerIdOf(target), base: [base], values: [{ ...base, ...changes }] };
+  // Timing makes it a scheduled item: a checklist item never becomes due, so a repeat or a next
+  // due date given here switches it to scheduled (PR #212 review).
+  const timed = ['intervalValue', 'intervalMonths', 'intervalMiles', 'nextDueDate'].some((field) => changes[field] !== null && changes[field] !== undefined && changes[field] !== '');
+  const mode = timed ? { mode: 'scheduled' } : {};
+  return { ownerType: target.targetType, ownerId: ownerIdOf(target), base: [base], values: [{ ...base, ...changes, ...mode }] };
 };
 
 /** A reminder's subject line ("Replace filter for Furnace"). */

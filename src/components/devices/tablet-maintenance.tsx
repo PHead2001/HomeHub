@@ -38,6 +38,9 @@ import type { HomeAsset, MaintenanceAttachment, MaintenanceLog, Vehicle } from '
 import { useTablet } from './tablet-context';
 import { useTabletSubmit } from './use-tablet-submit';
 
+/** Title, provider and notes together on a tablet entry: well inside the 16 KB tablet request budget. */
+export const TABLET_LOG_TEXT_MAX = 8000;
+
 const BUTTON = 'inline-flex min-h-12 min-w-12 items-center justify-center gap-2 rounded-lg border border-border px-4 text-base font-medium disabled:opacity-60';
 const PRIMARY = 'min-h-12 rounded-lg bg-primary px-4 text-base font-medium text-primary-foreground disabled:opacity-60';
 
@@ -218,6 +221,13 @@ function TabletLogServiceDialog({ entry, assets, vehicles, today, onReverted, on
       setError('Give it a title.');
       return;
     }
+    // A tablet request has a 16 KB budget (FACE_MAX_BYTES on the server, with the sign-in token):
+    // the fields together stay well under it, and a too-long entry is caught here, before
+    // anyone is asked who they are (PR #212 review).
+    if (title.length + notes.length + provider.length > TABLET_LOG_TEXT_MAX) {
+      setError(`That is too much text for a tablet entry (at most ${TABLET_LOG_TEXT_MAX.toLocaleString('en-US')} characters in all). Shorten the notes, or add the rest on a phone.`);
+      return;
+    }
     await form.submit(async (opId) => {
       if (entry.target) {
         const intent = completeIntentOf(entry.target, today, { mileage: reading, details: { title, notes, cost: costValue, serviceProvider: provider } });
@@ -256,13 +266,13 @@ function TabletLogServiceDialog({ entry, assets, vehicles, today, onReverted, on
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
-          <Input value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Title" maxLength={1000} className="min-h-12 text-lg" data-testid="tablet-maintenance-log-title" />
+          <Input value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Title" maxLength={200} className="min-h-12 text-lg" data-testid="tablet-maintenance-log-title" />
           {entry.askMileage && (
             <Input value={mileage} onChange={(event) => setMileage(event.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" aria-label="Odometer reading (miles)" placeholder="Odometer reading" className="min-h-12 text-lg" data-testid="tablet-maintenance-log-mileage" />
           )}
-          <Input value={provider} onChange={(event) => setProvider(event.target.value)} aria-label="Done by (company or person, optional)" placeholder="Done by (optional)" maxLength={1000} className="min-h-12 text-base" />
+          <Input value={provider} onChange={(event) => setProvider(event.target.value)} aria-label="Done by (company or person, optional)" placeholder="Done by (optional)" maxLength={200} className="min-h-12 text-base" />
           <Input value={cost} onChange={(event) => setCost(event.target.value)} inputMode="decimal" aria-label="Cost (optional)" placeholder="Cost (optional)" className="min-h-12 text-base" />
-          <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} aria-label="Notes (optional)" placeholder="Notes (optional)" maxLength={20000} className="min-h-24 text-base" />
+          <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} aria-label="Notes (optional)" placeholder="Notes (optional)" maxLength={TABLET_LOG_TEXT_MAX} className="min-h-24 text-base" />
           {error && <p role="alert" className="text-sm font-medium text-destructive" data-testid="tablet-maintenance-log-error">{error}</p>}
           <div className="flex justify-end gap-2">
             <button type="button" className={BUTTON} onClick={onClose}>Cancel</button>

@@ -107,3 +107,23 @@ describe('unsaved schedule edits on a tablet (PR #212 review)', () => {
     assert.match(dialog.slice(0, 2500), /useUnsavedInput\(title !== initial\.title \|\| mileage !== initial\.mileage/);
   });
 });
+
+describe('tablet entries stay inside the request budget, and timing schedules a checklist item (PR #212 review)', () => {
+  it('the log form limits its text and checks it before asking who is here', () => {
+    const source = readFileSync('src/components/devices/tablet-maintenance.tsx', 'utf8');
+    assert.match(source, /export const TABLET_LOG_TEXT_MAX = 8000;/);
+    assert.match(source, /maxLength=\{TABLET_LOG_TEXT_MAX\}/);
+    const dialog = source.slice(source.indexOf('function TabletLogServiceDialog'));
+    assert.ok(dialog.indexOf('title.length + notes.length + provider.length > TABLET_LOG_TEXT_MAX') > 0, 'checked in the log dialog');
+    assert.ok(dialog.indexOf('title.length + notes.length + provider.length > TABLET_LOG_TEXT_MAX') < dialog.indexOf('form.submit('), 'checked before dispatch');
+  });
+  it('a repeat or a next due date turns a checklist item into a scheduled one; a rename does not', async () => {
+    const { scheduleEditIntentOf } = await import('../../src/lib/devices/tablet-maintenance');
+    const asset = { id: 'a1', name: 'Fridge', category: 'Appliance', status: 'active', householdId: 'h', createdAt: 'x', updatedAt: 'x', schedules: [{ id: 's1', mode: 'checklist', scheduleName: 'Clean coils' }] };
+    const target = { targetType: 'home_asset', asset, scheduleIndex: 0, schedule: asset.schedules[0] } as never;
+    const timed = scheduleEditIntentOf(target, { scheduleName: 'Clean coils', intervalValue: 6, frequencyType: 'months', nextDueDate: '2026-12-01' }) as { values: Array<Record<string, unknown>> };
+    assert.equal(timed.values[0].mode, 'scheduled');
+    const renamed = scheduleEditIntentOf(target, { scheduleName: 'Clean the coils', intervalValue: null, frequencyType: 'months', nextDueDate: null }) as { values: Array<Record<string, unknown>> };
+    assert.equal(renamed.values[0].mode, 'checklist');
+  });
+});
