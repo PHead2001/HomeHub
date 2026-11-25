@@ -95,8 +95,16 @@ test.describe('navigation and layout regressions', () => {
             return { columnBottom: column.getBoundingClientRect().bottom, detailBottom: element.getBoundingClientRect().bottom };
           });
           // Scroll the page to the end too (the column is sticky inside it).
-          await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-          await page.waitForTimeout(100);
+          // Scroll to the real end: the page can still grow while it settles (late images, counts), so
+          // scroll again until the bottom is reached.
+          for (let i = 0; i < 10; i++) {
+            const atEnd = await page.evaluate(() => {
+              window.scrollTo(0, document.documentElement.scrollHeight);
+              return Math.ceil(scrollY + innerHeight) >= document.documentElement.scrollHeight - 1;
+            });
+            await page.waitForTimeout(150);
+            if (atEnd && await page.evaluate(() => Math.ceil(scrollY + innerHeight) >= document.documentElement.scrollHeight - 1)) break;
+          }
           const after = await detail.evaluate((element) => element.getBoundingClientRect().bottom);
           // On failure, say what the page looked like (scroll height, position, the column's box).
           const metrics = await detail.evaluate((element) => {
