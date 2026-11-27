@@ -430,10 +430,21 @@ describe('PIN sessions (7.5): what ends them', () => {
 
   test('removal and leaving delete PIN documents: rejoining with the same uid has no PIN', async () => {
     await setMyPin(member2, { householdId: H, pin: '4826' });
+    await setMyPin(member, { householdId: H, pin: '4826' });
     await setMyPin(child, { householdId: H, pin: '4826' });
     await removeMember(owner, H, member2.uid);
     assert.equal(await pinDoc(member2.uid), undefined);
-    await leaveHousehold(child, H);
+    await leaveHousehold(member, H);
+    assert.equal(await pinDoc(member.uid), undefined);
+    assert.equal(await memberGuard(member.uid), undefined);
+    // Later tests use `member`: back in, as seeded (the record only; no PIN).
+    await house(H).collection('members').doc(member.uid).set({
+      uid: member.uid, role: member.role, status: 'active', displayName: member.displayName, permissions: {},
+    });
+    // A child account never leaves on its own (HO-11): its PIN stays until an adult removes it.
+    await assert.rejects(leaveHousehold(child, H), (error: unknown) => (error as { code?: string }).code === 'child_cannot_leave');
+    assert.ok(await pinDoc(child.uid));
+    await removeMember(owner, H, child.uid);
     assert.equal(await pinDoc(child.uid), undefined);
     assert.equal(await memberGuard(child.uid), undefined);
   });
