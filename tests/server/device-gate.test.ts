@@ -103,7 +103,8 @@ describe('8.4 step 1: shape', () => {
   test('oversized requests, unknown capabilities, not-on-tablets and never classes, missing or malformed opIds', async () => {
     await refused(authorize(req({ actorUid: 'x'.repeat(20_000) }), time.now()), 'invalid_input');
     await refused(authorize(req({ capability: 'pets.feed.everything' }), time.now()), 'unclassified');
-    await refused(authorize(req({ capability: 'shopping.add' }), time.now()), 'not_on_tablets');
+    // shopping.add and shopping.tick are tablet actions now; removing an item is not.
+    await refused(authorize(req({ capability: 'shopping.remove' }), time.now()), 'not_on_tablets');
     await refused(authorize(req({ capability: 'ai.parse' }), time.now()), 'not_on_tablets');
     await refused(authorize(req({ capability: 'profile.edit' }), time.now()), 'not_on_tablets');
     await refused(authorize(req({ opId: undefined }), time.now()), 'invalid_input');
