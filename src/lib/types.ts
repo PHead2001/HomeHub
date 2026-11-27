@@ -608,6 +608,8 @@ export type Household = {
     quietHours?: { start: string; end: string } | null;
     /** Home Assistant is connected (server-written on connect, removed on disconnect; never the token). AU-6, AU-15. */
     homeAssistant?: { connected?: boolean } | null;
+    /** First day of the week (CA-16): 0 Sunday, 1 Monday; absent = Monday. Owners and admins set it (`src/lib/chores/week-start.ts`). */
+    weekStartsOn?: 0 | 1;
 }
 
 export type InviteCode = {

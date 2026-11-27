@@ -588,7 +588,7 @@ export const runHouseholdReminders = async (
     result.expiredChores = done.expired;
   }
 
-  // The week that just closed (Monday to Sunday, household days) is
+  // The week that just closed (the household's week, household days) is
   // snapshotted once into stats/week-{weekStart} (CH-29): points, completions
   // and the allowance payout at the rate set then, so later retention, undo
   // or a rate change never alters what the podium showed.
@@ -596,6 +596,8 @@ export const runHouseholdReminders = async (
     [d.id, String(d.get("role") ?? "")]));
   const weekStatus = await snapshotClosedWeek(db, house, {
     today, timeZone, now, ts,
+    // The household's week (CA-16): Monday unless it starts on Sunday.
+    weekStartsOn: houseSnap.get("weekStartsOn") === 0 ? 0 : 1,
     chores: choresSnap.docs.map((d) => d.data()),
     members: members.map((m) => ({
       uid: m.uid, name: m.displayName, email: m.email,
@@ -906,6 +908,8 @@ export const WEEK_SNAPSHOT_KEEP_WEEKS = 26;
 
 export type WeekSnapshotInput = {
   today: string;
+  /** The household's first weekday (CA-16): 0 Sunday, 1 Monday (default). */
+  weekStartsOn?: number;
   timeZone: string;
   now: Date;
   ts: (d: Date) => Timestamp;
@@ -933,7 +937,8 @@ export const snapshotClosedWeek = async (
   house: DocumentReference,
   input: WeekSnapshotInput,
 ): Promise<"written" | "kept" | "empty" | "stopped"> => {
-  const weekStart = addDays(weekStartDay(input.today), -7);
+  const weekStart = addDays(
+    weekStartDay(input.today, input.weekStartsOn ?? 1), -7);
   const ref = house.collection("stats").doc(weekSnapshotDocId(weekStart));
   if ((await ref.get()).exists) return "kept";
   const prefs = await house.collection("chore-settings").doc("preferences")

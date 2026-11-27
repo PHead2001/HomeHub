@@ -43,6 +43,8 @@ type Options = {
   canManageMembers?: boolean;
   /** The caller's own email (from their sign-in), shown on their own card. */
   ownEmail?: string | null;
+  /** The household's first weekday (CA-16, `readWeekStartsOn`): "this week" for the member counts. */
+  weekStartsOn?: 0 | 1;
 };
 
 const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
@@ -53,13 +55,13 @@ const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
  * role can read that path under the rules, and each fails independently, so a
  * denied invite or audit read never blanks the member list.
  */
-export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null }: Options): HouseholdLiveData {
+export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null, weekStartsOn = 1 }: Options): HouseholdLiveData {
   const householdId = enabled ? requestedHouseholdId : undefined;
   const [rawMembers, setRawMembers] = useState<HouseholdMember[] | null>(null);
   const [membersFailed, setMembersFailed] = useState(false);
   const [invites, setInvites] = useState<InviteCode[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [weekStart, setWeekStart] = useState(() => startOfWeek());
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), weekStartsOn));
   // Chore listener results, keyed by household and week so a rollover or a new
   // household never shows the previous week's numbers.
   const choresKey = `${householdId ?? ''}|${weekStart.getTime()}`;
@@ -67,14 +69,16 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
   // Contact documents by uid, tagged with the household they were read for.
   const [contacts, setContacts] = useState<{ householdId: string; byUid: Map<string, unknown> }>({ householdId: '', byUid: new Map() });
 
-  // Move the "this week" boundary at local Monday midnight, and re-check when a
-  // suspended or hidden tab comes back (timers may not fire while suspended).
+  // Move the "this week" boundary at local midnight on the household's first weekday
+  // (CA-16), and re-check when a suspended or hidden tab comes back (timers may not fire
+  // while suspended) or the household changes its week start.
   useEffect(() => {
     const sync = () => {
-      const current = startOfWeek();
+      const current = startOfWeek(new Date(), weekStartsOn);
       setWeekStart((prev) => (prev.getTime() === current.getTime() ? prev : current));
     };
-    const delay = Math.max(1000, startOfNextWeek().getTime() - Date.now() + 1000);
+    sync();
+    const delay = Math.max(1000, startOfNextWeek(new Date(), weekStartsOn).getTime() - Date.now() + 1000);
     const timer = window.setTimeout(sync, Math.min(delay, 2 ** 31 - 1));
     const onVisible = () => { if (document.visibilityState === 'visible') sync(); };
     document.addEventListener('visibilitychange', onVisible);
@@ -84,7 +88,7 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', sync);
     };
-  }, [weekStart]);
+  }, [weekStart, weekStartsOn]);
 
   useEffect(() => {
     if (!householdId) return;

@@ -190,12 +190,14 @@ export const cappedDayPoints = (day: PointsDay | undefined): number =>
   Math.min(day?.raw ?? 0, DAILY_POINT_CAP);
 
 /**
- * Monday of the week containing `day`.
+ * First day of the week containing `day`: Monday, or Sunday when the
+ * household's week starts on Sunday (`weekStartsOn` 0, audit CA-16).
  * @param {string} day Day string.
- * @return {string} Monday.
+ * @param {number} weekStartsOn 0 Sunday or 1 Monday (default).
+ * @return {string} The week's first day.
  */
-export const weekStartDay = (day: string): string =>
-  addDays(day, -((dayOfWeek(day) + 6) % 7));
+export const weekStartDay = (day: string, weekStartsOn = 1): string =>
+  addDays(day, -((dayOfWeek(day) - weekStartsOn + 7) % 7));
 
 /**
  * A stored allowance rate, read defensively (0 when unset or invalid).

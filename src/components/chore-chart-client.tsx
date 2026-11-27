@@ -39,6 +39,7 @@ import { completerLabel } from '@/lib/chores/completion';
 import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, statsMemberFrom } from '@/lib/chores/stats';
+import { readWeekStartsOn } from '@/lib/chores/week-start';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
@@ -937,11 +938,13 @@ export function ChoreChartClient() {
   // Follows `today`, so the week, streaks and podium roll over at midnight.
   // On household days (D-6), like upkeep's weekly snapshot.
   const statsZone = householdDayZone(household?.timeZone);
+  // The household's week (CA-16): Monday unless it starts on Sunday.
+  const weekStartsOn = readWeekStartsOn(household?.weekStartsOn);
   // CH-7 expired missed days still break fair streaks (CH-19); one listener with "N missed".
   const missedEntries = useMissedEntries(currentUser?.householdId);
-  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(householdDay), { today: householdDay, timeZone: statsZone, missed: missedEntries }), [assignedChores, statsMembers, householdDay, statsZone, missedEntries]);
-  // CH-21, CH-29: the closed week's podium and payout on the first days of a new week.
-  const podium = useClosedWeekPodium({ householdId: currentUser?.householdId, today: householdDay, chores: assignedChores, members: statsMembers, centsPerPoint: settings.centsPerPoint, timeZone: statsZone });
+  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(householdDay), { today: householdDay, timeZone: statsZone, missed: missedEntries, weekStartsOn }), [assignedChores, statsMembers, householdDay, statsZone, missedEntries, weekStartsOn]);
+  // CH-21, CH-29: the closed week's podium and payout on the first days of a new week (the household's week, CA-16).
+  const podium = useClosedWeekPodium({ householdId: currentUser?.householdId, today: householdDay, chores: assignedChores, members: statsMembers, centsPerPoint: settings.centsPerPoint, timeZone: statsZone, weekStartsOn });
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
 
   // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.

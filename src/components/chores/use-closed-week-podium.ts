@@ -6,6 +6,7 @@ import { db } from '@/lib/firebase';
 import { readWeekSummary, weekSnapshotDocId } from '../../../functions/src/shared/chore-points';
 import { closedWeekSummary, podiumWeekStart, type StatsMember, type WeekSummary } from '@/lib/chores/stats';
 import type { ChoreRecord } from '@/lib/chores/dates';
+import type { WeekStartsOn } from '@/lib/chores/week-start';
 
 /**
  * The podium's week (CH-21, CH-29): on the first `PODIUM_DAYS` household days of a
@@ -21,6 +22,7 @@ export function useClosedWeekPodium({
   members,
   centsPerPoint,
   timeZone,
+  weekStartsOn,
 }: {
   householdId: string | null | undefined;
   today: string;
@@ -28,8 +30,10 @@ export function useClosedWeekPodium({
   members: readonly StatsMember[];
   centsPerPoint: number;
   timeZone: string;
+  /** The household's first weekday (CA-16); upkeep's snapshot uses the same week. */
+  weekStartsOn?: WeekStartsOn;
 }): WeekSummary | null {
-  const weekStart = podiumWeekStart(today);
+  const weekStart = podiumWeekStart(today, weekStartsOn);
   const [stored, setStored] = useState<{ key: string; summary: WeekSummary | null } | null>(null);
   const key = householdId && weekStart ? `${householdId}/${weekStart}` : null;
 
