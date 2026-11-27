@@ -98,4 +98,11 @@ describe('barcode normalisation (BL-12)', () => {
     // An EAN-8 saved as its 8 digits.
     assert.ok(lookupIds('0000096385074').includes('96385074'));
   });
+
+  test('a legacy ID saved verbatim with spaces or hyphens is still a candidate (Add finds it, no duplicate)', () => {
+    assert.deepEqual(lookupIds('0-36000 29145-2'), ['0036000291452', '036000291452', '0-36000 29145-2']);
+    assert.deepEqual(lookupIds(' 0-36000 29145-2 '), ['0036000291452', '036000291452', '0-36000 29145-2']);
+    assert.deepEqual(lookupIds('12 34'), ['1234', '12 34']);
+    assert.deepEqual(lookupIds('   '), []);
+  });
 });

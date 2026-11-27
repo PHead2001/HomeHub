@@ -227,4 +227,23 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
       await library.doc(NORMALISED).delete();
     }
   });
+
+  test('a product saved verbatim with spaces and hyphens (before BL-12) is found by Add, not duplicated', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const LEGACY = '0-42100 00526-4';
+    await library.doc(LEGACY).set({ name: 'E2E Legacy Spaced', imageUrl: '', createdAt: fixedNow.toISOString() });
+    try {
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto(`/library?add=${UNKNOWN}`);
+      const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
+      await dialog.getByLabel('Barcode (UPC)').fill(LEGACY);
+      await dialog.getByLabel('Product Name').fill('E2E Duplicate Attempt');
+      await dialog.getByRole('button', { name: 'Save Item' }).click();
+      await expect(dialog.getByRole('alert').filter({ hasText: 'already saved as E2E Legacy Spaced' })).toBeVisible();
+      expect((await library.doc('0042100005264').get()).exists).toBe(false);
+    } finally {
+      await library.doc(LEGACY).delete();
+      await library.doc('0042100005264').delete();
+    }
+  });
 });

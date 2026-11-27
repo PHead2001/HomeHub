@@ -114,7 +114,9 @@ export function sameBarcode(a: unknown, b: unknown): boolean {
 
 /**
  * The document IDs a lookup (or Add's "already saved" check) tries, in order: the
- * normalised ID, the code as given, then the product's other retail forms (its
+ * normalised ID, the code as given (its digits, then its literal trimmed text,
+ * since the Add form once saved IDs such as "0-36000 29145-2" verbatim), then
+ * the product's other retail forms (its
  * 12-digit UPC-A, 8-digit EAN-8, or 8-digit UPC-E). A product saved under any of
  * them before normalisation, and not yet moved by
  * scripts/ops/normalize-barcode-library.mjs, is still found: a scan of
@@ -122,9 +124,12 @@ export function sameBarcode(a: unknown, b: unknown): boolean {
  */
 export function lookupIds(raw: string): string[] {
   const digits = raw.replace(/[\s-]+/g, '');
+  // A legacy document ID kept as typed (spaces or hyphens; never a path separator).
+  const literal = raw.trim();
+  const literalId = literal && !literal.includes('/') && literal !== '.' && literal !== '..' ? [literal] : [];
   const result = normalizeGtin(raw);
-  if (!result.ok) return digits ? [digits] : [];
-  const ids = [result.id, digits];
+  if (!result.ok) return [...new Set([...(digits ? [digits] : []), ...literalId])];
+  const ids = [result.id, digits, ...literalId];
   if (result.checked && result.id.length === 13) {
     if (result.id.startsWith('0')) {
       const upcA = result.id.slice(1);
