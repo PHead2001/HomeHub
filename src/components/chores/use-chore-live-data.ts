@@ -37,12 +37,17 @@ export function useChoreLiveData(householdId: string | null | undefined, key: st
     const started = CHORE_COLLECTIONS.map((name) => {
       const source = query(collection(db, 'households', householdId, name));
       let answered = false;
+      let fromServer = false;
       return resilientListener<QuerySnapshot>(
-        (next, error) => onSnapshot(source, next, error),
+        // Metadata changes too: the server's confirmation of a cached answer must reach
+        // `confirmed`, or retries would never reset the backoff and refusal counts.
+        (next, error) => onSnapshot(source, { includeMetadataChanges: true }, next, error),
         {
           next: (snapshot) => {
-            if (answered && snapshot.docChanges().length === 0) return;
+            const confirmed = !snapshot.metadata.fromCache;
+            if (answered && snapshot.docChanges().length === 0 && (fromServer || !confirmed)) return;
             answered = true;
+            fromServer ||= confirmed;
             dispatch({ type: 'answer', key, session, collection: name, docs: snapshot.docs.map((item) => ({ id: item.id, data: item.data() })) });
           },
           confirmed: (snapshot) => !snapshot.metadata.fromCache,

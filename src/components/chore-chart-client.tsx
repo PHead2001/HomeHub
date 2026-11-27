@@ -75,6 +75,9 @@ async function stillOpen(transaction: Transaction, refs: DocumentReference[]) {
 /** How long after a change to repeats upkeep waits, so several edits share one run. */
 const UPKEEP_DEBOUNCE_MS = 1500;
 
+/** At most this long after a write settles, the page's version of its row gives way to the listener's. */
+const SETTLE_WAIT_MS = 5000;
+
 export function ChoreChartClient() {
   const { currentUser, currentMember, household, permissions } = useAuth();
   // Completion eligibility follows the household's day, as on the server (CH-2); so do
@@ -148,7 +151,9 @@ export function ChoreChartClient() {
   // After the write settles, the row keeps the page's version (the handler applied the
   // server's answer) until the listener delivers a newer snapshot, which reflects the write.
   const held = useRef(new Map<string, number>());
-  const settledAt = useRef(new Map<string, unknown>());
+  const settledAt = useRef(new Map<string, { snapshot: unknown; until: number }>());
+  // Re-merges when a settled row's wait runs out (no newer snapshot came).
+  const [settleTick, setSettleTick] = useState(0);
   const liveChoreDocs = useRef<unknown>(null);
   useEffect(() => { liveChoreDocs.current = live.state.docs.chores; }, [live.state.docs.chores]);
   const hold = useCallback((ids: readonly string[]) => {
@@ -167,8 +172,9 @@ export function ChoreChartClient() {
           return;
         }
         held.current.delete(id);
-        settledAt.current.set(id, liveChoreDocs.current);
+        settledAt.current.set(id, { snapshot: liveChoreDocs.current, until: Date.now() + SETTLE_WAIT_MS });
       });
+      window.setTimeout(() => setSettleTick(tick => tick + 1), SETTLE_WAIT_MS + 50);
     };
   }, []);
 
@@ -195,11 +201,14 @@ export function ChoreChartClient() {
       return { ...chore, assignedToUid, assignedToDisplayName: user?.displayName || chore.assignedToDisplayName || 'Unassigned' };
     });
     // Settled writes stop being kept once a newer snapshot than the one at release arrived.
-    for (const [id, snapshot] of settledAt.current) {
-      if (snapshot !== docs.chores) settledAt.current.delete(id);
+    // (or after SETTLE_WAIT_MS at most, so a snapshot that already held the write and
+    // another device's change can never stay hidden in a quiet household).
+    const now = Date.now();
+    for (const [id, settled] of settledAt.current) {
+      if (settled.snapshot !== docs.chores || now >= settled.until) settledAt.current.delete(id);
     }
     setAssignedChores(previous => mergeLiveRows(serverChores, previous, new Set([...held.current.keys(), ...settledAt.current.keys()])));
-  }, [live.state, currentUser]);
+  }, [live.state, currentUser, settleTick]);
 
   const loading = Boolean(liveKey) && live.status === 'loading';
 
