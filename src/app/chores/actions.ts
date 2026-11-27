@@ -8,6 +8,7 @@ import { runHouseholdReminders } from '@functions/reminders';
 import { ChoreCompletionError, completeChoresAs, reopenChoreAs, undoChoreCompletionAs } from '@/lib/server/chore-completion';
 import type { SubTaskRestore } from '@/lib/chores/completion';
 import { personalOperationContext } from '@/lib/server/operation-context';
+import { PlannedMoveError, movePlannedOccurrence, undoPlannedMove } from '@/lib/server/planned-chore-move';
 
 // functions/ pins its own firebase-admin version; the Firestore calls used are
 // identical across versions, so the instance is passed through untyped.
@@ -81,4 +82,35 @@ export async function undoChoreCompletion(input: ChoreActionContext & { choreId:
 export async function reopenChore(input: ChoreActionContext & { choreId: string }) {
   // Only the completer, the assignee or a member who may edit chores (CH-6).
   return runChoreAction(input, user => reopenChoreAs(adminDb, user.householdId, input, { uid: user.uid, email: user.email }));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Planned days of repeating chores (audit CA-15, CA-27)                       */
+/* -------------------------------------------------------------------------- */
+
+export type PlannedMoveResult<T> = { ok: true; data: T } | { ok: false; code: 'unauthenticated' | 'forbidden' | 'invalid' | 'not-found' | 'conflict' | 'failed' };
+
+const runPlannedAction = async <T>(context: ChoreActionContext, task: (householdId: string) => Promise<T>): Promise<PlannedMoveResult<T>> => {
+  try {
+    // Moving a chore needs chores.edit, as moving a generated chore does under the rules.
+    const user = await authorizeHouseholdAction({ idToken: context?.idToken, householdId: context?.householdId }, 'chores.edit');
+    return { ok: true, data: JSON.parse(JSON.stringify(await task(user.householdId))) as T };
+  } catch (error) {
+    if (error instanceof HomeHubAiError) {
+      return { ok: false, code: error.code === 'forbidden' ? 'forbidden' : error.code === 'unauthenticated' ? 'unauthenticated' : 'failed' };
+    }
+    if (error instanceof PlannedMoveError) return { ok: false, code: error.code };
+    console.error('Planned chore move failed', error);
+    return { ok: false, code: 'failed' };
+  }
+};
+
+/** Moves a planned (not yet generated) day of a repeating chore to `toDay` (CA-15). */
+export async function movePlannedChore(input: ChoreActionContext & { templateId: string; roomId: string; day: string; toDay: string }) {
+  return runPlannedAction(input, householdId => movePlannedOccurrence(adminDb, householdId, input, upkeepNow()));
+}
+
+/** Undo of `movePlannedChore`: removes the created day while it is untouched. */
+export async function undoPlannedChoreMove(input: ChoreActionContext & { choreId: string; toDay: string }) {
+  return runPlannedAction(input, householdId => undoPlannedMove(adminDb, householdId, input));
 }
