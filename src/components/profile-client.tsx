@@ -129,6 +129,11 @@ export function ProfileClient() {
 
   // PR-9: every photo is redrawn at 512 px before it is shown or uploaded, which also
   // drops EXIF metadata (GPS location included). HEIC works where the browser reads it.
+  // The photo choice as of now (not as of the render that started a save), so a save
+  // that finishes never clears a photo chosen after it began.
+  const photoChoiceRef = useRef<File | null>(null);
+  useEffect(() => { photoChoiceRef.current = photoFile; }, [photoFile]);
+
   const choosePhoto = async (file: File | undefined) => {
     if (!file) return;
     const error = profilePhotoError(file);
@@ -168,14 +173,17 @@ export function ProfileClient() {
   };
 
   const onSubmit = async (values: z.infer<typeof profileSchema>) => {
-    if (!currentUser) return;
+    // A photo still being prepared is not saved half-way: Save waits for it (the button
+    // is disabled meanwhile).
+    if (!currentUser || preparingPhoto) return;
+    const savedPhoto = photoFile;
     setIsSubmitting(true);
     try {
       const previousUrl = currentUser.avatarUrl;
       let avatarUrl = removePhoto ? null : currentUser.avatarUrl;
       let uploaded: StorageReference | null = null;
-      if (photoFile) {
-        const upload = await uploadAvatar(photoFile);
+      if (savedPhoto) {
+        const upload = await uploadAvatar(savedPhoto);
         avatarUrl = upload.url;
         uploaded = upload.storageRef;
       }
@@ -192,8 +200,11 @@ export function ProfileClient() {
       }
       deletePreviousPhoto(previousUrl, avatarUrl || null);
 
-      clearPhotoChoice();
-      setRemovePhoto(false);
+      // Only the photo this save uploaded is cleared; one chosen meanwhile stays pending.
+      if (photoChoiceRef.current === savedPhoto) {
+        clearPhotoChoice();
+        setRemovePhoto(false);
+      }
       form.reset({ displayName: values.displayName.trim() });
     } catch (error) {
       console.error('Failed to update profile', error);
@@ -308,7 +319,7 @@ export function ProfileClient() {
                   <Input id="profile-email" disabled value={currentUser.email || ''} />
                 </div>
 
-                <Button type="submit" disabled={isSubmitting}>
+                <Button type="submit" disabled={isSubmitting || preparingPhoto}>
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Changes
                 </Button>

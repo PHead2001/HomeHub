@@ -796,7 +796,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch (error) {
       console.warn('Your profile could not be loaded.', error instanceof Error ? error.message : String(error));
-      setProfileLoadFailed(true);
+      // Only for the account that asked: a retry failing after sign-out or an account
+      // change must not report the next session's profile as failed.
+      if (auth.currentUser?.uid === firebaseUser.uid) setProfileLoadFailed(true);
     }
   }, [fetchOrCreateUserProfile, publishProfile]);
 

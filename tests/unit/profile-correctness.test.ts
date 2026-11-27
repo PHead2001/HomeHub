@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { DEFAULT_APPEARANCE, type AppearancePreferences } from '../../src/lib/theme/appearance';
 import { changedSyncedKeys, dropPending, reconcileProfileTheme, storedSyncedValues, themeWrite } from '../../src/lib/theme/theme-sync';
@@ -96,5 +98,22 @@ describe('the dashboard greeting uses the name chosen in Profile (PR-3)', () => 
     assert.equal(greetingNameFor({ firstName: 'Sam', displayName: '  ' }), 'Sam');
     assert.equal(greetingNameFor({ displayName: 'sam@example.test', firstName: '' }), null);
     assert.equal(greetingNameFor(null), null);
+  });
+});
+
+describe('review fixes (PR #246)', () => {
+  const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
+  it('Save waits for a photo still being prepared and never clears a photo chosen during the save', () => {
+    const client = read('src/components/profile-client.tsx');
+    assert.match(client, /<Button type="submit" disabled=\{isSubmitting \|\| preparingPhoto/);
+    assert.match(client, /if \(!currentUser \|\| preparingPhoto\) return;/);
+    assert.match(client, /if \(photoChoiceRef\.current === savedPhoto\) \{\s*clearPhotoChoice\(\);/);
+  });
+
+  it('a profile retry failing after sign-out or an account change reports nothing', () => {
+    const source = read('src/contexts/auth-context.tsx');
+    const retry = source.slice(source.indexOf('const retryProfileLoad'), source.indexOf('// Coming back online retries'));
+    assert.match(retry, /if \(auth\.currentUser\?\.uid === firebaseUser\.uid\) setProfileLoadFailed\(true\);/);
+    assert.doesNotMatch(retry.replace(/if \(auth\.currentUser\?\.uid === firebaseUser\.uid\) setProfileLoadFailed\(true\);/, ''), /setProfileLoadFailed\(true\)/);
   });
 });
