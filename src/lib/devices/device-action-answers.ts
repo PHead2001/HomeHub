@@ -25,6 +25,9 @@ export const UNDO_CAPABILITY_OF: Partial<Record<DeviceCapability, DeviceCapabili
   // Shopping: adding items and ticking one.
   'shopping.add': 'shopping.add.undo',
   'shopping.tick': 'shopping.tick.undo',
+  // The pantry from a scan (BL-20): Used up and Restock.
+  'pantry.useUp': 'pantry.useUp.undo',
+  'pantry.restock': 'pantry.restock.undo',
 };
 
 /**
@@ -44,7 +47,17 @@ export const SENDABLE_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<Devi
   'maintenance.editSchedules', 'maintenance.log.delete', 'maintenance.record.delete',
   // Shopping: add and tick with their Undo (face).
   'shopping.add', 'shopping.add.undo', 'shopping.tick', 'shopping.tick.undo',
+  // The pantry from a scan (BL-20): Used up and Restock with their Undo (face).
+  'pantry.useUp', 'pantry.useUp.undo', 'pantry.restock', 'pantry.restock.undo',
 ]);
+
+/** Plain words for a pantry answer that changed nothing (also the queue's drop notice). */
+const pantryNoop = (result: Record<string, unknown>): string => {
+  const name = str(result.name) || 'That product';
+  if (result.status === 'not_stocked') return `${name} is not in the pantry.`;
+  if (result.status === 'needs_phone') return `${name} needs a phone first: open it in the pantry there.`;
+  return "Couldn't save. Try again.";
+};
 
 /** Plain words for a shopping answer that changed nothing (also the queue's drop notice). */
 const shoppingNoop = (capability: DeviceCapability, result: Record<string, unknown>): string => {
@@ -281,6 +294,19 @@ export function choreAnswerMeaning(capability: DeviceCapability, data: unknown, 
     if (result.status === 'ticked') return { undoable: true, message: `${label} is in the cart.` };
     return { undoable: false, notice: true, message: shoppingNoop(capability, result) };
   }
+  if (capability === 'pantry.useUp') {
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'used') {
+      const remaining = typeof result.remaining === 'number' ? result.remaining : null;
+      return { undoable: true, message: remaining === 0 ? `Used the last ${str(result.name)}.` : `Used one ${str(result.name)}.${remaining !== null ? ` ${remaining} left.` : ''}` };
+    }
+    return { undoable: false, notice: true, message: pantryNoop(result) };
+  }
+  if (capability === 'pantry.restock') {
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'restocked') return { undoable: true, message: result.created === true ? `${str(result.name)} is in the pantry (1).` : `One more ${str(result.name)} in the pantry.` };
+    return { undoable: false, notice: true, message: pantryNoop(result) };
+  }
   if (capability === 'chores.complete') {
     const outcome = (value.outcome ?? {}) as Record<string, unknown>;
     if (outcome.status === 'completed') return { undoable: true, message: `${label}: done.` };
@@ -361,6 +387,16 @@ export function queuedSendResult(capability: DeviceCapability, answer: { ok: tru
     if (result.status === 'added' || result.status === 'ticked') return { ok: true };
     const why = shoppingNoop(capability, result);
     return { ok: false, code: result.status === 'already' ? 'conflict' : 'invalid_input', reason: `${why.charAt(0).toLowerCase()}${why.slice(1)}` };
+  }
+  if (capability === 'pantry.useUp' || capability === 'pantry.restock') {
+    // A queued Used up of a product no longer stocked, or a batch a phone must upgrade: dropped with a notice that says why.
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'used' || result.status === 'restocked') return { ok: true };
+    const why = pantryNoop(result);
+    return { ok: false, code: 'invalid_input', reason: `${why.charAt(0).toLowerCase()}${why.slice(1)}` };
+  }
+  if (capability === 'pantry.useUp.undo' || capability === 'pantry.restock.undo') {
+    return ['undone', 'already', 'not_applied'].includes(str(value.status)) ? { ok: true } : { ok: false, code: 'changed_since' };
   }
   if (capability === 'shopping.add.undo' || capability === 'shopping.tick.undo') {
     return ['undone', 'already', 'not_applied'].includes(str(value.status)) ? { ok: true } : { ok: false, code: 'changed_since' };

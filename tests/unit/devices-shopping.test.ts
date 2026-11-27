@@ -219,3 +219,34 @@ describe('the tablet shell and dashboard', () => {
     assert.doesNotMatch(read('src/components/devices/tablet-views.tsx'), /read-only on wall tablets/);
   });
 });
+
+describe('the pantry from a tablet scan (BL-20, BL-21)', () => {
+  it('Used up and Restock are face actions with their Undo proven; the points PIN never applies; they queue', () => {
+    for (const capability of ['pantry.useUp', 'pantry.useUp.undo', 'pantry.restock', 'pantry.restock.undo'] as const) {
+      assert.ok(UNDO_PROVEN.has(capability), capability);
+      assert.ok(SENDABLE_CAPABILITIES.has(capability), capability);
+      assert.equal(DEVICE_ACTION_POLICY[capability].section, 'shopping', capability);
+      assert.deepEqual(DEVICE_ACTION_POLICY[capability].permissions, ['shopping.edit'], capability);
+    }
+    for (const pointsPin of ['off', 'kids', 'everyone'] as const) {
+      for (const actorRole of ['member', 'child'] as const) {
+        assert.equal(requiredLevel('pantry.useUp', { pointsPin, actorRole }), 'face');
+        assert.equal(queueAllowed('pantry.restock', { pointsPin, actorRole }), true);
+      }
+    }
+    assert.equal(UNDO_CAPABILITY_OF['pantry.useUp'], 'pantry.useUp.undo');
+    assert.equal(UNDO_CAPABILITY_OF['pantry.restock'], 'pantry.restock.undo');
+    assert.deepEqual(UNDO_OF['pantry.useUp.undo'], ['pantry.useUp']);
+  });
+
+  it('answers: one package used (the last one says so), restocked, and the no-ops say why without Undo', () => {
+    assert.deepEqual(choreAnswerMeaning('pantry.useUp', { result: { status: 'used', name: 'Beans', remaining: 2 } }, 'Beans'), { undoable: true, message: 'Used one Beans. 2 left.' });
+    assert.deepEqual(choreAnswerMeaning('pantry.useUp', { result: { status: 'used', name: 'Beans', remaining: 0 } }, 'Beans'), { undoable: true, message: 'Used the last Beans.' });
+    assert.deepEqual(choreAnswerMeaning('pantry.restock', { result: { status: 'restocked', name: 'Beans', created: true } }, 'Beans'), { undoable: true, message: 'Beans is in the pantry (1).' });
+    assert.deepEqual(choreAnswerMeaning('pantry.useUp', { result: { status: 'not_stocked', name: 'Beans' } }, 'Beans'), { undoable: false, notice: true, message: 'Beans is not in the pantry.' });
+    assert.deepEqual(queuedSendResult('pantry.useUp', ok({ result: { status: 'used' } })), { ok: true });
+    assert.deepEqual(queuedSendResult('pantry.useUp', ok({ result: { status: 'not_stocked', name: 'Beans' } })), { ok: false, code: 'invalid_input', reason: 'beans is not in the pantry.' });
+    assert.deepEqual(queuedSendResult('pantry.restock.undo', ok({ status: 'undone' })), { ok: true });
+    assert.deepEqual(queuedSendResult('pantry.restock.undo', ok({ status: 'other' })), { ok: false, code: 'changed_since' });
+  });
+});

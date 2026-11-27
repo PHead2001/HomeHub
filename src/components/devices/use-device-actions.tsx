@@ -87,7 +87,11 @@ import {
 } from '@/app/maintenance/device-actions';
 import {
   addShoppingItemsFromTabletAction,
+  restockPantryItemFromTabletAction,
   tickShoppingItemFromTabletAction,
+  undoPantryRestockFromTabletAction,
+  undoPantryTakeFromTabletAction,
+  takePantryItemFromTabletAction,
   undoShoppingAddFromTabletAction,
   undoShoppingTickFromTabletAction,
 } from '@/app/shopping/device-actions';
@@ -151,6 +155,12 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
   'shopping.add.undo': (base) => undoShoppingAddFromTabletAction(base),
   'shopping.tick': (base, intent) => tickShoppingItemFromTabletAction({ ...base, listId: String(intent.listId ?? ''), itemId: String(intent.itemId ?? '') }),
   'shopping.tick.undo': (base) => undoShoppingTickFromTabletAction(base),
+  // The pantry from a scan (BL-20): Used up and Restock with their Undo (face). An Undo that
+  // finds the batch changed since is refused `changed_since` by the server.
+  'pantry.useUp': (base, intent) => takePantryItemFromTabletAction({ ...base, barcode: String(intent.barcode ?? ''), name: String(intent.name ?? '') }),
+  'pantry.useUp.undo': (base) => undoPantryTakeFromTabletAction(base),
+  'pantry.restock': (base, intent) => restockPantryItemFromTabletAction({ ...base, barcode: String(intent.barcode ?? ''), name: String(intent.name ?? '') }),
+  'pantry.restock.undo': (base) => undoPantryRestockFromTabletAction(base),
 };
 
 export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDERS[capability]);

@@ -178,20 +178,33 @@ function KitchenQuickAdd({ list }: { list: KitchenList }) {
 }
 
 /**
- * Scanning on the kitchen tablet (BL-20, first part): the camera from the device record
- * (front by default, WT-4) scans continuously, a product saved in the household library
- * (read on the tablet, the rules let it) is added to this list as one item through
- * `shopping.add` (a face tap, with its Undo), and anything else says to save it from a
- * phone. Used up and Restock change the pantry, which has no tablet action yet, so they
- * stay on phones; nothing here asks Open Food Facts or writes the library.
+ * Scanning on the kitchen tablet (BL-20, BL-21): the camera from the device record (front by
+ * default, WT-4) scans continuously, and each product saved in the household library (read
+ * on the tablet, the rules let it) gets the selected action as a device action for the
+ * person chosen in "Who's here?" (a face tap, with its Undo): **Add to list** (`shopping.add`,
+ * one item on this list), **Used up** (`pantry.useUp`, one package out of the pantry; at zero
+ * "Add to list?" with Add and Not now, D-8) or **Restock** (`pantry.restock`, one package in).
+ * Anything else says to save it from a phone; nothing here asks Open Food Facts or writes
+ * the library.
  */
+type TabletScanMode = 'list' | 'used' | 'restock';
+const TABLET_SCAN_MODES: readonly { id: TabletScanMode; label: string }[] = [
+  { id: 'used', label: 'Used up' },
+  { id: 'restock', label: 'Restock' },
+  { id: 'list', label: 'Add to list' },
+];
+
 function KitchenScanPanel({ list, library, onClose }: { list: KitchenList; library: ReadonlyMap<string, LocalLibraryEntry> | null; onClose: () => void }) {
   const { settings, runAction } = useTablet();
+  const [mode, setMode] = useState<TabletScanMode>('used');
   const [line, setLine] = useState<string | null>(null);
+  const [askAdd, setAskAdd] = useState<string | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
-  // The latest library, for scans queued before it arrived (they wait up to 10 s for it).
+  // The latest library and mode, for scans queued before they arrived (a scan waits up to 10 s for the library).
   const libraryRef = useRef(library);
   useEffect(() => { libraryRef.current = library; }, [library]);
+  const modeRef = useRef(mode);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
   const loadedLibrary = async () => {
     for (let waited = 0; !libraryRef.current && waited < 10_000; waited += 250) {
       setLine('Loading the household library…');
@@ -199,8 +212,13 @@ function KitchenScanPanel({ list, library, onClose }: { list: KitchenList; libra
     }
     return libraryRef.current;
   };
+  const addToList = async (name: string) => {
+    const outcome = await runAction({ capability: 'shopping.add', label: `Add ${name}`, intent: { listId: list.id, entries: [{ name, quantity: 1 }] } });
+    setLine(outcome.ok || outcome.queued ? `${name} is on ${list.name}.` : `${name} was not added.`);
+  };
   const onScan = (code: string) => {
     queue.current = queue.current.then(async () => {
+      setAskAdd(null);
       const current = await loadedLibrary();
       if (!current) {
         setLine("The household library couldn't be loaded right now. Try again in a moment.");
@@ -211,17 +229,52 @@ function KitchenScanPanel({ list, library, onClose }: { list: KitchenList; libra
         setLine(`${code} is not in the household library yet. Save it from a phone, then scan again.`);
         return;
       }
-      const outcome = await runAction({ capability: 'shopping.add', label: `Add ${found.productName}`, intent: { listId: list.id, entries: [{ name: found.productName, quantity: 1 }] } });
-      setLine(outcome.ok || outcome.queued ? `${found.productName} is on ${list.name}.` : `${found.productName} was not added.`);
+      const name = found.productName;
+      const action = modeRef.current;
+      if (action === 'list') {
+        await addToList(name);
+        return;
+      }
+      const capability = action === 'used' ? 'pantry.useUp' : 'pantry.restock';
+      const outcome = await runAction({ capability, label: name, intent: { barcode: found.libraryItem.id, name } });
+      const result = ((outcome.data ?? {}) as { result?: { status?: string; remaining?: number; askAddToList?: boolean } }).result;
+      if (outcome.queued) setLine(`Saved on this tablet: ${name} syncs when the connection is back.`);
+      else if (!outcome.ok) setLine(result?.status === 'not_stocked' ? `${name} is not in the pantry.` : `${name} was not changed.`);
+      else if (action === 'restock') setLine(`${name} restocked.`);
+      else setLine(result?.remaining === 0 ? `Used the last ${name}.` : `Used one ${name}.${typeof result?.remaining === 'number' ? ` ${result.remaining} left.` : ''}`);
+      // D-8: at zero, ask; nothing goes on the list without the tap.
+      if (outcome.ok && result?.askAddToList) setAskAdd(name);
     });
   };
   return (
-    <section className="grid gap-4 rounded-xl border bg-card p-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" aria-label="Scan to add" data-testid="tablet-scan-panel">
+    <section className="grid gap-4 rounded-xl border bg-card p-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" aria-label="Scan" data-testid="tablet-scan-panel">
       <BarcodeScanner onScan={onScan} deviceCamera={settings.camera} continuous />
       <div className="space-y-3">
-        <p className="text-lg font-medium">Scan a product to put it on {list.name}.</p>
+        <div role="radiogroup" aria-label="What a scan does" className="grid grid-cols-3 gap-2">
+          {TABLET_SCAN_MODES.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="radio"
+              aria-checked={mode === option.id}
+              onClick={() => setMode(option.id)}
+              className={cn('min-h-16 rounded-xl border-2 px-2 text-lg font-semibold', mode === option.id ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-background')}
+              data-testid={`tablet-scan-mode-${option.id}`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
         <p aria-live="polite" className="min-h-8 text-lg" data-testid="tablet-scan-line">{line}</p>
-        <p className="text-sm text-muted-foreground">Used up and Restock are on phones for now.</p>
+        {askAdd && (
+          <div role="alert" className="space-y-2 rounded-xl border p-3" data-testid="tablet-scan-ask">
+            <p className="text-lg font-medium">That was the last {askAdd}. Add to {list.name}?</p>
+            <div className="flex gap-2">
+              <button type="button" className="min-h-14 flex-1 rounded-xl bg-primary px-4 text-lg font-medium text-primary-foreground" onClick={() => { const name = askAdd; setAskAdd(null); void addToList(name); }}>Add</button>
+              <button type="button" className="min-h-14 flex-1 rounded-xl border px-4 text-lg" onClick={() => setAskAdd(null)}>Not now</button>
+            </div>
+          </div>
+        )}
         <button type="button" onClick={onClose} className="inline-flex min-h-14 items-center gap-2 rounded-xl border px-5 text-lg">
           <X aria-hidden className="h-5 w-5" /> Done scanning
         </button>

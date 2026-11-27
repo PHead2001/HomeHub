@@ -133,6 +133,7 @@ test('scan: a saved product goes on the list for the face chosen, from the table
     await page.getByTestId('tablet-shopping-scan').click();
     const panel = page.getByTestId('tablet-scan-panel');
     await expect(panel).toBeVisible();
+    await panel.getByTestId('tablet-scan-mode-list').click();
     // The test browser has no camera: the typed number is the scanner's other way in.
     await panel.getByLabel('Barcode number').fill(code);
     await panel.getByRole('button', { name: 'Use barcode' }).click();
@@ -152,6 +153,52 @@ test('scan: a saved product goes on the list for the face chosen, from the table
   } finally {
     await product.delete();
     for (const doc of await itemsNamed('e2e tablet tin')) await doc.ref.delete();
+  }
+});
+
+test('scan: Used up takes one package for the face chosen, with Undo; the last one asks "Add to list?" and adds only on Add (BL-20, BL-21)', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  const code = '000000000404';
+  const product = householdRef.collection('barcode-library').doc(code);
+  const stock = householdRef.collection('pantry-inventory').doc('e2e-tablet-beans');
+  await product.set({ name: 'E2E Tablet Beans', imageUrl: '', createdAt: new Date().toISOString(), createdByUid: OWNER_UID });
+  await stock.set({
+    name: 'E2E Tablet Beans', nameKey: 'e2e tablet beans', location: 'Pantry', unit: 'cans', packages: 2, packageSize: null, expiryDate: null,
+    quantity: 2, schemaVersion: 2, barcode: code, addedByUid: OWNER_UID,
+  });
+  const scan = async () => {
+    const panel = page.getByTestId('tablet-scan-panel');
+    await panel.getByLabel('Barcode number').fill(code);
+    await panel.getByRole('button', { name: 'Use barcode' }).click();
+  };
+  try {
+    await forget(page);
+    await openKitchen(page);
+    await page.getByTestId('tablet-shopping-scan').click();
+    const panel = page.getByTestId('tablet-scan-panel');
+    await expect(panel.getByTestId('tablet-scan-mode-used')).toHaveAttribute('aria-checked', 'true');
+    await scan();
+    await pick(page, OWNER_UID);
+    await expect(page.getByTestId('pin-pad')).toHaveCount(0);
+    await expect.poll(async () => (await stock.get()).get('packages'), { timeout: 15_000 }).toBe(1);
+    expect((await stock.get()).get('updatedByUid')).toBe(OWNER_UID);
+    // Undo puts the package back.
+    await page.getByTestId('tablet-undo').first().click();
+    await expect.poll(async () => (await stock.get()).get('packages'), { timeout: 15_000 }).toBe(2);
+    // Two more scans (the face is remembered): the last one asks, and nothing is added until Add.
+    await scan();
+    await expect.poll(async () => (await stock.get()).get('packages'), { timeout: 15_000 }).toBe(1);
+    await scan();
+    await expect.poll(async () => (await stock.get()).get('packages'), { timeout: 15_000 }).toBe(0);
+    await expect(panel.getByTestId('tablet-scan-ask')).toContainText('Add to');
+    expect((await itemsNamed('e2e tablet beans')).length).toBe(0);
+    await panel.getByTestId('tablet-scan-ask').getByRole('button', { name: 'Add', exact: true }).click();
+    await expect.poll(async () => (await itemsNamed('e2e tablet beans')).length, { timeout: 15_000 }).toBe(1);
+  } finally {
+    await product.delete();
+    await stock.delete();
+    for (const doc of await itemsNamed('e2e tablet beans')) await doc.ref.delete();
   }
 });
 
