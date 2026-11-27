@@ -45,17 +45,20 @@ export function skipsForDeletion(chores: readonly EditableChore[], today: string
 }
 
 /**
- * What deleting a room does to chores in it (CH-4): open generated chores are
- * deleted (upkeep regenerates the series under the template's remaining rooms,
- * or "Around the house"); every other chore in the room (one-time chores,
+ * What deleting a room does to chores in it (CH-4): open generated chores whose
+ * day is today or later are deleted (upkeep regenerates the series under the
+ * template's remaining rooms, or "Around the house"); every other chore in the
+ * room (overdue days, which upkeep never regenerates, one-time chores and
  * completed history) stays, without the room.
  */
-export function roomDeletionPlan(chores: readonly EditableChore[], roomId: string): { remove: string[]; detach: { id: string; roomIds: string[] }[] } {
+export function roomDeletionPlan(chores: readonly EditableChore[], roomId: string, today: string): { remove: string[]; detach: { id: string; roomIds: string[] }[] } {
   const remove: string[] = [];
   const detach: { id: string; roomIds: string[] }[] = [];
   for (const chore of chores) {
     if (!chore.roomIds?.includes(roomId)) continue;
-    if (!chore.isCompleted && isGeneratedInstance(chore)) remove.push(chore.id);
+    const key = storedOccurrenceKey(chore.id, chore);
+    const day = key ? occurrenceKeyDay(key) : null;
+    if (!chore.isCompleted && isGeneratedInstance(chore) && day !== null && day >= today) remove.push(chore.id);
     else detach.push({ id: chore.id, roomIds: chore.roomIds.filter(id => id !== roomId) });
   }
   return { remove, detach };

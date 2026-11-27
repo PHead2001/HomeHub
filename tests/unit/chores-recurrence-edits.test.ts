@@ -59,16 +59,18 @@ describe('repeat edits (CH-4)', () => {
     assert.equal(isGeneratedInstance({ id: 'y' }), false);
   });
 
-  test('deleting a room removes its open generated days and keeps everything else without the room', () => {
+  test('deleting a room removes its open generated days from today on and keeps everything else without the room', () => {
     const chores = [
       generated('trash', 'garage', '2026-08-03'),
+      generated('trash', 'garage', '2026-07-30'), // overdue: upkeep would not regenerate it
       generated('trash', 'garage', '2026-08-01', { isCompleted: true }),
       { id: 'one-time', sourceType: 'temporary', roomIds: ['garage', 'kitchen'], isCompleted: false },
       generated('dishes', 'kitchen', '2026-08-01'),
     ];
-    const plan = roomDeletionPlan(chores, 'garage');
+    const plan = roomDeletionPlan(chores, 'garage', '2026-08-01');
     assert.deepEqual(plan.remove, [occurrenceChoreId('trash', 'garage', '2026-08-03')]);
     assert.deepEqual(plan.detach, [
+      { id: occurrenceChoreId('trash', 'garage', '2026-07-30'), roomIds: [] },
       { id: occurrenceChoreId('trash', 'garage', '2026-08-01'), roomIds: [] },
       { id: 'one-time', roomIds: ['kitchen'] },
     ]);

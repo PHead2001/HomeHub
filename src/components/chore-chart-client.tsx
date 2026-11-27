@@ -5,7 +5,7 @@ import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy, User as UserIcon } from 'lucide-react';
-import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { type DocumentData, type DocumentReference, type Transaction, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { withSkippedOccurrences } from '@functions/shared/skips';
 import { isGeneratedInstance, roomDeletionPlan, skipsForDeletion } from '@/lib/chores/recurrence-edits';
@@ -59,6 +59,16 @@ import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanS
 
 /** End of `today` (local), so every completion made today counts and the week is today's week. */
 const statsNow = (today: string) => { const d = dayFromKey(today); d.setHours(23, 59, 59, 999); return d; };
+
+/**
+ * Reads candidate chores inside the transaction and keeps those still open, so a
+ * completion committed after the candidates were listed is never deleted (all
+ * reads happen before the transaction's writes).
+ */
+async function stillOpen(transaction: Transaction, refs: DocumentReference[]) {
+  const snaps = await Promise.all(refs.map(ref => transaction.get(ref)));
+  return snaps.filter(snap => snap.exists() && snap.get('isCompleted') !== true);
+}
 
 export function ChoreChartClient() {
   const { currentUser, currentMember, household, permissions } = useAuth();
@@ -293,6 +303,7 @@ export function ChoreChartClient() {
     const templateId = id || newChoreDocId(choreData.task || '', doc(templatesCollection).id);
     const templateRef = doc(templatesCollection, templateId);
     try {
+      const listed = id ? await getDocs(query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false))) : null;
       await runTransaction(db, async (transaction) => {
         const oldTemplateSnap = await transaction.get(templateRef);
         if (!id) {
@@ -302,8 +313,8 @@ export function ChoreChartClient() {
           return;
         }
         const oldTemplate = oldTemplateSnap.exists() ? oldTemplateSnap.data() as ChoreTemplate : null;
+        const openChores = await stillOpen(transaction, listed?.docs.map(choreDoc => choreDoc.ref) ?? []);
         transaction.set(templateRef, choreData, { merge: true });
-        const openChores = await getDocs(query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false)));
         const removedRoomIds = oldTemplate?.roomIds && choreData.roomIds ? oldTemplate.roomIds.filter(roomId => !choreData.roomIds!.includes(roomId)) : [];
         openChores.forEach(choreDoc => {
           const chore = choreDoc.data() as ChoreRecord;
@@ -328,8 +339,9 @@ export function ChoreChartClient() {
     const choresCollection = getCollectionRef('chores');
     if (!templatesCollection || !choresCollection) return;
     try {
+      const listed = await getDocs(query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false)));
       await runTransaction(db, async (transaction) => {
-        const openChores = await getDocs(query(choresCollection, where('templateId', '==', id), where('isCompleted', '==', false)));
+        const openChores = await stillOpen(transaction, listed.docs.map(choreDoc => choreDoc.ref));
         transaction.delete(doc(templatesCollection, id));
         openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
       });
@@ -359,23 +371,32 @@ export function ChoreChartClient() {
     const assignedToDisplayName = memberName(user);
     const fields = assigneeFields(user);
     const batch = writeBatch(db);
+    let commit = () => batch.commit();
     if (schedule.type === 'recurring') {
-      for (const template of templatesToAssign) {
+      commit = async () => {
         // Open days already generated under the old schedule, assignee or rooms are
         // replaced: upkeep regenerates them from the new settings. Completed days stay,
         // and their occurrence keys keep upkeep from generating them again (CH-4).
-        const openChores = await getDocs(query(choresCollection, where('templateId', '==', template.id), where('isCompleted', '==', false)));
-        openChores.docs.filter(choreDoc => isGeneratedInstance({ id: choreDoc.id, ...choreDoc.data() })).forEach(choreDoc => batch.delete(choreDoc.ref));
-        // A merge keeps fields it does not name, so an older assignee's email (top level
-        // and inside `recurrence`) is removed explicitly: it would otherwise win over the uid.
-        batch.set(doc(templatesCollection, template.id), {
-          recurrence: { ...schedule.recurrence, assignedToEmail: deleteField() },
-          ...fields,
-          assignedToEmail: deleteField(),
-          // The rooms chosen in the dialog; none chosen keeps the chore's own rooms.
-          ...(assignment.roomIds.length > 0 ? { roomIds: assignment.roomIds.filter(roomId => roomId !== 'general') } : {}),
-        }, { merge: true });
-      }
+        const listed = await Promise.all(templatesToAssign.map(template =>
+          getDocs(query(choresCollection, where('templateId', '==', template.id), where('isCompleted', '==', false)))));
+        const generated = listed.flatMap(snap => snap.docs.filter(choreDoc => isGeneratedInstance({ id: choreDoc.id, ...choreDoc.data() })).map(choreDoc => choreDoc.ref));
+        await runTransaction(db, async (transaction) => {
+          // Re-read inside the transaction: a day completed meanwhile is kept.
+          const openChores = await stillOpen(transaction, generated);
+          openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
+          for (const template of templatesToAssign) {
+            // A merge keeps fields it does not name, so an older assignee's email (top level
+            // and inside `recurrence`) is removed explicitly: it would otherwise win over the uid.
+            transaction.set(doc(templatesCollection, template.id), {
+              recurrence: { ...schedule.recurrence, assignedToEmail: deleteField() },
+              ...fields,
+              assignedToEmail: deleteField(),
+              // The rooms chosen in the dialog; none chosen keeps the chore's own rooms.
+              ...(assignment.roomIds.length > 0 ? { roomIds: assignment.roomIds.filter(roomId => roomId !== 'general') } : {}),
+            }, { merge: true });
+          }
+        });
+      };
     } else {
       const originalDueDate = format(schedule.dueDate, 'yyyy-MM-dd');
       for (const template of templatesToAssign) {
@@ -403,7 +424,7 @@ export function ChoreChartClient() {
       }
     }
     try {
-      await batch.commit();
+      await commit();
       if (shouldNotify(user.uid)) {
         try {
           await setDoc(doc(collection(db, 'households', currentUser.householdId, 'notifications')), buildNotificationDocument({
@@ -458,12 +479,15 @@ export function ChoreChartClient() {
     try {
       const choresCollection = getCollectionRef('chores');
       if (!choresCollection) return;
-      // Chores in the room, read fresh: its open generated days go (upkeep regenerates
+      // Chores in the room: its open generated days from today on go (upkeep regenerates
       // the series under the template's other rooms, or around the house), and every
-      // other chore stays without the room, so nothing is left under a removed room (CH-4).
-      const inRoom = await getDocs(query(choresCollection, where('roomIds', 'array-contains', id)));
-      const plan = roomDeletionPlan(inRoom.docs.map(d => ({ id: d.id, ...d.data() })), id);
+      // other chore (overdue days included) stays without the room, so nothing is left
+      // under a removed room (CH-4).
+      const listed = await getDocs(query(choresCollection, where('roomIds', 'array-contains', id)));
       await runTransaction(db, async (transaction) => {
+        // Re-read inside the transaction: a chore completed meanwhile is kept as history.
+        const fresh = await Promise.all(listed.docs.map(choreDoc => transaction.get(choreDoc.ref)));
+        const plan = roomDeletionPlan(fresh.filter(snap => snap.exists()).map(snap => ({ id: snap.id, ...snap.data() })), id, householdDay);
         transaction.delete(doc(roomsCollection, id));
         choreTemplates.filter(t => t.roomIds?.includes(id)).forEach(template => {
           transaction.update(doc(templatesCollection, template.id), { roomIds: template.roomIds?.filter(roomId => roomId !== id) });
@@ -483,12 +507,14 @@ export function ChoreChartClient() {
     const choresCollection = getCollectionRef('chores');
     if (!templatesCollection || !choresCollection) return false;
     try {
+      // Only the series' own generated days: a one-time assignment of the same
+      // library chore is its own chore and stays (CH-4).
+      const listed = await getDocs(query(choresCollection, where('templateId', '==', choreId), where('isCompleted', '==', false)));
+      const generated = listed.docs.filter(choreDoc => isGeneratedInstance({ id: choreDoc.id, ...choreDoc.data() }));
       await runTransaction(db, async (transaction) => {
-        const openChores = await getDocs(query(choresCollection, where('templateId', '==', choreId), where('isCompleted', '==', false)));
+        const openChores = await stillOpen(transaction, generated.map(choreDoc => choreDoc.ref));
         transaction.update(doc(templatesCollection, choreId), update);
-        // Only the series' own generated days: a one-time assignment of the same
-        // library chore is its own chore and stays (CH-4).
-        openChores.docs.filter(choreDoc => isGeneratedInstance({ id: choreDoc.id, ...choreDoc.data() })).forEach(choreDoc => transaction.delete(choreDoc.ref));
+        openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
       });
       toast({ title });
       await fetchAllData();

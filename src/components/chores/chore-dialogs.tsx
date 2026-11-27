@@ -86,7 +86,7 @@ export function ManageRoomsDialog({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {roomToDelete?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>Chores in the library stop using this room. Chores already on the chart keep their place.</AlertDialogDescription>
+            <AlertDialogDescription>Chores in the library stop using this room. Days of repeating chores from today on are removed from it and come back without the room. Other chores, including overdue and completed ones, stay on the chart without the room.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -392,7 +392,8 @@ export function AssignChoresDialog({
 
   // One-time assignment needs chores.create; recurring updates the template (chores.edit).
   const canOneTime = capabilities.canCreate;
-  const canRecurring = capabilities.canEdit;
+  // Repeats replaces the series' open days, which deletes chores (CH-4).
+  const canRecurring = capabilities.canEdit && capabilities.canDelete;
   const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.uid === currentUserUid);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
