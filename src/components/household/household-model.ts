@@ -318,6 +318,21 @@ export function changedPermissions(
 }
 
 /** Permissions where the member differs from their role's default. */
+/**
+ * Whether the viewer sees another member's custom permissions (HO-12): the person
+ * themself and holders of `household.manageRoles` (who edit them). Everyone else
+ * (a Child, a Guest, a Member without it) sees role defaults only. A display rule: the
+ * membership records, overrides included, stay readable to approved members, because
+ * every screen's permission checks read them.
+ */
+export function canSeeMemberOverrides(
+  viewer: { uid?: string | null; permissions?: Partial<Record<HouseholdPermission, boolean>> | null } | null | undefined,
+  memberUid: string,
+): boolean {
+  if (!viewer) return false;
+  return viewer.uid === memberUid || viewer.permissions?.['household.manageRoles'] === true;
+}
+
 export function customizedPermissions(role: HouseholdRole, overrides: PermissionOverrides | undefined): HouseholdPermission[] {
   return Object.keys(normalizeOverrides(role, overrides)) as HouseholdPermission[];
 }
@@ -338,6 +353,7 @@ const AUDIT_LABELS: Record<string, string> = {
   'member.permissions_changed': 'Customized permissions',
   'member.removed': 'Removed a member',
   'member.left': 'Left the household',
+  'member.request_cancelled': 'Cancelled a request to join',
   'ownership.transferred': 'Transferred ownership',
   'device.code_created': 'Created a wall-tablet code',
   'device.repair_code_created': 'Created a code to re-pair a wall tablet',

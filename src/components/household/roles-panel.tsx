@@ -52,6 +52,7 @@ export function RolesPanel({
   onSelect,
   actor,
   onSave,
+  canSeeOverrides = () => true,
 }: {
   members: readonly HouseholdMember[];
   colors: Map<string, MemberColor>;
@@ -62,8 +63,13 @@ export function RolesPanel({
   /** The viewer's own membership record; decides what can be edited. */
   actor: HouseholdMember | null | undefined;
   onSave: (member: HouseholdMember, overrides: PermissionOverrides) => Promise<boolean>;
+  /**
+   * Whose own permissions the viewer may see (HO-12): themself, and everyone when they
+   * hold Manage roles. Others are not offered in "Show"; the role presets are.
+   */
+  canSeeOverrides?: (member: HouseholdMember) => boolean;
 }) {
-  const approved = useMemo(() => members.filter((m) => m.role !== 'newuser'), [members]);
+  const approved = useMemo(() => members.filter((m) => m.role !== 'newuser' && canSeeOverrides(m)), [members, canSeeOverrides]);
   const member = approved.find((m) => m.uid === selected) ?? null;
   const access = member ? canEditPermissions(actor, member) : null;
   const editable = Boolean(access?.ok);

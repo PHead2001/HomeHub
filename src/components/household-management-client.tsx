@@ -12,6 +12,7 @@ import { pendingReminderDue } from '@/lib/household-records';
 import {
   canAssignRole,
   canEditPermissions,
+  canLeaveHousehold,
   canManageInvites as mayManageInvites,
   canManageMember,
   canRemindPendingMembers,
@@ -57,6 +58,7 @@ import {
 import { ConfirmActionDialog, type ConfirmRequest } from '@/components/household/confirm-action-dialog';
 import {
   HOUSEHOLD_NAME_MAX,
+  canSeeMemberOverrides,
   changedPermissions,
   INVITE_STATE_LABELS,
   describeAuditAction,
@@ -185,14 +187,15 @@ export function HouseholdManagementClient() {
   }))), [members]);
 
   // Daily "still pending" reminder: when someone who can approve opens this page
-  // and a pending person has not been reminded about for 24 hours, the server
+  // and a pending person asked 24 hours ago or more and has not been reminded about
+  // for 24 hours, the server
   // stamps the reminder and writes the notification (see remindPendingMembers).
   const remindingRef = useRef(false);
   useEffect(() => {
     const firebaseUser = auth.currentUser;
     if (!household?.id || !canRemind || !firebaseUser || remindingRef.current) return;
     const now = new Date();
-    if (!pendingMembers.some((member) => pendingReminderDue(member.lastNewUserReminderAt, now))) return;
+    if (!pendingMembers.some((member) => pendingReminderDue(member.lastNewUserReminderAt, now, member.joinedAt))) return;
     remindingRef.current = true;
     const householdId = household.id;
     void (async () => {
@@ -674,6 +677,7 @@ export function HouseholdManagementClient() {
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
                     showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
+                    showCustom={canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
                     stats={choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}
@@ -704,6 +708,7 @@ export function HouseholdManagementClient() {
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
                     showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
+                    showCustom={canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
                     stats={member.role === 'newuser' ? undefined : choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}
@@ -727,6 +732,7 @@ export function HouseholdManagementClient() {
               onSelect={setMatrixSelection}
               actor={currentMember}
               onSave={askSavePermissions}
+              canSeeOverrides={(member) => canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
             />
           </TabsContent>
 
@@ -789,6 +795,10 @@ export function HouseholdManagementClient() {
                   {isOwner ? (
                     <p className="mt-1 text-sm text-muted-foreground">
                       You&apos;re the owner. Make someone else the owner from Members, or delete the household, before leaving.
+                    </p>
+                  ) : !canLeaveHousehold(currentMember).ok ? (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Ask an owner or admin if you need to leave; they can remove you from Members.
                     </p>
                   ) : (
                     <>

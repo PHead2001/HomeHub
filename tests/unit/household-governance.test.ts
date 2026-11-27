@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import {
   HOUSEHOLD_NAME_MAX,
   OWNER_ONLY_PERMISSIONS,
+  canSeeMemberOverrides,
   changedPermissions,
   choreStatsByMember,
   mergeChoresById,
@@ -348,5 +349,16 @@ describe('create household form', () => {
 
   it('handles the submit itself: no page reload, validates, then creates with the trimmed name', () => {
     assert.match(form, /onSubmit=\{\(event\) => \{\s*event\.preventDefault\(\);\s*setSubmitted\(true\);\s*if \(!householdNameError\(name\) && !isCreating\) onCreate\(name\.trim\(\)\);/);
+  });
+});
+
+describe('who sees custom permissions (HO-12)', () => {
+  it('the person themself and holders of Manage roles; never other kids, guests or members', () => {
+    const manager = { uid: 'a', permissions: { 'household.manageRoles': true } };
+    assert.equal(canSeeMemberOverrides(manager, 'b'), true);
+    assert.equal(canSeeMemberOverrides({ uid: 'b', permissions: {} }, 'b'), true);
+    assert.equal(canSeeMemberOverrides({ uid: 'c', permissions: { 'household.view': true } }, 'b'), false);
+    assert.equal(canSeeMemberOverrides({ uid: 'c', permissions: { 'household.manageRoles': false } }, 'b'), false);
+    assert.equal(canSeeMemberOverrides(null, 'b'), false);
   });
 });

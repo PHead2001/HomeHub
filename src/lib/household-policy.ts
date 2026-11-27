@@ -55,7 +55,9 @@ export type PolicyRefusal =
   /** A kid profile's role is fixed at Child. */
   | 'identity_fixed_role'
   /** A kid profile cannot become the owner. */
-  | 'target_identity';
+  | 'target_identity'
+  /** A child account leaves only when an adult removes it (HO-11), or while the household is being deleted. */
+  | 'child_cannot_leave';
 
 export type PolicyDecision = { ok: true } | { ok: false; reason: PolicyRefusal };
 
@@ -226,6 +228,23 @@ export const canTransferOwnership = (actor: PolicyMember | null | undefined, tar
   return allow;
 };
 
+/**
+ * Leave the household (yourself). Never the owner (transfer first). A Child leaves only
+ * while the household is being deleted (HO-4); otherwise an adult removes them (HO-11:
+ * a kid on a shared screen must not drop out with one confirmation). A pending person
+ * may always withdraw their request (HO-3).
+ */
+export const canLeaveHousehold = (
+  member: PolicyMember | null | undefined,
+  context: { deleting?: boolean } = {},
+): PolicyDecision => {
+  if (!member) return refuse('not_member');
+  if (member.role === 'owner') return refuse('owner_only');
+  if (member.kind === 'identity') return refuse('not_member');
+  if (member.role === 'child' && !context.deleting) return refuse('child_cannot_leave');
+  return allow;
+};
+
 const REFUSAL_MESSAGES: Record<PolicyRefusal, string> = {
   not_member: 'You are not an approved member of this household.',
   missing_permission: "You don't have permission to do that. Ask the household owner if you think you should.",
@@ -238,6 +257,7 @@ const REFUSAL_MESSAGES: Record<PolicyRefusal, string> = {
   target_pending: 'Approve this person first.',
   identity_fixed_role: "A kid profile's role is always Child.",
   target_identity: "A kid profile can't own the household.",
+  child_cannot_leave: 'Ask an owner or admin to remove you from the household.',
 };
 
 /** Plain-language sentence for a refusal, for toasts, tooltips and server results. */

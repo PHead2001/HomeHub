@@ -822,12 +822,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setProfile(prev => prev ? { ...prev, householdId: null, role: 'member', permissions: {} } : null);
   }, []);
 
+  // Also a pending person's "Cancel request" (HO-3) and leaving a household that is being
+  // deleted (HO-4); the server decides which (canLeaveHousehold).
   const leaveHousehold = useCallback(async () => {
     const firebaseUser = auth.currentUser;
-    if (!firebaseUser || !currentUser?.householdId || !household) {
+    if (!firebaseUser || !currentUser?.householdId) {
       toast({ variant: 'destructive', title: 'No household', description: 'There is no household to leave.' });
       return false;
     }
+    const cancelling = currentMember?.role === 'newuser';
+    const name = household?.name || 'the household';
     // The record disappears before the action answers: that end needs no "removed" notice.
     dispatchMembership({ type: 'endingHere', householdId: currentUser.householdId });
     try {
@@ -838,14 +842,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return false;
       }
       resetHouseholdState();
-      toast({ title: 'You left the household', description: `You are no longer part of ${household.name}.` });
+      toast(cancelling
+        ? { title: 'Request cancelled', description: `You withdrew your request to join ${name}. You can join another household now.` }
+        : { title: 'You left the household', description: `You are no longer part of ${name}.` });
       return true;
     } catch {
       dispatchMembership({ type: 'endingHereCancelled' });
       toast({ variant: 'destructive', title: 'Could not leave', description: 'We could not reach HomeHub. Try again.' });
       return false;
     }
-  }, [currentUser?.householdId, household, resetHouseholdState, toast]);
+  }, [currentUser?.householdId, currentMember?.role, household?.name, resetHouseholdState, toast]);
 
   const deleteHousehold = useCallback(async (confirmName: string) => {
     const firebaseUser = auth.currentUser;

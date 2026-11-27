@@ -61,9 +61,13 @@ const toInstant = (value: unknown): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-/** Whether a pending person is due a reminder: never reminded, unreadable, or 24 hours or more ago. */
-export const pendingReminderDue = (lastReminderAt: unknown, now: Date): boolean => {
-  const last = toInstant(lastReminderAt);
+/**
+ * Whether a pending person is due a reminder: 24 hours or more since the last one or,
+ * when they were never reminded, since they asked to join (`joinedAt`, HO-7: a missing
+ * stamp is not "long ago"). Due when neither time can be read, so nobody waits forever.
+ */
+export const pendingReminderDue = (lastReminderAt: unknown, now: Date, joinedAt?: unknown): boolean => {
+  const last = toInstant(lastReminderAt) ?? toInstant(joinedAt);
   if (!last) return true;
   return now.getTime() - last.getTime() >= PENDING_REMINDER_INTERVAL_HOURS * 60 * 60 * 1000;
 };

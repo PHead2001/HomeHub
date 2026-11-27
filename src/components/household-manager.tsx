@@ -172,14 +172,18 @@ function DeletingHouseholdDialog({
   isOwner,
   suggestedName,
   onFinish,
+  onLeave,
   onSignOut,
 }: {
   isOwner: boolean;
   suggestedName: string;
   onFinish: (confirmName: string) => Promise<boolean>;
+  /** Everyone but the owner may leave a household that is being deleted (HO-4). */
+  onLeave: () => Promise<boolean>;
   onSignOut: () => void;
 }) {
   const [finishing, setFinishing] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const [typedName, setTypedName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const field = deletionNameField(typedName, suggestedName);
@@ -197,7 +201,7 @@ function DeletingHouseholdDialog({
           <DialogDescription className="text-center text-base">
             {isOwner
               ? "Deletion did not finish. Check the household's name, then finish deleting the remaining data."
-              : 'The owner is deleting this household. Its data is no longer available.'}
+              : 'The owner is deleting this household. Its data is no longer available. You can leave it now and create or join another household.'}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -237,6 +241,23 @@ function DeletingHouseholdDialog({
               {finishing ? 'Deleting…' : 'Finish deleting'}
             </Button>
           )}
+          {!isOwner && (
+            <Button
+              type="button"
+              disabled={leaving}
+              onClick={async () => {
+                setLeaving(true);
+                try {
+                  await onLeave();
+                } finally {
+                  setLeaving(false);
+                }
+              }}
+            >
+              {leaving && <Loader2 className="mr-2 animate-spin" />}
+              Leave this household
+            </Button>
+          )}
           <Button type="button" variant="link" className="text-primary" onClick={onSignOut}>
             <LogOut className="mr-2 h-4 w-4" />
             Sign Out
@@ -247,8 +268,52 @@ function DeletingHouseholdDialog({
   );
 }
 
+/**
+ * "Cancel request" on the waiting screen (HO-3): a pending person who typed the wrong
+ * code, or was never answered, withdraws the request (the leave server action) and can
+ * then create or join another household. Asks once before cancelling.
+ */
+function CancelJoinRequest({ householdName, onCancel }: { householdName: string; onCancel: () => Promise<boolean> }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!asking) {
+    return (
+      <Button variant="outline" onClick={() => setAsking(true)}>
+        Cancel request
+      </Button>
+    );
+  }
+  return (
+    <div role="group" aria-labelledby="cancel-request-question" className="space-y-2 rounded-md border p-3 text-left">
+      <p id="cancel-request-question" className="text-sm">
+        Cancel your request to join {householdName || 'this household'}? You can ask again with a new invite code.
+      </p>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Button
+          variant="destructive"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              if (!(await onCancel())) setAsking(false);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy && <Loader2 className="mr-2 animate-spin" />}
+          Yes, cancel request
+        </Button>
+        <Button variant="outline" disabled={busy} onClick={() => setAsking(false)}>
+          Keep waiting
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function HouseholdManager({ children }: HouseholdManagerProps) {
-  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, membershipEnded, dismissMembershipEnded, createHousehold, joinHousehold, deleteHousehold, logout } = useAuth();
+  const { currentUser, household, currentMember, householdLoading, householdLoadFailed, retryHouseholdLoad, membershipEnded, dismissMembershipEnded, createHousehold, joinHousehold, leaveHousehold, deleteHousehold, logout } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
   // Screens are keyed by account and household: another household, or another person in
@@ -324,6 +389,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
               <Button asChild variant="outline">
                 <Link href="/profile">Open Profile</Link>
               </Button>
+              <CancelJoinRequest householdName={household?.name ?? ''} onCancel={leaveHousehold} />
               <Button variant="link" className="text-primary" onClick={logout}>
                 <LogOut className="mr-2 h-4 w-4" />
                 Sign Out
@@ -343,6 +409,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
         isOwner={currentMember?.role === 'owner'}
         suggestedName={deletionNameSuggestion(household.name, currentMember?.householdName)}
         onFinish={deleteHousehold}
+        onLeave={leaveHousehold}
         onSignOut={logout}
       />
     );

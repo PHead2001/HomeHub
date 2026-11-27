@@ -10,11 +10,13 @@ import { randomBytes } from 'node:crypto';
 import {
   canAssignRole,
   canEditPermissions,
+  canLeaveHousehold,
   canManageInvites,
   canManageMember,
   canRemindPendingMembers,
   canRenameHousehold,
   canTransferOwnership,
+  holdsPermission,
   isOwnerOnlyPermission,
   normalizeOverrides,
   permissionChanges,
@@ -33,7 +35,12 @@ import {
   pendingReminderStateKey,
   readHouseholdName,
 } from '@/lib/household-records';
-import { getDeterministicNotificationId } from '@/lib/notifications';
+import {
+  isOpenPendingNotice,
+  memberNoticeId,
+  memberRoleNotice,
+  pendingReminderNoticeId,
+} from '@/lib/household-notices';
 import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
 import { DEVICE_CODE_AS_INVITE_MESSAGE } from '@/lib/devices/device-codes';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
@@ -451,19 +458,81 @@ const unassignTemplateFields = (d: QueryDoc): FirebaseFirestore.UpdateData<Fireb
   };
 };
 
-// Leaving: any non-owner. Chores and recurring templates assigned to the leaver
-// become unassigned so nothing keeps being scheduled for someone who left.
-// The membership is read inside the transaction, so a concurrent ownership
-// transfer to the leaver forces a retry and the leave is then refused.
+// Leaving: any non-owner (a Child only while the household is being deleted; see
+// canLeaveHousehold). Chores and recurring templates assigned to the leaver become
+// unassigned so nothing keeps being scheduled for someone who left. The membership is
+// read inside the transaction, so a concurrent ownership transfer to the leaver forces
+// a retry and the leave is then refused.
+//
+// Two shorter paths:
+// - A pending person withdrawing their request (HO-3, "Cancel request"): the record,
+//   contact document and profile pointer go, the open approval notices about them are
+//   resolved, and the log says "Cancelled a request to join"; no stats, chores or
+//   "Member left" notices (they never had any of it).
+// - Anyone but the owner leaving a household that is being deleted (HO-4): only their
+//   own documents (record, contact, PIN, tablet state, profile pointer) go. Nothing is
+//   written into the household's subcollections, which the deletion is removing.
 export const leaveHousehold = async (caller: VerifiedCaller, householdId: string, now = new Date()) => {
-  const householdRef = adminDb.collection('households').doc(householdId);
+  const id = requireId(householdId, 'That household no longer exists.');
+  const householdRef = adminDb.collection('households').doc(id);
   const memberRef = householdRef.collection('members').doc(caller.uid);
+  const profileRef = adminDb.collection('users').doc(caller.email);
   await adminDb.runTransaction(async transaction => {
-    const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers, statsSnap, opsSnap] = await Promise.all([
+    const [householdSnap, memberSnap, profileSnap] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(memberRef),
-      transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email)),
-      transaction.get(householdRef.collection('chores').where('assignedToUid', '==', caller.uid)),
+      transaction.get(profileRef),
+    ]);
+    const member = toStoredMember(memberSnap);
+    if (!member) throw new MembershipError('You are not part of this household.');
+    const deleting = Boolean(householdSnap.get('deletingAt'));
+    const allowed = canLeaveHousehold(member, { deleting });
+    if (!allowed.ok) {
+      if (allowed.reason === 'owner_only') {
+        throw new MembershipError(
+          deleting ? 'This household is being deleted. Finish deleting it instead.' : 'Transfer ownership to someone else before leaving.',
+          'owner_only',
+        );
+      }
+      throw new MembershipError(refusalMessage(allowed.reason), allowed.reason);
+    }
+    // Only a profile that still points here is cleared.
+    const clearPointer = () => {
+      if (profileSnap.exists && profileSnap.get('householdId') === id) {
+        transaction.set(profileRef, { householdId: null, role: 'member', permissions: {} }, { merge: true });
+      }
+    };
+
+    if (deleting) {
+      const tabletState = await readMemberTabletState(transaction, householdRef, caller.uid);
+      transaction.delete(memberRef);
+      transaction.delete(memberContactRef(householdRef, caller.uid));
+      memberPinRefs(householdRef, caller.uid).forEach(ref => transaction.delete(ref));
+      tabletState.forEach(ref => transaction.delete(ref));
+      clearPointer();
+      return;
+    }
+    if (!householdSnap.exists) throw new MembershipError('That household no longer exists.');
+
+    const iso = now.toISOString();
+    if (member.role === 'newuser') {
+      const aboutCaller = await readPendingNotices(transaction, householdRef, caller.uid);
+      transaction.delete(memberRef);
+      transaction.delete(memberContactRef(householdRef, caller.uid));
+      transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
+      clearPointer();
+      transaction.set(householdRef.collection('auditLogs').doc(), {
+        actorUid: caller.uid, actorEmail: caller.email, actorName: member.displayName || caller.displayName || null,
+        action: 'member.request_cancelled', targetUid: caller.uid, targetEmail: caller.email, createdAt: iso,
+      });
+      resolvePendingNotices(transaction, aboutCaller, now);
+      return;
+    }
+
+    const [choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers, statsSnap, opsSnap] = await Promise.all([
+      // Open chores only (HO-5, HO-22): completed ones keep their history and are never read.
+      transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email).where('isCompleted', '==', false)),
+      transaction.get(householdRef.collection('chores').where('assignedToUid', '==', caller.uid).where('isCompleted', '==', false)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToEmail', '==', caller.email)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', caller.uid)),
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
@@ -472,13 +541,8 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, caller.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, caller.email);
-    if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.');
-    const member = memberSnap.exists ? memberSnap.data() || null : null;
-    if (!member) throw new MembershipError('You are not part of this household.');
-    if (member.role === 'owner') throw new MembershipError('Transfer ownership to someone else before leaving.');
     const tabletState = await readMemberTabletState(transaction, householdRef, caller.uid);
 
-    const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
     memberPinRefs(householdRef, caller.uid).forEach(ref => transaction.delete(ref));
@@ -486,7 +550,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     foldDepartingStatsKey(transaction, statsSnap, caller.uid, caller.email);
     recordDepartedIdentity(transaction, householdRef, opsSnap, caller.uid, caller.email, now);
     transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
-    transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
+    transaction.set(profileRef, { householdId: null, role: 'member', permissions: {} }, { merge: true });
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
     templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
     transaction.set(householdRef.collection('auditLogs').doc(), {
@@ -780,42 +844,72 @@ export const createHousehold = async (
 };
 
 /**
+ * The people who may approve a pending person: active accounts (not kid profiles)
+ * holding `household.manageMembers` (role default or override).
+ */
+const approverUids = (members: FirebaseFirestore.QuerySnapshot): string[] => members.docs
+  .map(d => toStoredMember(d))
+  .filter((m): m is StoredMember => Boolean(m) && m!.kind !== 'identity' && holdsPermission(m, 'household.manageMembers'))
+  .map(m => m.uid);
+
+/**
+ * Resolves the open "New member needs approval" and "still needs a household role"
+ * notices about one pending person once their request is settled (approved, denied or
+ * cancelled), so nobody is asked to act on something already done (HO-7, NO-10).
+ * `aboutPerson` is read in the same transaction, before any write.
+ */
+const readPendingNotices = (transaction: Tx, householdRef: DocRef, uid: string) =>
+  transaction.get(householdRef.collection('notifications').where('sourceId', '==', uid));
+
+const resolvePendingNotices = (transaction: Tx, aboutPerson: FirebaseFirestore.QuerySnapshot, now: Date) => {
+  aboutPerson.docs
+    .filter(d => isOpenPendingNotice(d.data()))
+    .forEach(d => transaction.update(d.ref, { resolvedAt: Timestamp.fromDate(now) }));
+};
+
+/**
  * The daily "still needs a household role" reminder (`household.manageMembers`).
- * Household Manager calls it when someone who can approve opens the page. For
- * each pending person not reminded in the last 24 hours, one transaction stamps
- * `lastNewUserReminderAt` and writes a household-wide system notification whose
- * ID is fixed per person and day, so overlapping visits never duplicate it.
+ * Household Manager calls it when someone who can approve opens the page. A pending
+ * person is due 24 hours after they asked to join, then every 24 hours (HO-7). For each
+ * one due, one transaction stamps `lastNewUserReminderAt` and writes one notification
+ * per person who may approve them (`household.manageMembers`), addressed to that person
+ * alone, with an ID fixed per pending person, recipient and day, so overlapping visits
+ * never duplicate it. Kids, guests and members without the permission get nothing.
  */
 export const remindPendingMembers = async (caller: VerifiedCaller, householdId: string, now = new Date()): Promise<{ count: number }> => {
   return adminDb.runTransaction(async transaction => {
     const context = await loadActor(transaction, caller, householdId);
     enforce(canRemindPendingMembers(context.actor));
-    const pending = await transaction.get(context.householdRef.collection('members').where('role', '==', 'newuser'));
-    const due = pending.docs.filter(d => pendingReminderDue(d.get('lastNewUserReminderAt'), now));
+    const members = await transaction.get(context.householdRef.collection('members'));
+    const pending = members.docs.filter(d => d.get('role') === 'newuser');
+    const due = pending.filter(d => pendingReminderDue(d.get('lastNewUserReminderAt'), now, d.get('joinedAt')));
+    const recipients = approverUids(members);
     const iso = now.toISOString();
     const stateKey = pendingReminderStateKey(now);
     for (const person of due) {
       const data = person.data();
-      // Household-wide, so the public name only, never the email.
+      // The public name only, never the email.
       const name = publicMemberName(data.displayName) || 'A member';
       transaction.update(person.ref, { lastNewUserReminderAt: iso });
-      const notificationId = getDeterministicNotificationId({ sourceType: PENDING_REMINDER_SOURCE_TYPE, sourceId: person.id, stateKey });
-      transaction.set(context.householdRef.collection('notifications').doc(notificationId), {
-        householdId: context.householdRef.id,
-        category: 'system',
-        title: 'Pending member approval',
-        message: `${name} still needs a household role.`,
-        createdAt: Timestamp.fromDate(now),
-        expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
-        deepLink: '/household?tab=members',
-        sourceType: PENDING_REMINDER_SOURCE_TYPE,
-        sourceId: person.id,
-        stateKey,
-        // Household-wide, as before: every member with `notifications.view` sees it.
-        audience: notificationAudience({}),
-        readBy: {},
-        dismissedBy: {},
-      });
+      for (const recipient of recipients) {
+        transaction.set(context.householdRef.collection('notifications').doc(pendingReminderNoticeId(person.id, recipient, stateKey)), {
+          householdId: context.householdRef.id,
+          category: 'system',
+          title: 'Pending member approval',
+          message: `${name} still needs a household role.`,
+          createdAt: Timestamp.fromDate(now),
+          expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
+          deepLink: '/household?tab=members',
+          sourceType: PENDING_REMINDER_SOURCE_TYPE,
+          sourceId: person.id,
+          stateKey,
+          // Only the people who may approve (HO-7).
+          targetUserUid: recipient,
+          audience: notificationAudience({ targetUserUid: recipient }),
+          readBy: {},
+          dismissedBy: {},
+        });
+      }
     }
     return { count: due.length };
   });
@@ -940,6 +1034,7 @@ export const changeMemberRole = async (
     enforce(canAssignRole(context.actor, target, nextRole));
     const approving = target.role === 'newuser';
     if (target.role === nextRole && target.status === 'active') return { role: nextRole, approved: false };
+    const aboutTarget = approving ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
     const iso = now.toISOString();
     transaction.update(ref, {
       role: nextRole,
@@ -953,6 +1048,31 @@ export const changeMemberRole = async (
       action: approving ? 'member.approved' : 'member.role_changed',
       target,
       details: { role: nextRole, previousRole: target.role },
+    });
+    if (aboutTarget) resolvePendingNotices(transaction, aboutTarget, now);
+    // The person themself is told, wherever they are signed in (HO-1, HO-28): addressed
+    // to them alone, so it reaches their phone as a push too.
+    const notice = memberRoleNotice({
+      approved: approving,
+      role: nextRole,
+      previousRole: target.role,
+      householdName: typeof context.household.name === 'string' ? context.household.name : '',
+    });
+    transaction.set(context.householdRef.collection('notifications').doc(memberNoticeId(notice.sourceType, target.uid, now)), {
+      householdId: context.householdRef.id,
+      category: 'system',
+      title: notice.title,
+      message: notice.message,
+      createdAt: Timestamp.fromDate(now),
+      expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
+      deepLink: notice.deepLink,
+      sourceType: notice.sourceType,
+      sourceId: target.uid,
+      stateKey: String(now.getTime()),
+      targetUserUid: target.uid,
+      audience: notificationAudience({ targetUserUid: target.uid }),
+      readBy: {},
+      dismissedBy: {},
     });
     return { role: nextRole, approved: approving };
   });
@@ -1039,11 +1159,13 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     }
     enforce(canManageMember(context.actor, target));
     const profileRef = target.email ? adminDb.collection('users').doc(target.email) : null;
-    // Assigned by email (older records) or by uid.
+    // Assigned by email (older records) or by uid. Chores: open ones only (HO-5, HO-22), so a
+    // long-standing member's history is neither read nor touched.
+    const openOnly = (name: string, query: FirebaseFirestore.Query) => name === 'chores' ? query.where('isCompleted', '==', false) : query;
     const byEmail = (name: string) => target.email
-      ? transaction.get(context.householdRef.collection(name).where('assignedToEmail', '==', target.email))
+      ? transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToEmail', '==', target.email)))
       : Promise.resolve(null);
-    const byUid = (name: string) => transaction.get(context.householdRef.collection(name).where('assignedToUid', '==', target.uid));
+    const byUid = (name: string) => transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToUid', '==', target.uid)));
     const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap, statsSnap, opsSnap] = await Promise.all([
       profileRef ? transaction.get(profileRef) : Promise.resolve(null),
       byEmail('chores'),
@@ -1057,9 +1179,10 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     const chores = assignedDocs(choresByEmail, choresByUid, target.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
     const tabletState = await readMemberTabletState(transaction, context.householdRef, target.uid);
+    const denied = target.role === 'newuser';
+    const aboutTarget = denied ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
 
     const iso = now.toISOString();
-    const denied = target.role === 'newuser';
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
     memberPinRefs(context.householdRef, target.uid).forEach(pinRef => transaction.delete(pinRef));
@@ -1085,6 +1208,7 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
       target,
       ...(denied ? { details: { pending: true } } : {}),
     });
+    if (aboutTarget) resolvePendingNotices(transaction, aboutTarget, now);
     return { denied };
   });
   if (removedIdentity) await deleteIdentityAvatarFiles(householdId, removedIdentity);
@@ -1121,7 +1245,7 @@ export const removeIdentityInTransaction = async (
   now: Date,
 ) => {
   const [chores, templates, tabletState] = await Promise.all([
-    transaction.get(householdRef.collection('chores').where('assignedToUid', '==', target.uid)),
+    transaction.get(householdRef.collection('chores').where('assignedToUid', '==', target.uid).where('isCompleted', '==', false)),
     transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', target.uid)),
     readMemberTabletState(transaction, householdRef, target.uid),
   ]);

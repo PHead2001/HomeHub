@@ -8,7 +8,7 @@ import {
   type MembershipErrorCode,
   type VerifiedCaller,
 } from '../../src/lib/server/household-membership';
-import { getDeterministicNotificationId } from '../../src/lib/notifications';
+import { pendingReminderNoticeId } from '../../src/lib/household-notices';
 import { PENDING_REMINDER_SOURCE_TYPE, pendingReminderStateKey } from '../../src/lib/household-records';
 import type { HouseholdRole, PermissionOverrides } from '../../src/lib/types';
 
@@ -26,7 +26,9 @@ const member: VerifiedCaller = { uid: 'rc-member', email: 'rc.member@example.tes
 const pending: VerifiedCaller = { uid: 'rc-pending', email: 'rc.pending@example.test', displayName: 'Pat Pending' };
 const pending2: VerifiedCaller = { uid: 'rc-pending2', email: 'rc.pending2@example.test' };
 const outsider: VerifiedCaller = { uid: 'rc-outsider', email: 'rc.outsider@example.test' };
-const everyone = [creator, owner, admin, member, pending, pending2, outsider];
+const kid: VerifiedCaller = { uid: 'rc-kid', email: 'rc.kid@example.test', displayName: 'Kit Kid' };
+const visitor: VerifiedCaller = { uid: 'rc-guest', email: 'rc.guest@example.test', displayName: 'Gail Guest' };
+const everyone = [creator, owner, admin, member, pending, pending2, outsider, kid, visitor];
 
 const house = (id = HOUSE) => adminDb.collection('households').doc(id);
 const memberRef = (person: VerifiedCaller, id = HOUSE) => house(id).collection('members').doc(person.uid);
@@ -196,30 +198,45 @@ describe('pending-member reminder', () => {
   const notifications = async () => (await house().collection('notifications').get()).docs;
   const stamp = async (person: VerifiedCaller) => (await memberRef(person).get()).get('lastNewUserReminderAt');
 
-  test('stamps the pending person and writes one household-wide notification with an audience', async () => {
+  test('stamps the pending person and writes one notification per approver, addressed to them alone (HO-7)', async () => {
     assert.deepEqual(await remindPendingMembers(owner, HOUSE, NOW), { count: 1 });
     assert.equal(await stamp(pending), NOW.toISOString());
     const docs = await notifications();
-    assert.equal(docs.length, 1);
-    const expectedId = getDeterministicNotificationId({
-      sourceType: PENDING_REMINDER_SOURCE_TYPE,
-      sourceId: pending.uid,
-      stateKey: pendingReminderStateKey(NOW),
-    });
-    assert.equal(docs[0].id, expectedId, 'same ID an older browser would write for this person and day');
-    const data = docs[0].data();
-    assert.deepEqual(data.audience, ['*']);
-    assert.equal(data.category, 'system');
-    assert.equal(data.householdId, HOUSE);
-    assert.equal(data.message, 'Pat Pending still needs a household role.');
-    assert.equal(data.deepLink, '/household?tab=members');
-    assert.equal(data.sourceType, PENDING_REMINDER_SOURCE_TYPE);
-    assert.equal(data.sourceId, pending.uid);
-    assert.equal(data.targetUserUid, undefined);
-    assert.equal(data.createdAt.toDate().toISOString(), NOW.toISOString());
-    assert.ok(data.expiresAt.toMillis() > NOW.getTime());
+    // The owner and the admin hold household.manageMembers; the member does not.
+    assert.deepEqual(docs.map(d => d.data().targetUserUid).sort(), [admin.uid, owner.uid].sort());
+    for (const doc of docs) {
+      const data = doc.data();
+      assert.equal(doc.id, pendingReminderNoticeId(pending.uid, data.targetUserUid, pendingReminderStateKey(NOW)));
+      assert.deepEqual(data.audience, [data.targetUserUid]);
+      assert.equal(data.category, 'system');
+      assert.equal(data.householdId, HOUSE);
+      assert.equal(data.message, 'Pat Pending still needs a household role.');
+      assert.equal(data.deepLink, '/household?tab=members');
+      assert.equal(data.sourceType, PENDING_REMINDER_SOURCE_TYPE);
+      assert.equal(data.sourceId, pending.uid);
+      assert.equal(data.createdAt.toDate().toISOString(), NOW.toISOString());
+      assert.ok(data.expiresAt.toMillis() > NOW.getTime());
+    }
     // Approved members are never stamped.
     assert.equal(await stamp(member), undefined);
+  });
+
+  test('kids, guests and members without the permission get nothing; a member granted it does', async () => {
+    await seedMember(kid, 'child');
+    await seedMember(visitor, 'guest');
+    await memberRef(member).update({ permissions: { 'household.manageMembers': true } });
+    await remindPendingMembers(owner, HOUSE, NOW);
+    const targets = (await notifications()).map(d => d.data().targetUserUid).sort();
+    assert.deepEqual(targets, [admin.uid, member.uid, owner.uid].sort());
+  });
+
+  test('someone who asked to join less than 24 hours ago is not reminded about yet (HO-7)', async () => {
+    await memberRef(pending).update({ joinedAt: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString() });
+    assert.deepEqual(await remindPendingMembers(owner, HOUSE, NOW), { count: 0 });
+    assert.equal(await stamp(pending), undefined);
+    assert.equal((await notifications()).length, 0);
+    const nextDay = new Date(NOW.getTime() + 23 * 60 * 60 * 1000);
+    assert.deepEqual(await remindPendingMembers(owner, HOUSE, nextDay), { count: 1 });
   });
 
   test('nobody is reminded about twice within 24 hours; after 24 hours they are again', async () => {
@@ -227,10 +244,15 @@ describe('pending-member reminder', () => {
     const later = new Date(NOW.getTime() + 23 * 60 * 60 * 1000);
     assert.deepEqual(await remindPendingMembers(owner, HOUSE, later), { count: 0 });
     assert.equal(await stamp(pending), NOW.toISOString());
-    assert.equal((await notifications()).length, 1);
+    assert.equal((await notifications()).length, 2);
     const nextDay = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
     assert.deepEqual(await remindPendingMembers(owner, HOUSE, nextDay), { count: 1 });
     assert.equal(await stamp(pending), nextDay.toISOString());
+    assert.equal((await notifications()).length, 4);
+  });
+
+  test('overlapping visits on the same day write each notification once', async () => {
+    await Promise.allSettled([remindPendingMembers(owner, HOUSE, NOW), remindPendingMembers(admin, HOUSE, NOW)]);
     assert.equal((await notifications()).length, 2);
   });
 
@@ -238,10 +260,13 @@ describe('pending-member reminder', () => {
     await memberRef(pending).update({ lastNewUserReminderAt: new Date(NOW.getTime() - 60 * 60 * 1000).toISOString() });
     await seedMember(pending2, 'newuser');
     assert.deepEqual(await remindPendingMembers(owner, HOUSE, NOW), { count: 1 });
-    const [doc] = await notifications();
-    assert.equal(doc.data().sourceId, pending2.uid);
-    assert.equal(doc.data().message, 'A member still needs a household role.');
-    assert.ok(!doc.data().message.includes(pending2.email));
+    const docs = await notifications();
+    assert.ok(docs.length > 0);
+    for (const doc of docs) {
+      assert.equal(doc.data().sourceId, pending2.uid);
+      assert.equal(doc.data().message, 'A member still needs a household role.');
+      assert.ok(!doc.data().message.includes(pending2.email));
+    }
   });
 
   test('no pending people: nothing is written', async () => {
