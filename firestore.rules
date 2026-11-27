@@ -644,7 +644,11 @@ service cloud.firestore {
     }
 
     function validChoreTemplateFields(data, keys) {
-      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid', 'skippedOccurrences']) &&
+      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid', 'skippedOccurrences', 'rotation', 'rotationStart']) &&
+        // Rotation (CH-28): member uids taking turns, in order, from rotationStart.
+        (!('rotation' in keys) || data.rotation == null ||
+          (boundedList(data.rotation, 8) && data.rotation.size() >= 2)) &&
+        (!('rotationStart' in keys) || data.rotationStart == null || boundedString(data.rotationStart, 10)) &&
         (!('task' in keys) || nonEmptyString(data.task, 500)) &&
         (!('skippedOccurrences' in keys) || boundedList(data.skippedOccurrences, 400)) &&
         (!('notes' in keys) || optionalString(data.notes, 5000)) &&
@@ -670,6 +674,8 @@ service cloud.firestore {
             choreAssigneeIsCallerOrNone(after.get('assignedToEmail', null))) &&
           (recurrenceAssignee(after) == recurrenceAssignee(before) ||
             choreAssigneeIsCallerOrNone(recurrenceAssignee(after))) &&
+          // Setting or changing a rotation assigns other people (CH-28); removing one does not.
+          (after.get('rotation', null) == before.get('rotation', null) || after.get('rotation', null) == null) &&
           (after.get('assignedToUid', null) == before.get('assignedToUid', null) ||
             choreAssigneeUidIsCallerOrMatches(householdId, after.get('assignedToUid', null), after.get('assignedToEmail', null)) ||
             // The stored legacy email (top level, else the recurrence copy) is replaced by
