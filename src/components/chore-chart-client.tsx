@@ -8,7 +8,7 @@ import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListC
 import { type DocumentData, type DocumentReference, type Transaction, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { withSkippedOccurrences } from '@functions/shared/skips';
-import { isGeneratedInstance, roomDeletionPlan, skipsForDeletion } from '@/lib/chores/recurrence-edits';
+import { isGeneratedInstance, isUpcomingInstance, roomDeletionPlan, skipsForDeletion } from '@/lib/chores/recurrence-edits';
 import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
 import { format } from 'date-fns';
 import type { ChoreTemplate, Recurrence, Room } from '@/lib/types';
@@ -72,6 +72,9 @@ async function stillOpen(transaction: Transaction, refs: DocumentReference[]) {
 
 export function ChoreChartClient() {
   const { currentUser, currentMember, household, permissions } = useAuth();
+  // Completion eligibility follows the household's day, as on the server (CH-2); so do
+  // skips and repeat edits (CH-3, CH-4).
+  const householdDay = useHouseholdToday(household?.timeZone);
   const { toast, toastError } = useToast();
   const capabilities = useMemo(() => choreCapabilities(permissions), [permissions]);
   const isManager = currentMember?.role === 'owner' || currentMember?.role === 'admin';
@@ -374,12 +377,13 @@ export function ChoreChartClient() {
     let commit = () => batch.commit();
     if (schedule.type === 'recurring') {
       commit = async () => {
-        // Open days already generated under the old schedule, assignee or rooms are
-        // replaced: upkeep regenerates them from the new settings. Completed days stay,
+        // Open days from today on generated under the old schedule, assignee or rooms
+        // are replaced: upkeep regenerates them from the new settings. Completed days stay,
         // and their occurrence keys keep upkeep from generating them again (CH-4).
         const listed = await Promise.all(templatesToAssign.map(template =>
           getDocs(query(choresCollection, where('templateId', '==', template.id), where('isCompleted', '==', false)))));
-        const generated = listed.flatMap(snap => snap.docs.filter(choreDoc => isGeneratedInstance({ id: choreDoc.id, ...choreDoc.data() })).map(choreDoc => choreDoc.ref));
+        // Overdue days stay: upkeep never regenerates a day before today.
+        const generated = listed.flatMap(snap => snap.docs.filter(choreDoc => isUpcomingInstance({ id: choreDoc.id, ...choreDoc.data() }, householdDay)).map(choreDoc => choreDoc.ref));
         await runTransaction(db, async (transaction) => {
           // Re-read inside the transaction: a day completed meanwhile is kept.
           const openChores = await stillOpen(transaction, generated);
@@ -450,7 +454,7 @@ export function ChoreChartClient() {
       toastError(error, "Couldn't assign");
       return false;
     }
-  }, [currentUser, getCollectionRef, householdUsers, templatesToAssign, shouldNotify, toast, toastError, fetchAllData]);
+  }, [currentUser, getCollectionRef, householdUsers, templatesToAssign, shouldNotify, toast, toastError, fetchAllData, householdDay]);
 
   /* ---------------------------------------------------------------------- */
   /* Rooms and repeating chores                                              */
@@ -475,22 +479,35 @@ export function ChoreChartClient() {
   const handleDeleteRoom = async (id: string) => {
     const roomsCollection = getCollectionRef('rooms');
     const templatesCollection = getCollectionRef('chore-templates');
-    if (!roomsCollection || !templatesCollection) return;
+    const choresCollection = getCollectionRef('chores');
+    if (!roomsCollection || !templatesCollection || !choresCollection) return;
     try {
-      const choresCollection = getCollectionRef('chores');
-      if (!choresCollection) return;
-      // Chores in the room: its open generated days from today on go (upkeep regenerates
-      // the series under the template's other rooms, or around the house), and every
-      // other chore (overdue days included) stays without the room, so nothing is left
-      // under a removed room (CH-4).
+      // What happens to each chore in the room: `roomDeletionPlan` (CH-4).
       const listed = await getDocs(query(choresCollection, where('roomIds', 'array-contains', id)));
+      const templateIds = [...new Set([
+        ...choreTemplates.filter(t => t.roomIds?.includes(id)).map(t => t.id),
+        ...listed.docs.map(choreDoc => choreDoc.get('templateId')).filter((templateId): templateId is string => typeof templateId === 'string' && templateId !== ''),
+      ])];
       await runTransaction(db, async (transaction) => {
-        // Re-read inside the transaction: a chore completed meanwhile is kept as history.
+        // Read inside the transaction: a chore completed meanwhile is kept as history,
+        // and templates are judged by their stored rooms.
         const fresh = await Promise.all(listed.docs.map(choreDoc => transaction.get(choreDoc.ref)));
-        const plan = roomDeletionPlan(fresh.filter(snap => snap.exists()).map(snap => ({ id: snap.id, ...snap.data() })), id, householdDay);
+        const templateSnaps = await Promise.all(templateIds.map(templateId => transaction.get(doc(templatesCollection, templateId))));
+        const templateRooms = new Map(templateSnaps.filter(snap => snap.exists()).map(snap => {
+          const rooms = snap.get('roomIds');
+          return [snap.id, Array.isArray(rooms) ? rooms.filter((room): room is string => typeof room === 'string') : []] as const;
+        }));
+        const plan = roomDeletionPlan(fresh.filter(snap => snap.exists()).map(snap => ({ id: snap.id, ...snap.data() })), id, householdDay, templateRooms);
         transaction.delete(doc(roomsCollection, id));
-        choreTemplates.filter(t => t.roomIds?.includes(id)).forEach(template => {
-          transaction.update(doc(templatesCollection, template.id), { roomIds: template.roomIds?.filter(roomId => roomId !== id) });
+        templateSnaps.forEach(snap => {
+          if (!snap.exists()) return;
+          const rooms = templateRooms.get(snap.id) ?? [];
+          const skips = plan.skips.get(snap.id);
+          if (!rooms.includes(id) && !skips) return;
+          transaction.update(snap.ref, {
+            roomIds: rooms.filter(roomId => roomId !== id),
+            ...(skips ? { skippedOccurrences: withSkippedOccurrences(snap.get('skippedOccurrences'), skips, householdDay) } : {}),
+          });
         });
         plan.remove.forEach(choreId => transaction.delete(doc(choresCollection, choreId)));
         plan.detach.forEach(({ id: choreId, roomIds }) => transaction.update(doc(choresCollection, choreId), { roomIds }));
@@ -544,8 +561,6 @@ export function ChoreChartClient() {
   /* ---------------------------------------------------------------------- */
 
   const today = useToday();
-  // Completion eligibility follows the household's day, as on the server (CH-2).
-  const householdDay = useHouseholdToday(household?.timeZone);
 
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;

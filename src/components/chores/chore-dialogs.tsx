@@ -86,7 +86,7 @@ export function ManageRoomsDialog({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {roomToDelete?.name}?</AlertDialogTitle>
-            <AlertDialogDescription>Chores in the library stop using this room. Days of repeating chores from today on are removed from it and come back without the room. Other chores, including overdue and completed ones, stay on the chart without the room.</AlertDialogDescription>
+            <AlertDialogDescription>Chores in the library stop using this room. Days of repeating chores from today on that also repeat in other rooms are removed. Every other chore, including overdue and completed ones and chores used only in this room, stays on the chart without the room.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -169,7 +169,7 @@ export function ManageRoomsDialog({
                             {(capabilities.canEdit || capabilities.canDelete) && (
                               <TableCell className="text-right">
                                 {capabilities.canEdit && <Button variant="ghost" size="icon" aria-label={`Edit ${room.name}`} onClick={() => setEditingRoom(room)}><Edit className="h-4 w-4" /></Button>}
-                                {capabilities.canDelete && <Button variant="ghost" size="icon" aria-label={`Delete ${room.name}`} onClick={() => setRoomToDelete(room)}><Trash2 className="h-4 w-4 text-destructive" /></Button>}
+                                {capabilities.canDelete && capabilities.canEdit && <Button variant="ghost" size="icon" aria-label={`Delete ${room.name}`} onClick={() => setRoomToDelete(room)}><Trash2 className="h-4 w-4 text-destructive" /></Button>}
                               </TableCell>
                             )}
                           </TableRow>
@@ -538,7 +538,8 @@ export function ChoreLibraryDialog({
   const [templateToDelete, setTemplateToDelete] = useState<ChoreTemplate | null>(null);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [filterRoomId, setFilterRoomId] = useState<string>('all');
-  const canAssign = capabilities.canCreate || capabilities.canEdit;
+  // One time needs chores.create; Repeats needs chores.edit and chores.delete (CH-4).
+  const canAssign = capabilities.canCreate || (capabilities.canEdit && capabilities.canDelete);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
   const filteredTemplates = useMemo(() => {

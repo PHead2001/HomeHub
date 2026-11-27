@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { isGeneratedInstance, roomDeletionPlan, skipsForDeletion } from '../../src/lib/chores/recurrence-edits';
+import { isGeneratedInstance, isUpcomingInstance, roomDeletionPlan, skipsForDeletion } from '../../src/lib/chores/recurrence-edits';
 import { MAX_SKIPPED_OCCURRENCES, occurrenceKeyDay, skippedOccurrenceKeys, withSkippedOccurrences } from '../../functions/src/shared/skips';
 import { occurrenceChoreId } from '../../functions/src/shared/ids';
 import { plannedRecurringEvents } from '../../src/lib/chores/calendar';
@@ -59,20 +59,33 @@ describe('repeat edits (CH-4)', () => {
     assert.equal(isGeneratedInstance({ id: 'y' }), false);
   });
 
-  test('deleting a room removes its open generated days from today on and keeps everything else without the room', () => {
+  test('deleting a room removes upcoming days of series that go on elsewhere, and keeps everything else without the room', () => {
     const chores = [
-      generated('trash', 'garage', '2026-08-03'),
+      generated('trash', 'garage', '2026-08-03'), // trash also repeats in the kitchen: removed
       generated('trash', 'garage', '2026-07-30'), // overdue: upkeep would not regenerate it
       generated('trash', 'garage', '2026-08-01', { isCompleted: true }),
+      generated('sweep', 'garage', '2026-08-02'), // sweep repeats only in the garage: kept, around the house
+      generated('gone', 'garage', '2026-08-02'), // its template was deleted: kept
       { id: 'one-time', sourceType: 'temporary', roomIds: ['garage', 'kitchen'], isCompleted: false },
       generated('dishes', 'kitchen', '2026-08-01'),
     ];
-    const plan = roomDeletionPlan(chores, 'garage', '2026-08-01');
+    const templates = new Map([['trash', ['garage', 'kitchen']], ['sweep', ['garage']], ['dishes', ['kitchen']]]);
+    const plan = roomDeletionPlan(chores, 'garage', '2026-08-01', templates);
     assert.deepEqual(plan.remove, [occurrenceChoreId('trash', 'garage', '2026-08-03')]);
     assert.deepEqual(plan.detach, [
       { id: occurrenceChoreId('trash', 'garage', '2026-07-30'), roomIds: [] },
       { id: occurrenceChoreId('trash', 'garage', '2026-08-01'), roomIds: [] },
+      { id: occurrenceChoreId('sweep', 'garage', '2026-08-02'), roomIds: [] },
+      { id: occurrenceChoreId('gone', 'garage', '2026-08-02'), roomIds: [] },
       { id: 'one-time', roomIds: ['kitchen'] },
     ]);
+    assert.deepEqual(Object.fromEntries(plan.skips), { sweep: ['sweep|general|2026-08-02'] }, 'upkeep never adds a second sweep that day');
   });
+
+  test('upcoming instances are generated days from today on', () => {
+    assert.equal(isUpcomingInstance(generated('trash', 'general', '2026-08-01'), '2026-08-01'), true);
+    assert.equal(isUpcomingInstance(generated('trash', 'general', '2026-07-31'), '2026-08-01'), false);
+    assert.equal(isUpcomingInstance({ id: 'x', templateId: 'trash', sourceType: 'template' }, '2026-08-01'), false);
+  });
+
 });
