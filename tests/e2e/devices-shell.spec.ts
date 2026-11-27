@@ -184,6 +184,16 @@ test('idle return to the start page after 2 minutes, then the ambient clock; a t
   const ambient = page.getByTestId('tablet-ambient');
   await expect(ambient).toBeVisible();
   await expect(page.getByTestId('tablet-ambient-clock')).toBeVisible();
+  // SL-23: the house with the household's pets, and never a member's name.
+  await expect(page.getByTestId('tablet-ambient-house')).toBeVisible();
+  for (const name of ['Sam Member', 'Alex', 'e2e.test']) await expect(ambient).not.toContainText(name);
+  const nextUp = page.getByTestId('tablet-ambient-next-up');
+  if (await nextUp.count()) await expect(nextUp).toHaveText(/^Next up: /);
+  // WT-14 kiosk behaviour (SL-9): no text selection or double-tap zoom on the shell.
+  expect(await page.evaluate(() => {
+    const style = getComputedStyle(document.body);
+    return [style.userSelect, style.touchAction];
+  })).toEqual(['none', 'manipulation']);
   await ambient.click();
   await expect(ambient).toHaveCount(0);
   await expect(page.getByTestId('tablet-view-pets')).toBeVisible();
