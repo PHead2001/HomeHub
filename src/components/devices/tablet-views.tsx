@@ -11,7 +11,7 @@
 // from the same live household data, so they show only what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Bell, CalendarDays, Check, CheckSquare, Clock, Hand, HeartPulse, PawPrint, UtensilsCrossed } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -34,6 +34,9 @@ import {
   petsSection,
 } from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
+import { PersonDoneMoment } from '@/components/chores/person-done-moment';
+import { clearedAssignees, houseCleanShown, markHouseCleanShown, personDoneStorageKey, personDoneTitle } from '@/lib/chores/house-clean';
+import { householdToday } from '@/lib/household-day';
 import { TabletMaintenanceView } from './tablet-maintenance';
 import { TabletShoppingView } from './tablet-shopping';
 import { TabletMedicationChips, TabletPetSheet, usePetDocument } from './tablet-pet-sheet';
@@ -111,6 +114,36 @@ const ChoreRow = ({ chore, detail }: { chore: { id: string; task: string; overdu
   </li>
 );
 
+/**
+ * CH-22 on the wall tablet: when everything one person had in the household's live
+ * list of today's work leaves it (completed here or on a phone; also in a room view)
+ * while other chores remain, "Your chores are
+ * done, Sam!" shows once per person per household day. It writes nothing. The list
+ * holds only open chores, so a person's last chore deleted or reassigned elsewhere
+ * also clears them; on a tablet that is rare (it cannot delete chores).
+ */
+function usePersonDoneOnTablet(list: ReadonlyArray<{ assigneeKey?: string; assignee?: string | null }> | null) {
+  const { householdId, household } = useTablet();
+  const previous = useRef<typeof list>(null);
+  const [title, setTitle] = useState<string | null>(null);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = list;
+    if (!before || !list) return;
+    const day = householdToday(household?.timeZone);
+    for (const key of clearedAssignees(before, list)) {
+      const storage = personDoneStorageKey(householdId, key, day);
+      if (houseCleanShown(storage)) continue;
+      markHouseCleanShown(storage);
+      setTitle(personDoneTitle(before.find(chore => chore.assigneeKey === key)?.assignee));
+      playFeedback('celebrate');
+      return;
+    }
+  }, [list, householdId, household?.timeZone]);
+  const close = useCallback(() => setTitle(null), []);
+  return <PersonDoneMoment title={title} onDone={close} />;
+}
+
 function ChoresView({ roomId }: { roomId?: string }) {
   const { data } = useTablet();
   const section = choresSection(data.sectionFacts ?? {}, roomId);
@@ -118,8 +151,12 @@ function ChoresView({ roomId }: { roomId?: string }) {
   const room = section?.kind === 'room' ? section.room : undefined;
   const work = section?.kind === 'today' ? section.work : [];
   const status = loadingOr(Boolean(section), failed);
+  // Whole-household work even in a room view: finishing the garage is not "your chores are done".
+  const household = choresSection(data.sectionFacts ?? {});
+  const personDone = usePersonDoneOnTablet(household?.kind === 'today' ? household.work : null);
   return (
     <Section title={room ? `Chores: ${room.name}` : "Today's chores"} icon={CheckSquare} testId="tablet-view-chores" empty={status}>
+      {personDone}
       {room ? (
         room.chores.length === 0 ? <p className="text-lg text-muted-foreground">Nothing due in {room.name}.</p> : (
           <ul className="space-y-2">
