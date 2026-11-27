@@ -326,6 +326,32 @@ describe('approve and change role', () => {
     assert.equal((await audits()).length, 0);
   });
 
+  test('HO-6: a missing profile is not created and the role still changes', async () => {
+    // member2 has a membership record but no users/{email} profile.
+    assert.deepEqual(await changeMemberRole(owner, HOUSE, member2.uid, 'guest', NOW), { role: 'guest', approved: false });
+    assert.equal((await memberData(member2))?.role, 'guest');
+    assert.equal((await adminDb.collection('users').doc(member2.email).get()).exists, false);
+    assert.equal((await audits('member.role_changed')).length, 1);
+  });
+
+  test('HO-6: a profile that points at another household keeps its role', async () => {
+    await adminDb.collection('users').doc(member.email).set({ email: member.email, householdId: OTHER, role: 'owner', permissions: { 'shopping.delete': true } });
+    await changeMemberRole(owner, HOUSE, member.uid, 'guest', NOW);
+    assert.equal((await memberData(member))?.role, 'guest');
+    const cached = await profile(member);
+    assert.equal(cached?.householdId, OTHER);
+    assert.equal(cached?.role, 'owner');
+    assert.deepEqual(cached?.permissions, { 'shopping.delete': true });
+  });
+
+  test('HO-6: a member without a display name can be approved and changed', async () => {
+    await memberRef(pending).update({ displayName: FieldValue.delete() });
+    await changeMemberRole(admin, HOUSE, pending.uid, 'member', NOW);
+    const [entry] = await audits('member.approved');
+    assert.equal(entry.targetName, null);
+    assert.equal((await memberData(pending))?.role, 'member');
+  });
+
   test('every policy refusal leaves the member untouched', async () => {
     // No permission.
     await refused(changeMemberRole(member, HOUSE, pending.uid, 'guest', NOW), 'missing_permission');
@@ -386,6 +412,17 @@ describe('edit permissions', () => {
   test('saving what is already stored writes nothing', async () => {
     await updateMemberPermissions(owner, HOUSE, member.uid, {}, 'member', NOW);
     assert.equal((await audits()).length, 0);
+  });
+
+  test('HO-6: a missing or mismatched profile never blocks or receives a permission edit', async () => {
+    await updateMemberPermissions(owner, HOUSE, member2.uid, { 'shopping.delete': true }, 'member', NOW);
+    assert.deepEqual((await memberData(member2))?.permissions, { 'shopping.delete': true });
+    assert.equal((await adminDb.collection('users').doc(member2.email).get()).exists, false);
+    await adminDb.collection('users').doc(member.email).set({ email: member.email, householdId: OTHER, role: 'member', permissions: {} });
+    await updateMemberPermissions(owner, HOUSE, member.uid, { 'shopping.delete': true }, 'member', NOW);
+    assert.deepEqual((await memberData(member))?.permissions, { 'shopping.delete': true });
+    assert.deepEqual((await profile(member))?.permissions, {});
+    assert.equal((await audits('member.permissions_changed')).length, 2);
   });
 
   test('guard: nobody edits their own permissions', async () => {
@@ -605,6 +642,15 @@ describe('transfer ownership and delete', () => {
     // The previous owner is an admin now and cannot take it back.
     await refused(transferOwnership(owner, HOUSE, owner.uid, NOW), 'owner_only');
     await refused(transferOwnership(owner, HOUSE, admin.uid, NOW), 'owner_only');
+  });
+
+  test('HO-6: a transfer goes ahead when the new owner has no profile and the old one points elsewhere', async () => {
+    await adminDb.collection('users').doc(owner.email).set({ email: owner.email, householdId: OTHER, role: 'member', permissions: {} });
+    assert.deepEqual(await transferOwnership(owner, HOUSE, member2.uid, NOW), { ownerUid: member2.uid });
+    assert.equal((await memberData(member2))?.role, 'owner');
+    assert.equal((await memberData(owner))?.role, 'admin');
+    assert.equal((await adminDb.collection('users').doc(member2.email).get()).exists, false);
+    assert.equal((await profile(owner))?.role, 'member');
   });
 
   test('only the owner can transfer, whatever overrides are stored', async () => {
