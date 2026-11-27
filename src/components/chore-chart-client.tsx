@@ -33,7 +33,7 @@ import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
-import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
+import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, matchesWhoFilter, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel } from '@/lib/chores/completion';
 import { mayReopen } from '@/lib/chores/completion';
@@ -137,7 +137,8 @@ export function ChoreChartClient() {
   const [showFullFuture, setShowFullFuture] = useState(false);
   const [openSections, setOpenSections] = useState<string[]>(['todo']);
   const [revealSection, setRevealSection] = useState<string | null>(null);
-  const handledHighlight = useRef<string | null>(null);
+  // The `?chore=` target already revealed (its section, range and scroll committed).
+  const [revealedId, setRevealedId] = useState<string | null>(null);
   // The filters live in the URL (`/chores?room=kitchen&due=overdue&who=me`), read on
   // every render so dashboard links, Back/Forward, reload and client navigation stay in sync.
   const searchParams = useSearchParams();
@@ -657,42 +658,60 @@ export function ChoreChartClient() {
   // The household's day everywhere on the page, as the server generates and judges (CH-10).
   const today = householdDay;
 
-  useEffect(() => {
-    if (!highlightId || loading || handledHighlight.current === highlightId) return;
+  // While a target is being revealed its section, range and room groups are derived open
+  // here (no state set during the effect); once its row is found (or the search gives up)
+  // the timer commits them to state, so the page stays as revealed and the person can
+  // close or narrow it again.
+  const pendingReveal = useMemo(() => {
+    if (!highlightId || loading || revealedId === highlightId) return null;
     const chore = assignedChores.find(c => c.id === highlightId);
-    if (!chore) return; // runs again when the listener delivers it
+    if (!chore) return null; // computed again when the listener delivers it
     const instant = completionInstant(chore);
     const place = highlightPlacement(
-      { isCompleted: chore.isCompleted, due: choreDueKey(chore), completedDay: instant ? dayKey(instant) : null },
+      { isCompleted: chore.isCompleted, due: choreDueKey(chore), completedDay: instant ? localDay(instant, safeTimeZone(household?.timeZone)) : null },
       { today, weekAhead: addDaysToKey(today, 7), recentFrom: addDaysToKey(today, -3) },
     );
-    setOpenSections(previous => (previous.includes(place.section) ? previous : [...previous, place.section]));
-    setRevealSection(place.section);
-    if (place.widen && place.section === 'future') setShowFullFuture(true);
-    if (place.widen && place.section === 'completed') setShowFullHistory(true);
     // A folded missed day shows through the latest open day of its series.
     const series = place.section === 'todo' && chore.templateId
       ? assignedChores.filter(c => c.id !== chore.id && !c.isCompleted && c.templateId === chore.templateId &&
         (c.roomIds ?? []).join(',') === (chore.roomIds ?? []).join(',') && choreDueKey(c) <= today).map(c => c.id)
       : [];
+    return { id: highlightId, ...place, series };
+  }, [highlightId, loading, revealedId, assignedChores, today, household?.timeZone]);
+  const sectionsOpen = pendingReveal && !openSections.includes(pendingReveal.section) ? [...openSections, pendingReveal.section] : openSections;
+  const fullFuture = showFullFuture || Boolean(pendingReveal?.widen && pendingReveal.section === 'future');
+  const fullHistory = showFullHistory || Boolean(pendingReveal?.widen && pendingReveal.section === 'completed');
+  const activeReveal = pendingReveal?.section ?? revealSection;
+
+  useEffect(() => {
+    if (!pendingReveal) return;
+    const { id, section, widen, series } = pendingReveal;
     let tries = 0;
     let clear: number | undefined;
     let timer: number | undefined;
+    const commit = () => {
+      setOpenSections(previous => (previous.includes(section) ? previous : [...previous, section]));
+      if (widen && section === 'future') setShowFullFuture(true);
+      if (widen && section === 'completed') setShowFullHistory(true);
+      setRevealSection(section);
+      setRevealedId(id);
+    };
     const look = () => {
-      const find = (id: string) => document.querySelector(`[data-chore-id="${CSS.escape(id)}"]`);
-      const row = find(highlightId) ?? series.map(find).find(Boolean) ?? null;
+      const find = (choreId: string) => document.querySelector(`[data-chore-id="${CSS.escape(choreId)}"]`);
+      const row = find(id) ?? series.map(find).find(Boolean) ?? null;
       if (!row) {
         if (++tries < 40) timer = window.setTimeout(look, 100);
+        else commit();
         return;
       }
-      handledHighlight.current = highlightId;
+      commit();
       row.scrollIntoView({ block: 'center' });
       row.setAttribute('data-highlight', 'true');
       clear = window.setTimeout(() => row.removeAttribute('data-highlight'), 2500);
     };
     timer = window.setTimeout(look, 50);
     return () => { window.clearTimeout(timer); window.clearTimeout(clear); };
-  }, [highlightId, loading, assignedChores, today]);
+  }, [pendingReveal]);
 
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
@@ -1045,12 +1064,12 @@ export function ChoreChartClient() {
     .filter(entry => filters.due !== 'overdue' || choreDueKey(entry.chore) < today || entry.missed.length > 0);
   const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
   const weekAhead = addDaysToKey(today, 7);
-  const visibleFutureChores = showFullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);
+  const visibleFutureChores = fullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);
   const recentFrom = addDaysToKey(today, -3);
   const completedChores = filteredChores
     .filter(c => c.isCompleted && completionInstant(c))
     .sort((a, b) => completionInstant(b)!.getTime() - completionInstant(a)!.getTime());
-  const visibleCompletedChores = showFullHistory ? completedChores : completedChores.filter(c => householdDayOf(completionInstant(c)!) >= recentFrom);
+  const visibleCompletedChores = fullHistory ? completedChores : completedChores.filter(c => householdDayOf(completionInstant(c)!) >= recentFrom);
   const completedToday = completedChores.filter(c => householdDayOf(completionInstant(c)!) === today).length;
   const recurringChores = choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence));
   const isEmptyHousehold = assignedChores.length === 0 && choreTemplates.length === 0;
@@ -1101,8 +1120,8 @@ export function ChoreChartClient() {
     // brings in housemates' rooms, which would otherwise stay collapsed).
     return (
       // A revealed `?chore=` target (CA-17) remounts its section's groups, open.
-      <Fragment key={revealSection === prefix ? `reveal-${highlightId ?? ''}` : 'groups'}>
-        <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault || revealSection === prefix ? groups.map(g => `${prefix}-${g.id}`) : []}>
+      <Fragment key={activeReveal === prefix ? `reveal-${highlightId ?? ''}` : 'groups'}>
+        <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault || activeReveal === prefix ? groups.map(g => `${prefix}-${g.id}`) : []}>
           {groups.map(group => (
             <AccordionItem value={`${prefix}-${group.id}`} key={`${prefix}-${group.id}`} className="rounded-lg border bg-background px-2 md:px-3">
               <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
@@ -1398,7 +1417,7 @@ export function ChoreChartClient() {
               </div>
             )}
 
-            <Accordion type="multiple" value={openSections} onValueChange={setOpenSections} className="w-full space-y-3 md:space-y-4">
+            <Accordion type="multiple" value={sectionsOpen} onValueChange={setOpenSections} className="w-full space-y-3 md:space-y-4">
               <AccordionItem value="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
                 <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl"><span>To Do (<NumberTicker value={todoEntries.length} animateOnMount={false} />)</span></AccordionTrigger>
                 <AccordionContent className="pt-1">
@@ -1430,7 +1449,7 @@ export function ChoreChartClient() {
                     </AccordionPrimitive.Trigger>
                   </AccordionPrimitive.Header>
                   <div className="ml-4 mr-1 flex shrink-0 items-center gap-2">
-                    <Switch id="show-full-future" checked={showFullFuture} onCheckedChange={setShowFullFuture} />
+                    <Switch id="show-full-future" checked={fullFuture} onCheckedChange={setShowFullFuture} />
                     <Label htmlFor="show-full-future" className="cursor-pointer text-xs md:text-sm">Show All</Label>
                   </div>
                 </div>
@@ -1452,7 +1471,7 @@ export function ChoreChartClient() {
                     </AccordionPrimitive.Trigger>
                   </AccordionPrimitive.Header>
                   <div className="ml-4 mr-1 flex shrink-0 items-center gap-2">
-                    <Switch id="show-full-history" checked={showFullHistory} onCheckedChange={setShowFullHistory} />
+                    <Switch id="show-full-history" checked={fullHistory} onCheckedChange={setShowFullHistory} />
                     <Label htmlFor="show-full-history" className="cursor-pointer text-xs md:text-sm">History</Label>
                   </div>
                 </div>

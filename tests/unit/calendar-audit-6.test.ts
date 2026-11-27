@@ -252,7 +252,9 @@ describe('review fixes (Codex, PR #234)', () => {
 
   it('the chores page reveals its target: controlled sections, widened ranges, rechecked until the row renders', () => {
     const page = readFileSync(resolve(process.cwd(), 'src/components/chore-chart-client.tsx'), 'utf8');
-    assert.match(page, /value=\{openSections\} onValueChange=\{setOpenSections\}/);
+    assert.match(page, /value=\{sectionsOpen\} onValueChange=\{setOpenSections\}/);
+    // Derived while revealing (no setState during the effect), committed once the row is found.
+    assert.match(page, /const fullFuture = showFullFuture \|\| Boolean\(pendingReveal\?\.widen/);
     assert.match(page, /setShowFullFuture\(true\)/);
     assert.match(page, /setShowFullHistory\(true\)/);
     assert.match(page, /if \(\+\+tries < 40\) timer = window\.setTimeout\(look, 100\)/);
