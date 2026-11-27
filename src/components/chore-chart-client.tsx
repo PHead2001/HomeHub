@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy, User as UserIcon } from 'lucide-react';
+import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, RotateCw, Trophy, User as UserIcon } from 'lucide-react';
 import { type DocumentData, type DocumentReference, type Transaction, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { withSkippedOccurrences } from '@functions/shared/skips';
@@ -45,6 +45,8 @@ import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
+import { useChoreLiveData } from '@/components/chores/use-chore-live-data';
+import { mergeLiveRows } from '@/lib/chores/live';
 import { useHouseholdToday, useToday } from '@/components/chores/use-today';
 import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
@@ -70,6 +72,9 @@ async function stillOpen(transaction: Transaction, refs: DocumentReference[]) {
   return snaps.filter(snap => snap.exists() && snap.get('isCompleted') !== true);
 }
 
+/** How long after a change to repeats upkeep waits, so several edits share one run. */
+const UPKEEP_DEBOUNCE_MS = 1500;
+
 export function ChoreChartClient() {
   const { currentUser, currentMember, household, permissions } = useAuth();
   // Completion eligibility follows the household's day, as on the server (CH-2); so do
@@ -85,7 +90,6 @@ export function ChoreChartClient() {
   const [choreTemplates, setChoreTemplates] = useState<ChoreTemplate[]>([]);
   const [householdUsers, setHouseholdUsers] = useState<HouseholdPerson[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [loading, setLoading] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
 
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -133,73 +137,86 @@ export function ChoreChartClient() {
     return collection(db, 'households', currentUser.householdId, collectionName);
   }, [currentUser]);
 
-  const fetchAllData = useCallback(async () => {
-    if (!currentUser?.householdId || !currentUser.email) {
-      setLoading(false);
-      return;
-    }
-    try {
-      // The household document itself is live in the auth context (no read here);
-      // these reads are refused unless this person is an approved member.
-      // Assignees are the approved membership records: their public fields (name,
-      // photo, role) are all this page shows. Housemates' profiles are never read.
-      const membersSnap = await getDocs(collection(db, 'households', currentUser.householdId, 'members'));
-      const usersData = approvedPeople(membersSnap.docs.map(snap => ({ id: snap.id, data: snap.data() })))
-        // The viewer always knows their own email, which matches their older chores.
-        .map(person => person.uid === currentUser.uid ? { ...person, email: person.email || currentUser.email } : person);
-      setHouseholdUsers(usersData);
-
-      const choresCollection = getCollectionRef('chores');
-      const templatesCollection = getCollectionRef('chore-templates');
-      const roomsCollection = getCollectionRef('rooms');
-      if (!choresCollection || !templatesCollection || !roomsCollection) return;
-
-      // Recurring chores, retention and reminders run on the server (hourly, and
-      // here on demand) so every household member sees the same schedule.
-      const firebaseUser = auth.currentUser;
-      if (firebaseUser) {
-        await syncHouseholdUpkeep({ idToken: await firebaseUser.getIdToken(), householdId: currentUser.householdId })
-          .catch(syncError => console.warn('Household upkeep could not run.', syncError));
-      }
-
-      const [choresSnapshot, templatesSnapshot, roomsSnapshot] = await Promise.all([
-        getDocs(query(choresCollection)),
-        getDocs(query(templatesCollection)),
-        getDocs(query(roomsCollection)),
-      ]);
-
-      // Assignees are resolved once here (uid, or the email of older records) and kept
-      // in memory as `assignedToUid`; see functions/src/shared/assignee.ts.
-      setChoreTemplates(templatesSnapshot.docs.map(d => {
-        const template = { id: d.id, ...d.data() } as ChoreTemplate;
-        return { ...template, assignedToUid: resolveAssigneeUid(template, usersData) };
-      }).sort((a, b) => a.task.localeCompare(b.task)));
-      setRooms(roomsSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Room)).sort((a, b) => a.name.localeCompare(b.name)));
-      setAssignedChores(choresSnapshot.docs.map(d => {
-        const chore = { id: d.id, ...d.data() } as ChoreRecord;
-        const assignedToUid = resolveAssigneeUid(chore, usersData) || '';
-        const user = usersData.find(u => u.uid === assignedToUid);
-        return { ...chore, assignedToUid, assignedToDisplayName: user?.displayName || chore.assignedToDisplayName || 'Unassigned' };
-      }));
-    } catch (error) {
-      console.error('Error fetching chores:', error instanceof Error ? error.message : String(error));
-      toastError(error, "Couldn't load chores");
-    } finally {
-      setLoading(false);
-    }
-  }, [getCollectionRef, currentUser, toastError]);
+  // Live data (CH-1): every collection the page shows is a listener, so completions,
+  // new chores and reassignments from other devices, quick add and upkeep appear on
+  // their own. Upkeep runs on the server in the background, never before the first
+  // render (CH-17).
+  const liveKey = currentUser?.householdId && currentUser.uid ? `${currentUser.householdId}|${currentUser.uid}` : null;
+  const live = useChoreLiveData(currentUser?.householdId, liveKey);
+  // Chores with a write in flight keep this page's optimistic version until it settles
+  // (`mergeLiveRows`), so an unrelated snapshot never flips a just-ticked row back.
+  const held = useRef(new Map<string, number>());
+  const [heldVersion, setHeldVersion] = useState(0);
+  const hold = useCallback((ids: readonly string[]) => {
+    ids.forEach(id => held.current.set(id, (held.current.get(id) ?? 0) + 1));
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      ids.forEach(id => {
+        const left = (held.current.get(id) ?? 1) - 1;
+        if (left <= 0) held.current.delete(id);
+        else held.current.set(id, left);
+      });
+      setHeldVersion(version => version + 1);
+    };
+  }, []);
 
   useEffect(() => {
-    if (currentUser?.householdId) void fetchAllData();
-    else setLoading(false);
-  }, [currentUser, fetchAllData]);
+    const docs = live.state.docs;
+    if (!currentUser || !docs.members || !docs.chores || !docs['chore-templates'] || !docs.rooms) return;
+    // Assignees are the approved membership records: their public fields (name, photo,
+    // role) are all this page shows. Housemates' profiles are never read.
+    const usersData = approvedPeople(docs.members)
+      // The viewer always knows their own email, which matches their older chores.
+      .map(person => person.uid === currentUser.uid ? { ...person, email: person.email || currentUser.email || '' } : person);
+    setHouseholdUsers(usersData);
+    // Assignees are resolved here (uid, or the email of older records) and kept in memory
+    // as `assignedToUid`; see functions/src/shared/assignee.ts.
+    setChoreTemplates(docs['chore-templates'].map(d => {
+      const template = { id: d.id, ...d.data } as ChoreTemplate;
+      return { ...template, assignedToUid: resolveAssigneeUid(template, usersData) };
+    }).sort((a, b) => a.task.localeCompare(b.task)));
+    setRooms(docs.rooms.map(d => ({ id: d.id, ...d.data } as Room)).sort((a, b) => a.name.localeCompare(b.name)));
+    const serverChores = docs.chores.map(d => {
+      const chore = { id: d.id, ...d.data } as ChoreRecord;
+      const assignedToUid = resolveAssigneeUid(chore, usersData) || '';
+      const user = usersData.find(u => u.uid === assignedToUid);
+      return { ...chore, assignedToUid, assignedToDisplayName: user?.displayName || chore.assignedToDisplayName || 'Unassigned' };
+    });
+    setAssignedChores(previous => mergeLiveRows(serverChores, previous, new Set(held.current.keys())));
+  }, [live.state, heldVersion, currentUser]);
 
-  // Chores created elsewhere (the command palette's quick add): refresh silently.
+  const loading = Boolean(liveKey) && live.status === 'loading';
+
+  // Recurring chores, retention and reminders run on the server (hourly, and here on
+  // demand) so every household member sees the same schedule. On demand means once on
+  // opening and shortly after a change to repeats (debounced), in the background: the
+  // generated chores arrive through the listener.
+  const upkeepTimer = useRef<number | undefined>(undefined);
+  const runUpkeep = useCallback(async () => {
+    const householdId = currentUser?.householdId;
+    const firebaseUser = auth.currentUser;
+    if (!householdId || !firebaseUser) return;
+    await syncHouseholdUpkeep({ idToken: await firebaseUser.getIdToken(), householdId })
+      .catch(syncError => console.warn('Household upkeep could not run.', syncError));
+  }, [currentUser?.householdId]);
+  const requestUpkeep = useCallback(() => {
+    window.clearTimeout(upkeepTimer.current);
+    upkeepTimer.current = window.setTimeout(() => void runUpkeep(), UPKEEP_DEBOUNCE_MS);
+  }, [runUpkeep]);
+  useEffect(() => {
+    void runUpkeep();
+    return () => window.clearTimeout(upkeepTimer.current);
+  }, [runUpkeep]);
+
+  // Chores created elsewhere (the command palette's quick add) arrive through the
+  // listener; a new repeating chore also needs upkeep to generate its days.
   useEffect(() => {
     const householdId = currentUser?.householdId;
     if (!householdId) return;
-    return onDataChanged('chores', householdId, () => void fetchAllData());
-  }, [currentUser?.householdId, fetchAllData]);
+    return onDataChanged('chores', householdId, requestUpkeep);
+  }, [currentUser?.householdId, requestUpkeep]);
 
   // Chore reminders are sent by the server (functions/src/reminders.ts), not
   // by whichever browser happens to have this page open.
@@ -291,13 +308,13 @@ export function ChoreChartClient() {
       }
       playFeedback('add');
       toast({ title: 'Chore added', description: `${input.task} is on ${assignee.uid === currentUser.uid ? 'your' : `${assigneeName}'s`} list.` });
-      await fetchAllData();
+      requestUpkeep();
       return true;
     } catch (error) {
       toastError(error, "Couldn't add the chore");
       return false;
     }
-  }, [currentUser, getCollectionRef, householdUsers, shouldNotify, toast, toastError, fetchAllData]);
+  }, [currentUser, getCollectionRef, householdUsers, shouldNotify, toast, toastError, requestUpkeep]);
 
   const handleSaveChoreTemplate = async (choreData: Partial<ChoreTemplate>, id?: string) => {
     const templatesCollection = getCollectionRef('chore-templates');
@@ -329,7 +346,7 @@ export function ChoreChartClient() {
         });
       });
       toast({ title: id ? 'Chore updated' : 'Saved to library' });
-      await fetchAllData();
+      requestUpkeep();
       return true;
     } catch (error) {
       toastError(error, "Couldn't save the chore");
@@ -349,7 +366,7 @@ export function ChoreChartClient() {
         openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
       });
       toast({ title: 'Chore deleted' });
-      await fetchAllData();
+      requestUpkeep();
     } catch (error) {
       toastError(error, "Couldn't delete the chore");
     }
@@ -448,13 +465,13 @@ export function ChoreChartClient() {
       toast(schedule.type === 'recurring'
         ? { title: 'Repeating chores set', description: 'They will show up on schedule by themselves.' }
         : { title: 'Chores assigned', description: `${templatesToAssign.length === 1 ? templatesToAssign[0].task : `${templatesToAssign.length} chores`} added to the chart.` });
-      await fetchAllData();
+      requestUpkeep();
       return true;
     } catch (error) {
       toastError(error, "Couldn't assign");
       return false;
     }
-  }, [currentUser, getCollectionRef, householdUsers, templatesToAssign, shouldNotify, toast, toastError, fetchAllData, householdDay]);
+  }, [currentUser, getCollectionRef, householdUsers, templatesToAssign, shouldNotify, toast, toastError, requestUpkeep, householdDay]);
 
   /* ---------------------------------------------------------------------- */
   /* Rooms and repeating chores                                              */
@@ -468,7 +485,7 @@ export function ChoreChartClient() {
     try {
       await setDoc(doc(roomsCollection, roomId), roomData);
       toast({ title: id ? 'Room updated' : 'Room added' });
-      await fetchAllData();
+      requestUpkeep();
       return true;
     } catch (error) {
       toastError(error, "Couldn't save the room");
@@ -513,7 +530,7 @@ export function ChoreChartClient() {
         plan.detach.forEach(({ id: choreId, roomIds }) => transaction.update(doc(choresCollection, choreId), { roomIds }));
       });
       toast({ title: 'Room deleted' });
-      await fetchAllData();
+      requestUpkeep();
     } catch (error) {
       toastError(error, "Couldn't delete the room");
     }
@@ -534,7 +551,7 @@ export function ChoreChartClient() {
         openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
       });
       toast({ title });
-      await fetchAllData();
+      requestUpkeep();
       return true;
     } catch (error) {
       toastError(error, failure);
@@ -586,8 +603,9 @@ export function ChoreChartClient() {
     if (!householdId || tickets.length === 0) return;
     const ids = tickets.map(ticket => ticket.choreId);
     const saved = new Map(choresRef.current.filter(c => ids.includes(c.id)).map(c => [c.id, completionFields(c)]));
+    const release = hold(ids);
     patchChores(ids, chore => ({ ...chore, ...reopenedChoreFields() }));
-    const results = await Promise.all(tickets.map(ticket => undoCompletionOnServer(householdId, ticket)));
+    const results = await Promise.all(tickets.map(ticket => undoCompletionOnServer(householdId, ticket))).finally(release);
     // Undone, or already reopened by someone else ('open'): the chore stays open.
     // Only a request that never ran puts back the saved completion; a chore that
     // changed since ('stale': completed again, 'missing': deleted) is re-read, as
@@ -612,7 +630,7 @@ export function ChoreChartClient() {
     const unread = new Map(settled.refresh.flatMap(id => (!fresh.has(id) && saved.has(id) ? [[id, saved.get(id)!] as const] : [])));
     setAssignedChores(current => restoreChoreFields(applyRefreshedChores(current, fresh), unread));
     if (!failure) toast({ title: 'Already changed', description: 'Someone changed this chore since, so it was left as it is.' });
-  }, [currentUser?.householdId, getCollectionRef, patchChores, toast]);
+  }, [currentUser?.householdId, getCollectionRef, patchChores, toast, hold]);
 
   const completeChores = useCallback(async (chores: readonly ChoreRecord[], origin: DOMRect | null) => {
     const householdId = currentUser?.householdId;
@@ -626,11 +644,12 @@ export function ChoreChartClient() {
       completedAt: new Date().toISOString(),
       ...(openSubTasks(chore).length > 0 ? { completedSubTasks: [...(chore.subTasks || [])] } : {}),
     } as Partial<ChoreRecord>]));
+    const release = hold(ids);
     setAssignedChores(current => restoreChoreFields(current, optimistic));
     setSelectedChoreIds(previous => previous.filter(id => !optimistic.has(id)));
 
     // One tap completes, including any open steps; Undo restores them.
-    const result = await completeChoresOnServer(householdId, ids, { completeSubTasks: true });
+    const result = await completeChoresOnServer(householdId, ids, { completeSubTasks: true }).finally(release);
     if (!result.ok) {
       setAssignedChores(current => restoreChoreFields(current, saved));
       toast({ variant: 'destructive', title: completionFailureMessage(result, 'complete') });
@@ -699,14 +718,15 @@ export function ChoreChartClient() {
     });
     const after = before.map(chore => (applied.has(chore.id) ? { ...chore, ...applied.get(chore.id) } as ChoreRecord : chore));
     maybeCelebrateHouse(before, after);
-  }, [currentUser?.householdId, toast, burst, undoCompletion, maybeCelebrateHouse, usersByUid]);
+  }, [currentUser?.householdId, toast, burst, undoCompletion, maybeCelebrateHouse, usersByUid, hold]);
 
   const reopenChore = useCallback(async (chore: ChoreRecord) => {
     const householdId = currentUser?.householdId;
     if (!householdId) return;
     const saved = new Map([[chore.id, completionFields(chore)]]);
+    const release = hold([chore.id]);
     patchChores([chore.id], c => ({ ...c, ...reopenedChoreFields() }));
-    const result = await reopenChoreOnServer(householdId, chore.id);
+    const result = await reopenChoreOnServer(householdId, chore.id).finally(release);
     if (!result.ok) {
       setAssignedChores(current => restoreChoreFields(current, saved));
       toast({ variant: 'destructive', title: completionFailureMessage(result, 'reopen') });
@@ -714,7 +734,7 @@ export function ChoreChartClient() {
       setAssignedChores(current => restoreChoreFields(current, saved));
       toast({ variant: 'destructive', title: "Couldn't reopen the chore", description: 'It was deleted.' });
     }
-  }, [currentUser?.householdId, patchChores, toast]);
+  }, [currentUser?.householdId, patchChores, toast, hold]);
 
   const handleToggleDone = useCallback((chore: ChoreRecord, origin: HTMLElement | null) => {
     if (!capabilities.canComplete) return;
@@ -743,19 +763,23 @@ export function ChoreChartClient() {
     if (!choresCollection || !capabilities.canComplete) return;
     const current = chore.completedSubTasks || [];
     const next = current.includes(subTask) ? current.filter(st => st !== subTask) : [...current, subTask];
+    const release = hold([chore.id]);
     patchChores([chore.id], c => ({ ...c, completedSubTasks: next }));
     try {
       await updateDoc(doc(choresCollection, chore.id), { completedSubTasks: next });
     } catch (error) {
       patchChores([chore.id], c => ({ ...c, completedSubTasks: current }));
       toastError(error, "Couldn't update the step");
+    } finally {
+      release();
     }
-  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError]);
+  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError, hold]);
 
   const deleteChores = async (ids: string[], title: string) => {
     const choresCollection = getCollectionRef('chores');
     const templatesCollection = getCollectionRef('chore-templates');
     if (!choresCollection || !templatesCollection || ids.length === 0) return;
+    const release = hold(ids);
     try {
       // Deleting a day of a repeating chore skips that day: the template records it,
       // so upkeep and the calendar never bring it back (CH-3). Other days are unchanged.
@@ -775,6 +799,8 @@ export function ChoreChartClient() {
       setAssignedChores(previous => previous.filter(chore => !ids.includes(chore.id)));
     } catch (error) {
       toastError(error, "Couldn't delete");
+    } finally {
+      release();
     }
   };
 
@@ -784,6 +810,7 @@ export function ChoreChartClient() {
     if (!choresCollection || !user || uid === chore.assignedToUid) return;
     const updates = { ...assigneeFields(user), assignedToDisplayName: memberName(user) };
     const previous = { assignedToUid: chore.assignedToUid ?? '', assignedToEmail: chore.assignedToEmail, assignedToDisplayName: chore.assignedToDisplayName };
+    const release = hold([chore.id]);
     patchChores([chore.id], c => ({ ...c, ...updates, assignedToEmail: undefined }));
     try {
       // An older assignee's email is removed: it would otherwise win over the new uid.
@@ -792,8 +819,10 @@ export function ChoreChartClient() {
     } catch (error) {
       patchChores([chore.id], c => ({ ...c, ...previous }));
       toastError(error, "Couldn't reassign");
+    } finally {
+      release();
     }
-  }, [getCollectionRef, householdUsers, patchChores, toast, toastError]);
+  }, [getCollectionRef, householdUsers, patchChores, toast, toastError, hold]);
 
   const closeHouseClean = useCallback(() => setHouseClean(null), []);
 
@@ -1098,7 +1127,18 @@ export function ChoreChartClient() {
         </div>
       </div>
 
-      {isEmptyHousehold ? (
+      {live.status === 'error' ? (
+        // CH-8: a failed load is never shown as an empty household. The listeners keep
+        // retrying with backoff, and at once when the connection or the page comes back.
+        <div className="rounded-xl border bg-card shadow-raised" role="alert" data-testid="chores-load-error">
+          <EmptyState
+            kind="chores"
+            title="Couldn't load chores"
+            description="Check the connection. This page tries again on its own."
+            action={{ label: 'Try again', icon: <RotateCw className="h-4 w-4" />, onClick: live.retry }}
+          />
+        </div>
+      ) : isEmptyHousehold ? (
         <div className="rounded-xl border bg-card shadow-raised">
           <EmptyState
             kind="chores"

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 /**
@@ -16,19 +16,19 @@ export const DEFAULT_CHORE_SETTINGS: ChoreSettings = { leaderboardEnabled: true 
 export function useChoreSettings(householdId: string | null | undefined) {
   const [settings, setSettings] = useState<ChoreSettings>(DEFAULT_CHORE_SETTINGS);
 
+  // Live (CH-1): an owner turning the leaderboard off on a phone hides it on every open page.
   useEffect(() => {
     if (!householdId) return;
-    let active = true;
-    getDoc(doc(db, 'households', householdId, 'chore-settings', 'preferences'))
-      .then(snap => {
-        if (!active) return;
+    return onSnapshot(
+      doc(db, 'households', householdId, 'chore-settings', 'preferences'),
+      snap => {
         const data = snap.exists() ? snap.data() : null;
         setSettings({ leaderboardEnabled: typeof data?.leaderboardEnabled === 'boolean' ? data.leaderboardEnabled : true });
-      })
-      .catch(() => {
-        // Unreadable preferences fall back to the defaults.
-      });
-    return () => { active = false; };
+      },
+      () => {
+        // Unreadable preferences keep the last known value (the defaults at first).
+      },
+    );
   }, [householdId]);
 
   const setLeaderboardEnabled = useCallback(async (enabled: boolean) => {
