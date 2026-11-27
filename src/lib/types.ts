@@ -598,6 +598,8 @@ export type Household = {
     devicePolicy?: { pointsPin?: 'off' | 'kids' | 'everyone' };
     /** Household quiet hours ('HH:mm', household zone); wall tablets dim during them (server-written; docs/modules/devices/README.md). */
     quietHours?: { start: string; end: string } | null;
+    /** First day of the week (CA-16): 0 Sunday, 1 Monday; absent = Monday. Owners and admins set it (`src/lib/chores/week-start.ts`). */
+    weekStartsOn?: 0 | 1;
 }
 
 export type InviteCode = {

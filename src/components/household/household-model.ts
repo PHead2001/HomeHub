@@ -163,18 +163,19 @@ export function relativeTime(value: string | undefined | null, now = new Date())
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
 }
 
-/** Monday 00:00 local time of the week containing `now`. */
-export function startOfWeek(now = new Date()): Date {
+/** 00:00 local time of the first day (Monday, or Sunday with `weekStartsOn` 0) of the week containing `now`. */
+export function startOfWeek(now = new Date(), weekStartsOn: 0 | 1 = 1): Date {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
-  const day = (start.getDay() + 6) % 7; // Monday = 0
+  // Days since the household's first weekday (Monday unless it starts on Sunday, CA-16).
+  const day = (start.getDay() - weekStartsOn + 7) % 7;
   start.setDate(start.getDate() - day);
   return start;
 }
 
 /** Monday 00:00 local time of the week after the one containing `now`. */
-export function startOfNextWeek(now = new Date()): Date {
-  const next = startOfWeek(now);
+export function startOfNextWeek(now = new Date(), weekStartsOn: 0 | 1 = 1): Date {
+  const next = startOfWeek(now, weekStartsOn);
   next.setDate(next.getDate() + 7);
   return next;
 }

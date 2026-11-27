@@ -1928,9 +1928,12 @@ service cloud.firestore {
       // Households are created, renamed, re-owned and deleted only by the server
       // (Admin SDK); no one writes memberEmails or ownerEmail any more (release C).
       allow create: if false;
+      // Owners and admins change the time zone and the week's first day (CA-16:
+      // `weekStartsOn` 0 Sunday or 1 Monday; HO-19's settings reuse it).
       allow update: if isOwnerOrAdmin(householdId) &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['timeZone', 'updatedAt']) &&
-        validHouseholdTimeZone();
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['timeZone', 'updatedAt', 'weekStartsOn']) &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['timeZone']) || validHouseholdTimeZone()) &&
+        (!('weekStartsOn' in request.resource.data) || request.resource.data.weekStartsOn in [0, 1]);
       allow delete: if false;
 
       match /members/{memberUid} {

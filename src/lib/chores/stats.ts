@@ -8,6 +8,7 @@
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { addDaysToKey, choreDueKey, completionInstant, dayKey, weekStartKey, type ChoreRecord } from './dates';
 import { publicDisplayName, type HouseholdPerson } from '../member-directory';
+import { DEFAULT_WEEK_STARTS_ON, lastWeekday, type WeekStartsOn } from './week-start';
 
 export const POINTS = {
   /** Every completed chore. */
@@ -42,7 +43,7 @@ export type MemberChoreStats = {
   name: string;
   /** Child accounts collect stickers instead of points. */
   stickerMode: boolean;
-  /** Points this week (Monday to Sunday). */
+  /** Points this week (the household's week: Monday to Sunday unless it starts on Sunday). */
   weekPoints: number;
   /** Points over the whole retained history (completed chores are kept 90 days). */
   totalPoints: number;
@@ -123,9 +124,10 @@ export function creditedUid(
  * chore (`creditedUid`); fair share counts the chores assigned to each member.
  * Completions credited to someone who is no longer a member are ignored.
  */
-export function computeChoreStats(chores: readonly ChoreRecord[], members: readonly StatsMember[], now: Date): ChoreStats {
+export function computeChoreStats(chores: readonly ChoreRecord[], members: readonly StatsMember[], now: Date, weekStartsOn: WeekStartsOn = DEFAULT_WEEK_STARTS_ON): ChoreStats {
   const today = dayKey(now);
-  const weekStart = weekStartKey(today);
+  // The household's week (CA-16): Monday unless it starts on Sunday.
+  const weekStart = weekStartKey(today, weekStartsOn);
   const weekEnd = addDaysToKey(weekStart, 6);
   const inWeek = (key: string) => key >= weekStart && key <= weekEnd;
 
@@ -184,7 +186,7 @@ export function weeklyPodium(stats: ChoreStats): MemberChoreStats[] {
   return stats.members.filter(member => member.weekPoints > 0).slice(0, 3);
 }
 
-/** The podium shows on Sundays, when the week's results are in. */
-export function isPodiumDay(now: Date): boolean {
-  return now.getDay() === 0;
+/** The podium shows on the week's last day (Sunday, or Saturday for a week that starts on Sunday), when the results are in. */
+export function isPodiumDay(now: Date, weekStartsOn: WeekStartsOn = DEFAULT_WEEK_STARTS_ON): boolean {
+  return now.getDay() === lastWeekday(weekStartsOn);
 }

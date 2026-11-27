@@ -55,6 +55,8 @@ import {
   type HouseholdActionResult,
 } from '@/app/household/actions';
 import { ConfirmActionDialog, type ConfirmRequest } from '@/components/household/confirm-action-dialog';
+import { WeekStartSetting } from '@/components/household/week-start-setting';
+import { readWeekStartsOn } from '@/lib/chores/week-start';
 import {
   HOUSEHOLD_NAME_MAX,
   changedPermissions,
@@ -145,6 +147,7 @@ export function HouseholdManagementClient() {
     canViewChores: reads.choreStats,
     canManageMembers: reads.contacts && canSeeMemberEmails(permissions),
     ownEmail: currentUser?.email ?? null,
+    weekStartsOn: readWeekStartsOn(household?.weekStartsOn),
   });
   const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
   // Invite expiry by the server's clock, moving on while a code is still active (HO-8);
@@ -559,6 +562,7 @@ export function HouseholdManagementClient() {
                 </div>
               </CardContent>
             </Card>
+            <WeekStartSetting householdId={household.id} canEdit={isOwnerOrAdminRole} />
           </TabsContent>
 
           {canManageInvites && (

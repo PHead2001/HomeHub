@@ -38,6 +38,7 @@ import { completerLabel } from '@/lib/chores/completion';
 import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, isPodiumDay, statsMemberFrom } from '@/lib/chores/stats';
+import { readWeekStartsOn } from '@/lib/chores/week-start';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
@@ -889,7 +890,9 @@ export function ChoreChartClient() {
   // matching key for older `completedByEmail` / `assignedToEmail` chores, never shown.
   const statsMembers = useMemo(() => householdUsers.map(statsMemberFrom), [householdUsers]);
   // Follows `today`, so the week, streaks and podium roll over at midnight.
-  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today)), [assignedChores, statsMembers, today]);
+  // The household's week (CA-16): Monday unless it starts on Sunday.
+  const weekStartsOn = readWeekStartsOn(household?.weekStartsOn);
+  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today), weekStartsOn), [assignedChores, statsMembers, today, weekStartsOn]);
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
 
   // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.
@@ -1351,7 +1354,7 @@ export function ChoreChartClient() {
 
           {showLeaderboard && (
             <aside className="min-w-0 lg:sticky lg:top-20 lg:self-start">
-              <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} showPodium={isPodiumDay(statsNow(today))} />
+              <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} showPodium={isPodiumDay(statsNow(today), weekStartsOn)} />
             </aside>
           )}
         </div>

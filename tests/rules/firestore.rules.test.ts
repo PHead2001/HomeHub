@@ -404,6 +404,20 @@ describe('independent review regressions', () => {
     await assertSucceeds(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { timeZone: 'America/Denver' }));
   });
 
+  test('owners and admins set the week start (CA-16); nobody else, and only Sunday or Monday', async () => {
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 0, updatedAt: 'x' }));
+    await assertSucceeds(updateDoc(doc(dbFor(users.admin), 'households', householdA), { weekStartsOn: 1 }));
+    await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.child), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.guest), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.ownerB), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 2 }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: '0' }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 0, name: 'Renamed' }));
+    // A week-start change never needs a time zone in the same write.
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 1 }));
+  });
+
   test('households cannot be deleted from the client', async () => {
     await assertFails(deleteDoc(doc(dbFor(users.owner), 'households', householdA)));
   });
