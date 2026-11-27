@@ -13,7 +13,8 @@
  * presets carry dark text; deep accents in light presets carry white text.
  */
 
-export const THEME_MODES = ['dark', 'light', 'system'] as const;
+// 'auto' (SL-14): light by day, dark from evening to morning (`autoIsDark` in appearance.ts).
+export const THEME_MODES = ['dark', 'light', 'system', 'auto'] as const;
 export type ThemeMode = (typeof THEME_MODES)[number];
 
 export const DARK_PRESET_IDS = ['midnight', 'hearth', 'forest'] as const;

@@ -8,6 +8,9 @@ import { membershipPhase, membershipReducer, initialMembershipState } from '../.
 
 import { SECTION_TITLES, documentTitle, ROOT_TITLE, TITLE_TEMPLATE } from '../../src/lib/shell/page-titles';
 
+import { AUTO_DARK_QUARTERS, autoIsDark, nextAutoSwitch, parseAppearance, resolvePresetId, themeBootstrapScript, APPEARANCE_STORAGE_KEY } from '../../src/lib/theme/appearance';
+import { isThemeMode } from '../../src/lib/theme/tokens';
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('SL-1: section error boundaries', () => {
@@ -134,5 +137,66 @@ describe('SL-13: every page has its own title', () => {
       assert.doesNotMatch(source(file), /title: '[^']*- HomeHub'/, file);
     }
     assert.match(source('src/app/share/page.tsx'), /absolute: 'Add to HomeHub'/);
+  });
+});
+
+describe('SL-14: theme "Automatic by time of day"', () => {
+  const at = (h: number, m = 0) => new Date(2026, 10, 27, h, m);
+
+  it('is a valid, synced mode; old values still parse', () => {
+    assert.equal(isThemeMode('auto'), true);
+    assert.equal(parseAppearance({ mode: 'auto' }).mode, 'auto');
+    assert.equal(parseAppearance({ mode: 'sometimes' }).mode, 'dark');
+  });
+
+  it('is light from 7:00 and dark from 19:00, from the day phases', () => {
+    assert.equal(AUTO_DARK_QUARTERS.length, 96);
+    assert.equal(autoIsDark(at(6, 59)), true);
+    assert.equal(autoIsDark(at(7, 0)), false);
+    assert.equal(autoIsDark(at(12)), false);
+    assert.equal(autoIsDark(at(18, 59)), false);
+    assert.equal(autoIsDark(at(19, 0)), true);
+    assert.equal(autoIsDark(at(0, 30)), true);
+    const prefs = { mode: 'auto', darkPreset: 'hearth', lightPreset: 'sunrise' } as const;
+    assert.equal(resolvePresetId(prefs, false, at(13)), 'sunrise');
+    assert.equal(resolvePresetId(prefs, false, at(22)), 'hearth');
+    // The system preference plays no part in Automatic.
+    assert.equal(resolvePresetId(prefs, true, at(13)), 'sunrise');
+  });
+
+  it('knows its next switch', () => {
+    assert.equal(nextAutoSwitch(at(13, 20)).getHours(), 19);
+    assert.equal(nextAutoSwitch(at(13, 20)).getMinutes(), 0);
+    const morning = nextAutoSwitch(at(23, 50));
+    assert.deepEqual([morning.getDate(), morning.getHours(), morning.getMinutes()], [28, 7, 0]);
+  });
+
+  it('the pre-paint script picks the same preset as the provider (no flash)', () => {
+    const script = themeBootstrapScript();
+    for (const hour of [0, 6, 7, 12, 18, 19, 23]) {
+      const attrs = new Map<string, string>();
+      const classes = new Set<string>();
+      const root = {
+        setAttribute: (k: string, v: string) => attrs.set(k, v),
+        removeAttribute: (k: string) => attrs.delete(k),
+        classList: { add: (c: string) => classes.add(c), remove: (c: string) => classes.delete(c) },
+      };
+      const fakeDocument = { documentElement: root, querySelector: () => null };
+      const stored = JSON.stringify({ mode: 'auto', darkPreset: 'forest', lightPreset: 'light' });
+      const fakeStorage = { getItem: (key: string) => (key === APPEARANCE_STORAGE_KEY ? stored : null) };
+      const fakeWindow = { matchMedia: () => ({ matches: true }) };
+      const FixedDate = class extends Date { constructor() { super(2026, 10, 27, hour, 30); } };
+      new Function('document', 'window', 'localStorage', 'Date', script)(fakeDocument, fakeWindow, fakeStorage, FixedDate);
+      const expected = resolvePresetId({ mode: 'auto', darkPreset: 'forest', lightPreset: 'light' }, true, at(hour, 30));
+      assert.equal(attrs.get('data-theme'), expected, `at ${hour}:30`);
+    }
+  });
+
+  it('Profile offers it; the provider re-checks at the switch and on wake', () => {
+    assert.match(source('src/components/appearance-settings.tsx'), /value: 'auto', label: 'By time'/);
+    const provider = source('src/components/appearance-provider.tsx');
+    assert.match(provider, /useAutoClock\(preferences\.mode === 'auto'\)/);
+    assert.match(provider, /nextAutoSwitch\(current\)/);
+    assert.match(provider, /visibilitychange/);
   });
 });

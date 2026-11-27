@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { MotionConfig } from 'motion/react';
 import { useAuth } from '@/hooks/use-auth';
 import { configureFeedback } from '@/lib/feedback';
@@ -14,6 +14,7 @@ import {
   applyTextScaleToDocument,
   parseAppearance,
   profileAppearance,
+  nextAutoSwitch,
   resolvePresetId,
   type AppearancePreferences,
 } from '@/lib/theme/appearance';
@@ -175,6 +176,35 @@ function revealPreset(id: PresetId, origin: RevealOrigin, allowMotion: boolean, 
   }
 }
 
+/**
+ * The time "Automatic by time of day" (SL-14) decides with: re-read at its next switch
+ * between dark and light, and whenever the tab becomes visible (a tablet or laptop that
+ * slept through the switch). Other modes never tick.
+ */
+function useAutoClock(active: boolean): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    if (!active) return;
+    let timer: number | null = null;
+    const schedule = () => {
+      const current = new Date();
+      setNow(current);
+      if (timer !== null) window.clearTimeout(timer);
+      // Capped at an hour so a changed device clock is noticed.
+      const wait = Math.min(nextAutoSwitch(current).getTime() - current.getTime() + 1000, 60 * 60 * 1000);
+      timer = window.setTimeout(schedule, Math.max(1000, wait));
+    };
+    const onVisible = () => { if (!document.hidden) schedule(); };
+    schedule();
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [active]);
+  return now;
+}
+
 /* ---------------------------------------------------------------------------
  * Provider
  * ------------------------------------------------------------------------- */
@@ -186,7 +216,9 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)');
   const systemReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
 
-  const activePreset = resolvePresetId(preferences, systemDark);
+  // SL-14: "Automatic" re-checks at its next switch (and when the tab is shown again).
+  const autoNow = useAutoClock(preferences.mode === 'auto');
+  const activePreset = resolvePresetId(preferences, systemDark, autoNow);
   const reducedMotion = preferences.reduceMotion || systemReducedMotion;
 
   // A signed-in member's synced profile preferences win over this device's copy
@@ -244,7 +276,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       const previous = getStoredPreferences();
       const next = parseAppearance({ ...previous, ...patch });
       const allowMotion = !(next.reduceMotion || systemReducedMotion);
-      revealPreset(resolvePresetId(next, systemDark), origin, allowMotion, () => storePreferences(next));
+      revealPreset(resolvePresetId(next, systemDark, new Date()), origin, allowMotion, () => storePreferences(next));
 
       const syncedChanged = SYNCED_KEYS.some((key) => previous[key] !== next[key]);
       if (syncedChanged && currentUser?.email) {

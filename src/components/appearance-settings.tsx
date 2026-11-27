@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react';
-import { Monitor, Moon, Palette, Play, Sun } from 'lucide-react';
+import { Monitor, Moon, Palette, Play, Sun, SunMoon } from 'lucide-react';
 import { useAppearance } from '@/components/appearance-provider';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
@@ -28,6 +28,8 @@ const MODES: Array<{ value: ThemeMode; label: string; icon: typeof Moon }> = [
   { value: 'dark', label: 'Dark', icon: Moon },
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'system', label: 'System', icon: Monitor },
+  // SL-14: light by day, dark from evening to morning.
+  { value: 'auto', label: 'By time', icon: SunMoon },
 ];
 
 // The tile glyph grows with the step; the whole page (and the preview) shows the real size.
@@ -155,6 +157,11 @@ export function AppearanceSettings() {
           </RadioGroup>
           {preferences.mode === 'system' && (
             <p className="text-xs text-muted-foreground">Follows your device: dark and light use the themes below.</p>
+          )}
+          {preferences.mode === 'auto' && (
+            <p className="text-xs text-muted-foreground" data-testid="appearance-auto-note">
+              Light from 7 am, dark from 7 pm, on this device&apos;s clock. Dark and light use the themes below.
+            </p>
           )}
         </div>
 
