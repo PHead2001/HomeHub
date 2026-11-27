@@ -1054,7 +1054,9 @@ export function ChoreChartClient() {
   const byDue = (a: ChoreRecord, b: ChoreRecord) => choreDueKey(a).localeCompare(choreDueKey(b)) || a.task.localeCompare(b.task);
   const recurringTemplateIds = new Set(choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence)).map(t => t.id));
   // `?due=overdue`: To Do keeps only chores due before today (folded missed instances stay with their row).
-  const todoEntries = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds, householdUsers)
+  // Everything still to do today, before the Overdue filter (the room header counts it).
+  const todoAll = collapseMissedRecurring(filteredChores.filter(c => !c.isCompleted && choreDueKey(c) <= today).sort(byDue), recurringTemplateIds, householdUsers);
+  const todoEntries = todoAll
     .filter(entry => filters.due !== 'overdue' || choreDueKey(entry.chore) < today || entry.missed.length > 0);
   const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
   const weekAhead = addDaysToKey(today, 7);
@@ -1389,7 +1391,8 @@ export function ChoreChartClient() {
               <RoomHero
                 name={roomName}
                 icon={roomIcon}
-                openCount={todoEntries.length}
+                openCount={todoAll.length}
+                overdueCount={filters.due === 'overdue' ? todoEntries.length : null}
                 doneToday={doneToday}
                 colors={memberColors}
               />

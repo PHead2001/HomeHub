@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { ROW_CHECK, focusCandidates, nextFocusIndex, sameRowEntry } from '../../src/lib/chores/row-focus';
+import { ROW_CHECK, focusCandidates, nextFocusIndex, pickFocusTarget, sameRowEntry } from '../../src/lib/chores/row-focus';
 import { keepUnchangedRows } from '../../src/lib/chores/live';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 
@@ -33,6 +33,23 @@ describe('chore rows: focus targets (CH-16, review of PR #262)', () => {
     const candidates = focusCandidates([doneA, stepA, doneB]);
     assert.deepEqual(candidates.map(c => c.name), ['done A', 'done B']);
     assert.equal(candidates[nextFocusIndex(candidates.length, candidates.indexOf(doneA))].name, 'done B');
+  });
+
+  it('never picks another copy of the chore being completed (a chore in several rooms)', () => {
+    // Kitchen group: dishes, wipe (in Kitchen and Living Room); Living Room group: wipe, dust.
+    const rows = [
+      { item: 'kitchen/dishes', choreId: 'dishes' },
+      { item: 'kitchen/wipe', choreId: 'wipe' },
+      { item: 'living/wipe', choreId: 'wipe' },
+      { item: 'living/dust', choreId: 'dust' },
+    ];
+    assert.equal(pickFocusTarget(rows, 'kitchen/wipe'), 'living/dust');
+    assert.equal(pickFocusTarget(rows, 'living/wipe'), 'living/dust');
+    // Last open chore with copies before it: the one before that is not a copy.
+    assert.equal(pickFocusTarget([{ item: 'a', choreId: 'x' }, { item: 'b', choreId: 'y' }, { item: 'c', choreId: 'y' }], 'c'), 'a');
+    // Only copies of itself left: nothing to focus.
+    assert.equal(pickFocusTarget([{ item: 'a', choreId: 'y' }, { item: 'b', choreId: 'y' }], 'a'), null);
+    assert.equal(pickFocusTarget(rows, 'missing'), null);
   });
 
   it('skips disabled (not due) and checked (completed) row checks', () => {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { doneTodayEntries, isRoomView } from '../../src/lib/chores/room-view';
+import { doneTodayEntries, isRoomView, roomSummary } from '../../src/lib/chores/room-view';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 
 const chore = (id: string, fields: Partial<ChoreRecord>): ChoreRecord => ({
@@ -31,6 +31,17 @@ describe('room view (CH-13)', () => {
       chore('a', { isCompleted: true, completedAt: '2026-11-27T08:00:00.000Z', completedByName: 'sam@example.com' }),
     ], '2026-11-27', dayOf, () => undefined);
     assert.equal(entries[0].byName, null);
+  });
+
+  it('counts today\'s work before the Overdue filter, and says when nothing is overdue (review of PR #262)', () => {
+    assert.equal(roomSummary(0, null), 'Nothing left to do here today.');
+    assert.equal(roomSummary(3, null), '3 to do');
+    // Overdue on, today's chores still open: never "nothing left".
+    assert.equal(roomSummary(2, 0), '2 to do · nothing overdue');
+    assert.equal(roomSummary(2, 1), '2 to do · 1 overdue');
+    const page = readFileSync(resolve(process.cwd(), 'src/components/chore-chart-client.tsx'), 'utf8');
+    assert.match(page, /openCount=\{todoAll\.length\}/);
+    assert.match(page, /overdueCount=\{filters\.due === 'overdue' \? todoEntries\.length : null\}/);
   });
 
   it('is on for one room or Around the house, off for All Rooms', () => {

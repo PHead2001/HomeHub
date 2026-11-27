@@ -33,3 +33,15 @@ export function doneTodayEntries(
 
 /** Whether the page shows the room layout: one room (or "Around the house") is chosen. */
 export const isRoomView = (filterRoomId: string): boolean => filterRoomId !== 'all';
+
+/**
+ * The room header's line (CH-13). `openCount` is everything left in the room today,
+ * counted before the Overdue filter; with the filter on, `overdueCount` says how much of
+ * it is overdue, so turning Overdue on never makes today's work look finished.
+ */
+export function roomSummary(openCount: number, overdueCount: number | null): string {
+  if (openCount === 0) return 'Nothing left to do here today.';
+  const base = `${openCount} to do`;
+  if (overdueCount === null) return base;
+  return overdueCount === 0 ? `${base} · nothing overdue` : `${base} · ${overdueCount} overdue`;
+}

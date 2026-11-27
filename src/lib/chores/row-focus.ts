@@ -33,15 +33,28 @@ export function focusCandidates<T extends CheckLike>(elements: readonly T[]): T[
 }
 
 /**
+ * The check to focus after completing `current`: the next candidate in page order, else
+ * the one before. Every other copy of the same chore is left out (a chore in several
+ * rooms has a row, and a check, in each room group, and they all leave together).
+ */
+export function pickFocusTarget<T>(candidates: readonly { item: T; choreId: string | null }[], current: T): T | null {
+  const own = candidates.find(candidate => candidate.item === current);
+  if (!own) return null;
+  const others = candidates.filter(candidate => candidate.item === current || own.choreId === null || candidate.choreId !== own.choreId);
+  const index = others.findIndex(candidate => candidate.item === current);
+  return others[nextFocusIndex(others.length, index)]?.item ?? null;
+}
+
+/**
  * Called as a row's chore is being completed: once the row has left, focus moves to the
- * next open row's check in the same section (To Do), else the one before, instead of
- * dropping to the page body.
+ * next open row's check in the same section (To Do), else the one before (never another
+ * copy of the same chore in another room group), instead of dropping to the page body.
  */
 export function focusAfterCompleting(check: HTMLElement): void {
   if (typeof document === 'undefined') return;
   const scope = check.closest('[data-chore-section]') ?? document;
   const checks = focusCandidates(Array.from(scope.querySelectorAll<HTMLElement>(ROW_CHECK)));
-  const target = checks[nextFocusIndex(checks.length, checks.indexOf(check))];
+  const target = pickFocusTarget(checks.map(el => ({ item: el, choreId: el.closest('[data-chore-id]')?.getAttribute('data-chore-id') ?? null })), check);
   if (!target) return;
   requestAnimationFrame(() => {
     if (target.isConnected && document.activeElement !== target) target.focus();
