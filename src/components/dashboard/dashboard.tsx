@@ -13,7 +13,7 @@
  * DOM order is the same in both, so focus order follows the reading order.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Keyboard } from 'lucide-react';
+import { Cake, Keyboard } from 'lucide-react';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { openShortcutHelp } from '@/components/command/events';
 import { ShortcutHint, ShortcutKeys } from '@/components/ui/shortcut-hint';
@@ -26,6 +26,7 @@ import { playFeedback } from '@/lib/feedback';
 import { GENERAL_ROOM_ID, UNKNOWN_ROOM_ID, type DashboardFacts } from '@/lib/dashboard/facts';
 import type { SectionState } from '@/lib/dashboard/dashboard-store';
 import { cn } from '@/lib/utils';
+import { birthdayGreeting } from '@/lib/profile/member-extras';
 import { BentoGrid } from './bento-grid';
 import { DashboardSubtitle } from './dashboard-subtitle';
 import { HomeWrapped } from './home-wrapped';
@@ -62,6 +63,13 @@ export function Dashboard() {
       <div className={cn(styles.tilesPane, 'min-w-0')}>
         {/* Keyed by the context: a household or member change resets the brief and its AI
             rewrite; the household day rolling over does not (HP-4b). */}
+        {/* PR-25: a household celebration on a member's opt-in birthday (household day). */}
+        {birthdayGreeting(facts.birthdays ?? []) && (
+          <p className="mb-3 flex items-center gap-2 rounded-lg border bg-card px-3 py-2 font-medium" data-testid="dashboard-birthday">
+            <Cake className="h-5 w-5 text-primary" aria-hidden />
+            {birthdayGreeting(facts.birthdays ?? [])}
+          </p>
+        )}
         <div className={styles.briefSlot}>
           <MorningBrief key={context} facts={facts} name={tablet ? null : scope.greetingName} household={tablet} now={now} today={today} timeZone={timeZone} ready={!loading} />
           {homeStatus && <HomeStatusCard data={homeStatus} now={now} />}

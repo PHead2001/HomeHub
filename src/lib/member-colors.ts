@@ -76,8 +76,19 @@ export function memberColor(id: string): MemberColor {
   return memberColorFromIndex(memberColorIndex(id));
 }
 
-/** A member for `memberColorMap`: a bare id, or the id with when they joined. */
-export type MemberColorEntry = string | { uid: string; joinedAt?: string | null; pending?: boolean };
+/**
+ * A member for `memberColorMap`: a bare id, or the id with when they joined and the
+ * colour they chose (PR-24, 1-8 on their membership record).
+ */
+export type MemberColorEntry = string | { uid: string; joinedAt?: string | null; pending?: boolean; color?: number | null };
+
+const isColorIndex = (value: unknown): value is MemberColorIndex =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MEMBER_COLOR_COUNT;
+
+/** A member's colour on its own: the chosen one when set, else the stable automatic one. */
+export function memberColorFor(id: string, chosen?: number | null): MemberColor {
+  return memberColorFromIndex(isColorIndex(chosen) ? chosen : memberColorIndex(id));
+}
 
 /**
  * The order members are placed in: approved before pending, then by join time
@@ -101,14 +112,29 @@ export function memberColorOrder(entries: readonly MemberColorEntry[]): string[]
 }
 
 /**
- * Collision-free colors for a group of members, placed in `memberColorOrder`;
- * each takes its own slot if free, otherwise the next free slot. Beyond eight
- * members colors repeat.
+ * Collision-free colors for a group of members, placed in `memberColorOrder`.
+ * Chosen colours (PR-24) are placed first: each member who chose one gets it unless
+ * someone earlier in join order already chose the same (an admin can then change
+ * the clash). Everyone else takes their own slot if free, otherwise the next free
+ * slot. Beyond eight members colors repeat.
  */
 export function memberColorMap(entries: readonly MemberColorEntry[]): Map<string, MemberColor> {
   const result = new Map<string, MemberColor>();
   const taken = new Set<number>();
-  for (const id of memberColorOrder(entries)) {
+  const chosen = new Map<string, MemberColorIndex>();
+  for (const entry of entries) {
+    if (typeof entry !== 'string' && isColorIndex(entry.color) && !chosen.has(entry.uid)) chosen.set(entry.uid, entry.color);
+  }
+  const order = memberColorOrder(entries);
+  for (const id of order) {
+    const pick = chosen.get(id);
+    if (pick !== undefined && !taken.has(pick)) {
+      taken.add(pick);
+      result.set(id, memberColorFromIndex(pick));
+    }
+  }
+  for (const id of order) {
+    if (result.has(id)) continue;
     let index = memberColorIndex(id);
     if (taken.size < MEMBER_COLOR_COUNT) {
       while (taken.has(index)) index = ((index % MEMBER_COLOR_COUNT) + 1) as MemberColorIndex;
@@ -116,5 +142,6 @@ export function memberColorMap(entries: readonly MemberColorEntry[]): Map<string
     taken.add(index);
     result.set(id, memberColorFromIndex(index));
   }
-  return result;
+  // Callers read the map in join order.
+  return new Map(order.map((id) => [id, result.get(id)!] as const));
 }

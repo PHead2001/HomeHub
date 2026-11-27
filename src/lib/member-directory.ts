@@ -29,6 +29,8 @@ export type HouseholdPerson = {
    * chore assignees yet (HO-15d): use `assignablePeople` for pickers.
    */
   kind?: 'account' | 'identity';
+  /** The colour slot the member chose (1-8, PR-24); absent: automatic. */
+  color?: number;
 };
 
 /** Shown for someone who has no usable display name. */
@@ -89,6 +91,7 @@ export function personFromMemberRecord(data: Record<string, unknown>, docId?: st
     ...(typeof data.joinedAt === 'string' ? { joinedAt: data.joinedAt } : {}),
     ...(typeof data.email === 'string' && data.email ? { email: data.email } : {}),
     ...(data.kind === 'identity' ? { kind: 'identity' as const } : {}),
+    ...(typeof data.color === 'number' && Number.isInteger(data.color) && data.color >= 1 && data.color <= 8 ? { color: data.color } : {}),
   };
 }
 

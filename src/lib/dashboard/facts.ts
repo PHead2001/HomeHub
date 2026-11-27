@@ -279,6 +279,8 @@ export type DashboardFacts = {
   maintenance?: MaintenanceFacts;
   pets?: PetFacts;
   notifications?: { unread: number };
+  /** First names of approved members whose opt-in birthday is today (PR-25). */
+  birthdays?: string[];
   /**
    * Home health (H10) from Maintenance's `computeHomeHealth`; null when there is
    * nothing to score. Absent while loading or when the logs could not be read.

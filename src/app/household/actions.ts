@@ -14,6 +14,8 @@ import {
   revokeAllInvites,
   revokeInvite,
   syncMemberProfile,
+  setMemberColor,
+  setMyBirthday,
   transferOwnership,
   updateHouseholdTimeZone,
   updateMemberPermissions,
@@ -160,4 +162,14 @@ export async function householdServerTimeAction(input: { idToken: string }): Pro
  */
 export async function syncMyMemberProfileAction(input: { idToken: string; householdId: string }): Promise<HouseholdActionResult<MemberProfileSync>> {
   return manage(input?.idToken, caller => syncMemberProfile(caller, input.householdId));
+}
+
+/** PR-24: your own member colour (or, for an owner or admin, another member's when two clash). */
+export async function setMemberColorAction(input: { idToken: string; householdId: string; memberUid?: string | null; color: number | null }): Promise<HouseholdActionResult<{ color: number | null }>> {
+  return manage(input?.idToken, caller => setMemberColor(caller, input.householdId, input.memberUid ?? null, input.color));
+}
+
+/** PR-25: your own opt-in birthday (month and day), or null to remove it. */
+export async function setMyBirthdayAction(input: { idToken: string; householdId: string; birthday: { month: number; day: number } | null }): Promise<HouseholdActionResult<{ birthday: { month: number; day: number } | null }>> {
+  return manage(input?.idToken, caller => setMyBirthday(caller, input.householdId, input.birthday));
 }

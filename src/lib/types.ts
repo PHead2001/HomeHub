@@ -532,6 +532,10 @@ export type HouseholdMember = {
    */
   kind?: 'account' | 'identity';
   createdByUid?: string;
+  /** The colour slot (1-8) the member chose (PR-24); absent: automatic. Server-written. */
+  color?: number;
+  /** Opt-in birthday, month and day only (PR-25), typed by the member. Server-written. */
+  birthday?: { month: number; day: number };
 };
 
 export type HomeAssistantCredentials = {
@@ -567,6 +571,8 @@ export type LegacyProfileTheme = {
 export type User = {
   uid: string; // From Firebase Auth
   email: string;
+  /** What the dashboard greeting calls the person (PR-25): one word, up to 20 characters. */
+  nickname?: string | null;
   /** Legacy: the browser's IANA zone, no longer written or read (reminders use the household's zone, D-6 / PR-5). */
   timeZone?: string;
   firstName: string;

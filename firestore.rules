@@ -203,11 +203,21 @@ service cloud.firestore {
           'birthday',
           'gender',
           'preferences',
-          'timeZone'
+          'timeZone',
+          'nickname'
         ]) &&
+        validNickname() &&
         (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid) &&
         noNewDemographics() &&
         legacyPushTokensOnlyShrink();
+    }
+
+    // PR-25: what the greeting calls the person: one short word, or removed (null).
+    function validNickname() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(['nickname']) ||
+        !('nickname' in request.resource.data) ||
+        request.resource.data.nickname == null ||
+        (request.resource.data.nickname is string && request.resource.data.nickname.size() <= 20);
     }
 
     // Google birthday and gender are no longer collected. Profiles that still

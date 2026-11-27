@@ -168,7 +168,7 @@ export function ChoreChartClient() {
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
   const usersByUid = useMemo(() => new Map(householdUsers.map(user => [user.uid, user])), [householdUsers]);
-  const memberColors = useMemo(() => memberColorMap(householdUsers.map(user => ({ uid: user.uid, joinedAt: user.joinedAt }))), [householdUsers]);
+  const memberColors = useMemo(() => memberColorMap(householdUsers.map(user => ({ uid: user.uid, joinedAt: user.joinedAt, color: user.color }))), [householdUsers]);
 
   const getCollectionRef = useCallback((collectionName: string) => {
     if (!currentUser?.householdId) return null;

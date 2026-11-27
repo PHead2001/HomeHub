@@ -43,6 +43,7 @@ import {
   memberRoleNotice,
   pendingReminderNoticeId,
 } from '@/lib/household-notices';
+import { parseBirthday, parseMemberColor, type Birthday } from '@/lib/profile/member-extras';
 import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
 import { DEVICE_CODE_AS_INVITE_MESSAGE } from '@/lib/devices/device-codes';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
@@ -1413,6 +1414,48 @@ const publicMemberName = (value: unknown): string | null => {
 const publicAvatarUrl = (value: unknown): string | null =>
   typeof value === 'string' && value.startsWith('https://') && value.length <= AVATAR_URL_MAX &&
     !isEmailFolderPhotoUrl(value) ? value : null;
+
+/**
+ * PR-24: the caller chooses their own member colour (1-8, or null for automatic).
+ * An owner or admin may change another member's colour when two clash (HO-19
+ * ruling), within `canManageMember` (never someone of equal or higher rank); kid
+ * profiles follow their own managers (owners and admins).
+ */
+export const setMemberColor = async (caller: VerifiedCaller, householdId: string, targetUid: string | null | undefined, rawColor: unknown, now = new Date()): Promise<{ color: number | null }> => {
+  const color = parseMemberColor(rawColor);
+  if (color === undefined) throw new MembershipError('Choose one of the eight colours.', 'invalid_input');
+  return adminDb.runTransaction(async transaction => {
+    const context = await loadActor(transaction, caller, householdId);
+    if ((context.actor.status ?? 'active') !== 'active') throw new MembershipError('You are not part of this household yet.', 'not_member');
+    const uid = targetUid && targetUid !== caller.uid ? targetUid : caller.uid;
+    let ref = context.householdRef.collection('members').doc(caller.uid);
+    if (uid !== caller.uid) {
+      const loaded = await loadTarget(transaction, context.householdRef, uid);
+      if (loaded.target.kind === 'identity') requireIdentityManager(context.actor);
+      else enforce(canManageMember(context.actor, loaded.target));
+      ref = loaded.ref;
+      writeAudit(transaction, context, caller, now, { action: 'member.color_changed', target: loaded.target, details: { color } });
+    }
+    transaction.update(ref, { color: color ?? FieldValue.delete() });
+    return { color };
+  });
+};
+
+/**
+ * PR-25: the caller's own opt-in birthday (month and day, no year), shown to the
+ * household as a celebration on its day; null removes it. Only ever self-entered:
+ * nobody sets another member's birthday, and Google's is never collected.
+ */
+export const setMyBirthday = async (caller: VerifiedCaller, householdId: string, rawBirthday: unknown): Promise<{ birthday: Birthday | null }> => {
+  const birthday = parseBirthday(rawBirthday);
+  if (birthday === undefined) throw new MembershipError('Choose a real month and day.', 'invalid_input');
+  return adminDb.runTransaction(async transaction => {
+    const context = await loadActor(transaction, caller, householdId);
+    if ((context.actor.status ?? 'active') !== 'active') throw new MembershipError('You are not part of this household yet.', 'not_member');
+    transaction.update(context.householdRef.collection('members').doc(caller.uid), { birthday: birthday ?? FieldValue.delete() });
+    return { birthday };
+  });
+};
 
 export type MemberProfileSync = { displayName: string | null; avatarUrl: string | null; changed: boolean };
 

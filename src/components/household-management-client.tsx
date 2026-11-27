@@ -199,6 +199,7 @@ export function HouseholdManagementClient() {
     uid: m.uid,
     joinedAt: m.joinedAt,
     pending: m.role === 'newuser' || (m.status ?? 'active') !== 'active',
+    color: m.color,
   }))), [members]);
 
   // Daily "still pending" reminder: when someone who can approve opens this page
