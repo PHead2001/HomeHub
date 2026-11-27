@@ -15,7 +15,7 @@ import { BarcodeScanner } from '../barcode-scanner';
 import { useLookupFeedback } from '../barcode/use-lookup-feedback';
 import { useOnTabDeactivate } from './tab-activity';
 import { useAuth } from '@/hooks/use-auth';
-import { libraryOfferFor, localLibraryLookup, type LocalLibraryEntry } from '@/lib/barcode/library-fill';
+import { libraryOfferFor, localLibraryLookup, scannedLibraryId, type LocalLibraryEntry } from '@/lib/barcode/library-fill';
 import { useLibrarySaveOffer } from '../barcode/library-save-offer';
 import { countLibraryScan } from '@/lib/barcode/library-save';
 
@@ -112,6 +112,9 @@ export function ScanToTick({
     // An item added by scanning this code ticks without a lookup (works offline).
     const local = matchByBarcode(latest.current.items, barcode);
     if (local) {
+      // BL-23: a saved product counts here too (from the library on this device, no lookup).
+      const savedId = scannedLibraryId(library, barcode);
+      if (savedId) countLibraryScan(householdId, savedId);
       act(local, barcode);
       return;
     }
@@ -122,7 +125,8 @@ export function ScanToTick({
       // Decided against the items as they are NOW (not as they were before the lookup).
       act(scanTickDecision(latest.current.items, barcode, result), barcode, result.libraryItem);
       // BL-23: a scan that found a saved product counts toward its favourites.
-      if (result.source === 'household' && result.libraryItem) countLibraryScan(householdId, result.libraryItem.id);
+      const savedId = scannedLibraryId(library, barcode, result);
+      if (savedId) countLibraryScan(householdId, savedId);
       // BL-19: the scanner has closed, so the offer can be a toast.
       const offer = libraryOfferFor(result, barcode, householdId);
       if (offer) librarySave.offerToast(offer);

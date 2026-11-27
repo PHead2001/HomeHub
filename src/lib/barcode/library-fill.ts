@@ -61,3 +61,17 @@ export function localLibraryLookup(library: ReadonlyMap<string, LocalLibraryEntr
   }
   return null;
 }
+
+/**
+ * The saved product a scan counts toward (BL-23), or null: the household product a lookup
+ * answered with, else (no lookup made, as Scan to tick's fast path for an item already on
+ * the list) the product the on-device library holds for this code in either barcode form.
+ */
+export function scannedLibraryId(
+  library: ReadonlyMap<string, LocalLibraryEntry> | null,
+  scanned: string,
+  result?: { source?: string; libraryItem?: { id: string } | null } | null,
+): string | null {
+  if (result) return result.source === 'household' && result.libraryItem ? result.libraryItem.id : null;
+  return localLibraryLookup(library, scanned)?.libraryItem.id ?? null;
+}

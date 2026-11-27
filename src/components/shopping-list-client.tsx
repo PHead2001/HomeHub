@@ -50,7 +50,7 @@ import { useTripMode } from './shopping/use-trip-mode';
 import { neededFocusOrder, scopeToList, withSectionOpen, type ListScoped } from '@/lib/shopping/trip-mode';
 import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
-import { libraryOfferFor, localLibraryLookup } from '@/lib/barcode/library-fill';
+import { libraryOfferFor, localLibraryLookup, scannedLibraryId } from '@/lib/barcode/library-fill';
 import { LibrarySaveOffer, useLibrarySaveOffer } from './barcode/library-save-offer';
 import { countLibraryScan } from '@/lib/barcode/library-save';
 import { rowPhoto } from '@/lib/shopping/row-photo';
@@ -827,6 +827,10 @@ export function ShoppingListClient({
         const entry = scanToShoppingEntry(result);
         const miss = result.libraryItem ? null : lookupMiss(result);
         if (entry && !miss) {
+          // BL-23: counted before the add is awaited, so the increment is queued offline too
+          // (an offline add waits for the server; a reload meanwhile would lose a later count).
+          const savedId = canEdit ? scannedLibraryId(libraryPhotos, barcode, result) : null;
+          if (savedId) countLibraryScan(householdForLookup, savedId);
           const final = await addScannedProduct(entry, { libraryItem: result.libraryItem, barcode, selectedCategory: category }, {
             ...scanAddDeps,
             pending: (status) => {
@@ -836,8 +840,6 @@ export function ShoppingListClient({
           });
           const closing = final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close;
           if (closing) setIsAddItemDialogOpen(false);
-          // BL-23: a scan that found a saved product counts toward its favourites.
-          if (canEdit && result.source === 'household' && result.libraryItem) countLibraryScan(householdForLookup, result.libraryItem.id);
           const offer = canEdit ? libraryOfferFor(result, barcode, householdForLookup) : null;
           if (offer) {
             if (!closing && inSameDialog()) librarySave.setOffer(offer);
