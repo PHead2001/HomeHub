@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   HomeAssistantError,
+  fetchHomeAssistantSnapshot,
   fetchHomeAssistantStates,
   isPublicAddress,
   normalizeHomeAssistantUrl,
@@ -61,6 +62,11 @@ describe('Home Assistant address safety', () => {
   test('a public https address is normalized without query, hash or trailing slash', async () => {
     assert.equal(await normalizeHomeAssistantUrl(' https://Home.Example.com:8443/?x=1#y ', publicResolver), 'https://home.example.com:8443');
   });
+
+  test('AU-5: a pasted dashboard address keeps only its origin', async () => {
+    assert.equal(await normalizeHomeAssistantUrl('https://abc.ui.nabu.casa/lovelace/0', publicResolver), 'https://abc.ui.nabu.casa');
+    assert.equal(await normalizeHomeAssistantUrl('https://ha.example.com:8123/config/dashboard?edit=1', publicResolver), 'https://ha.example.com:8123');
+  });
 });
 
 describe('Home Assistant state fetch', () => {
@@ -99,8 +105,27 @@ describe('Home Assistant state fetch', () => {
     await rejectsWith(fetchHomeAssistantStates('https://h.example.com', 't'.repeat(30), opts(answer(302, {}))), /redirected/);
     await rejectsWith(fetchHomeAssistantStates('https://h.example.com', 't'.repeat(30), opts(answer(401, {}))), /rejected the access token/);
     await rejectsWith(fetchHomeAssistantStates('https://h.example.com', 't'.repeat(30), opts(answer(200, { ok: true }))), /did not respond like Home Assistant/);
+    await rejectsWith(fetchHomeAssistantStates('https://h.example.com', 't'.repeat(30), opts(answer(404, {}))), /isn't a Home Assistant server. Use the base address/);
     const failing = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
     await rejectsWith(fetchHomeAssistantStates('https://h.example.com', 't'.repeat(30), opts(failing)), /did not answer/);
+  });
+});
+
+describe('AU-3, AU-2: the snapshot', () => {
+  const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+
+  test('keeps the change time, and says when the list was cut off', async () => {
+    const many = Array.from({ length: 1005 }, (_, i) => ({ entity_id: `sensor.s${i}`, state: '1', attributes: {} }));
+    many[0] = { entity_id: 'climate.home', state: 'heat', attributes: { current_temperature: 21.5, hvac_modes: ['heat'] }, last_changed: '2026-11-27T10:00:00+00:00' } as never;
+    const fetchImpl = (async () => response(many)) as unknown as typeof fetch;
+    const snapshot = await fetchHomeAssistantSnapshot('https://h.example.com', 't'.repeat(30), { fetchImpl, resolve: publicResolver });
+    assert.equal(snapshot.total, 1005);
+    assert.equal(snapshot.truncated, true);
+    assert.equal(snapshot.entities.length, 1000);
+    assert.deepEqual(snapshot.entities[0], {
+      entity_id: 'climate.home', state: 'heat', last_changed: '2026-11-27T10:00:00+00:00',
+      attributes: { friendly_name: undefined, unit_of_measurement: undefined, device_class: undefined },
+    });
   });
 });
 

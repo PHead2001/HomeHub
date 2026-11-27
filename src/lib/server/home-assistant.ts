@@ -4,6 +4,7 @@ import type { LookupAddress } from 'node:dns';
 import { lookup as lookupAsync } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
+import type { HomeAssistantEntitySummary } from '@/lib/automation/entities';
 
 export class HomeAssistantError extends Error {
   constructor(public readonly userMessage: string) {
@@ -11,11 +12,7 @@ export class HomeAssistantError extends Error {
   }
 }
 
-export type HomeAssistantEntitySummary = {
-  entity_id: string;
-  state: string;
-  attributes: { friendly_name?: string; unit_of_measurement?: string; device_class?: string };
-};
+export type { HomeAssistantEntitySummary } from '@/lib/automation/entities';
 
 const MAX_ENTITIES = 1000;
 const REQUEST_TIMEOUT_MS = 8000;
@@ -102,9 +99,9 @@ export const normalizeHomeAssistantUrl = async (raw: string, resolve: Resolver =
   if (!addresses.length || !addresses.every(isPublicAddress)) {
     throw new HomeAssistantError(`That address points at a private network. ${UNREACHABLE_HINT}`);
   }
-  url.hash = '';
-  url.search = '';
-  return url.toString().replace(/\/+$/, '');
+  // AU-5: only the origin is kept. A pasted dashboard address (…/lovelace/0) would
+  // otherwise become …/lovelace/0/api/states and fail with a 404.
+  return url.origin;
 };
 
 export type Fetcher = typeof fetch;
@@ -197,22 +194,19 @@ export const pinnedFetch = (resolve: Resolver): Fetcher => (async (input: Reques
   });
 }) as Fetcher;
 
-export const fetchHomeAssistantStates = async (
-  rawUrl: string,
-  accessToken: string,
-  { resolve = defaultResolver, fetchImpl = pinnedFetch(resolve) }: { fetchImpl?: Fetcher; resolve?: Resolver } = {}
-): Promise<HomeAssistantEntitySummary[]> => {
-  // Re-validate on every call: stored URLs predate validation, and DNS can change.
-  const base = await normalizeHomeAssistantUrl(rawUrl, resolve);
-  let response: Response;
+type FetchOptions = { fetchImpl?: Fetcher; resolve?: Resolver };
+
+/** AU-5: the plain-language reason for a failed answer. */
+const answerError = (status: number) => {
+  if (status >= 300 && status < 400) return new HomeAssistantError('Home Assistant redirected the request. Enter the final https address instead.');
+  if (status === 401 || status === 403) return new HomeAssistantError('Home Assistant rejected the access token. Create a new long-lived token and try again.');
+  if (status === 404) return new HomeAssistantError(`That address isn't a Home Assistant server. Use the base address, like https://abc.ui.nabu.casa.`);
+  return new HomeAssistantError(`Home Assistant returned an error (${status}).`);
+};
+
+const send = async (url: string, init: RequestInit, fetchImpl: Fetcher): Promise<Response> => {
   try {
-    response = await fetchImpl(`${base}/api/states`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-      cache: 'no-store',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    return await fetchImpl(url, { ...init, cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   } catch (error) {
     if (error instanceof HomeAssistantError) throw error;
     if ((error as NodeJS.ErrnoException)?.code === 'EHOMEHUBPRIVATE') {
@@ -220,13 +214,47 @@ export const fetchHomeAssistantStates = async (
     }
     throw new HomeAssistantError(`Home Assistant did not answer. ${UNREACHABLE_HINT}`);
   }
-  if (response.status >= 300 && response.status < 400) {
-    throw new HomeAssistantError('Home Assistant redirected the request. Enter the final https address instead.');
-  }
-  if (response.status === 401 || response.status === 403) {
-    throw new HomeAssistantError('Home Assistant rejected the access token. Create a new long-lived token and try again.');
-  }
-  if (!response.ok) throw new HomeAssistantError(`Home Assistant returned an error (${response.status}).`);
+};
+
+const trimEntity = (item: unknown): HomeAssistantEntitySummary[] => {
+  if (!item || typeof item !== 'object') return [];
+  const entity = item as Record<string, unknown>;
+  if (typeof entity.entity_id !== 'string') return [];
+  const attributes = (entity.attributes && typeof entity.attributes === 'object' ? entity.attributes : {}) as Record<string, unknown>;
+  const pick = (key: string) => (typeof attributes[key] === 'string' ? (attributes[key] as string) : undefined);
+  const changed = typeof entity.last_changed === 'string' && Number.isFinite(Date.parse(entity.last_changed)) ? entity.last_changed : undefined;
+  return [{
+    entity_id: entity.entity_id,
+    state: typeof entity.state === 'string' ? entity.state : String(entity.state ?? ''),
+    attributes: {
+      friendly_name: pick('friendly_name'),
+      unit_of_measurement: pick('unit_of_measurement'),
+      device_class: pick('device_class'),
+    },
+    ...(changed ? { last_changed: changed } : {}),
+  }];
+};
+
+export type HomeAssistantSnapshot = {
+  entities: HomeAssistantEntitySummary[];
+  /** How many entities Home Assistant reported (AU-2: shown when the list is cut off). */
+  total: number;
+  truncated: boolean;
+};
+
+/** `GET /api/states`, trimmed to what HomeHub shows; at most MAX_ENTITIES are kept. */
+export const fetchHomeAssistantSnapshot = async (
+  rawUrl: string,
+  accessToken: string,
+  { resolve = defaultResolver, fetchImpl = pinnedFetch(resolve) }: FetchOptions = {}
+): Promise<HomeAssistantSnapshot> => {
+  // Re-validate on every call: stored URLs predate validation, and DNS can change.
+  const base = await normalizeHomeAssistantUrl(rawUrl, resolve);
+  const response = await send(`${base}/api/states`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+  }, fetchImpl);
+  if (!response.ok) throw answerError(response.status);
 
   let body: unknown;
   try {
@@ -235,21 +263,12 @@ export const fetchHomeAssistantStates = async (
     throw new HomeAssistantError('That address did not respond like Home Assistant. Check the URL.');
   }
   if (!Array.isArray(body)) throw new HomeAssistantError('That address did not respond like Home Assistant. Check the URL.');
-
-  return body.slice(0, MAX_ENTITIES).flatMap(item => {
-    if (!item || typeof item !== 'object') return [];
-    const entity = item as Record<string, unknown>;
-    if (typeof entity.entity_id !== 'string') return [];
-    const attributes = (entity.attributes && typeof entity.attributes === 'object' ? entity.attributes : {}) as Record<string, unknown>;
-    const pick = (key: string) => (typeof attributes[key] === 'string' ? (attributes[key] as string) : undefined);
-    return [{
-      entity_id: entity.entity_id,
-      state: typeof entity.state === 'string' ? entity.state : String(entity.state ?? ''),
-      attributes: {
-        friendly_name: pick('friendly_name'),
-        unit_of_measurement: pick('unit_of_measurement'),
-        device_class: pick('device_class'),
-      },
-    }];
-  });
+  return { entities: body.slice(0, MAX_ENTITIES).flatMap(trimEntity), total: body.length, truncated: body.length > MAX_ENTITIES };
 };
+
+export const fetchHomeAssistantStates = async (
+  rawUrl: string,
+  accessToken: string,
+  options: FetchOptions = {}
+): Promise<HomeAssistantEntitySummary[]> => (await fetchHomeAssistantSnapshot(rawUrl, accessToken, options)).entities;
+
