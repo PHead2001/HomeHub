@@ -28,6 +28,11 @@ export type ReminderPerson = {
   householdTimeZone?: string;
   reminderEnabled?: boolean;
   reminderTime?: string;
+  /**
+   * Pushes about newly overdue chores (NO-4). Off: the overdue notification
+   * still lists them in the bell, silently. Absent means on.
+   */
+  overdueAlerts?: boolean;
 };
 
 export type ChoreNotification = {
@@ -54,6 +59,8 @@ export type OverdueView = {
   alertsAllowed: boolean;
   /** Their daily reminder is enabled and its time is still to come today. */
   dailyReminderPending: boolean;
+  /** They want pushes about newly overdue chores (NO-4). */
+  pushAllowed: boolean;
 };
 
 const isMine = (person: ReminderPerson) => (c: ChoreInput) =>
@@ -96,8 +103,39 @@ export const overdueChoresFor = (
     alertsAllowed: minutes >= OVERDUE_ALERT_AFTER_MINUTES,
     dailyReminderPending: Boolean(person.reminderEnabled) &&
       reminderAt !== null && minutes < reminderAt,
+    pushAllowed: person.overdueAlerts !== false,
   };
 };
+
+/**
+ * The overdue notification's title (NO-19): the chore's name when one is
+ * overdue, otherwise how many.
+ * @param {string[]} tasks Names of the listed chores.
+ * @param {number} total Overdue chores in all.
+ * @return {string} Title.
+ */
+export const overdueTitle = (
+  tasks: string[],
+  total = tasks.length,
+): string => total === 1 && tasks.length === 1 ?
+  `${tasks[0].slice(0, 100)} is overdue` :
+  `${plural(total, "overdue chore")}`;
+
+/**
+ * The daily reminder's title (NO-19): what is due that day, else what is
+ * still overdue.
+ * @param {number} onDay Chores due that day.
+ * @param {number} late Chores overdue.
+ * @param {string} when "today" or "yesterday".
+ * @return {string} Title.
+ */
+export const dailyReminderTitle = (
+  onDay: number,
+  late: number,
+  when: string,
+): string => onDay > 0 ?
+  `${plural(onDay, "chore")} due ${when}` :
+  `${plural(late, "chore")} still overdue`;
 
 /**
  * The overdue notification's message for these chores.
@@ -148,7 +186,7 @@ export const choreNotificationsFor = (
     return {
       id: `${person.uid}-${sourceId}`,
       targetUserUid: person.uid,
-      title: "Daily chore reminder",
+      title: dailyReminderTitle(onDay.length, late.length, when),
       message: onDay.length > 0 && late.length > 0 ?
         `${plural(onDay.length, "chore")} due ${when} and ` +
           `${late.length} overdue.` :

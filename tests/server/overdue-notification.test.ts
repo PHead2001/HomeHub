@@ -46,7 +46,7 @@ describe('overdue chores notification (NO-1)', () => {
     const first = (await stable().get()).data()!;
     assert.equal(first.targetUserUid, 'o1');
     assert.deepEqual(first.audience, ['o1']);
-    assert.equal(first.title, 'Overdue chores');
+    assert.equal(first.title, 'Sweep floor is overdue', 'NO-19: the chore by name');
     assert.equal(first.message, '"Sweep floor" is overdue.');
     assert.equal(first.deepLink, '/chores?due=overdue');
     assert.equal(first.silent, undefined, 'created with a push');
@@ -263,5 +263,29 @@ describe('overdue chores notification (NO-1)', () => {
     await house().update({ deletingAt: Timestamp.now() });
     await run(at('2026-11-05', 8));
     assert.deepEqual(await choreReminders(), []);
+  });
+  test('NO-4: overdue alerts off: listed in the bell, never pushed', async () => {
+    await adminDb.collection('users').doc(EMAIL).set({ email: EMAIL, choreSettings: { reminderEnabled: false, overdueAlerts: false } });
+    await run(at('2026-11-05', 8));
+    const data = (await stable().get()).data()!;
+    assert.equal(data.silent, true, 'created without a push');
+    assert.deepEqual(data.overdueChoreIds, ['sweep']);
+    await chore('dishes', 'Dishes', '2026-11-05');
+    await run(at('2026-11-06', 8));
+    const grown = (await stable().get()).data()!;
+    assert.deepEqual(grown.overdueChoreIds, ['dishes', 'sweep']);
+    assert.equal(grown.renotifyAt, undefined, 'a new overdue chore is still not pushed');
+    assert.deepEqual(grown.readBy, {}, 'but it is unread again');
+  });
+
+  test('D-6: the household zone decides the day, not the zone on the profile', async () => {
+    // Tokyo is 15 hours ahead of Chicago: at 08:00 Chicago on Nov 5 it is already Nov 5 23:00 there,
+    // and at 20:00 Chicago it is Nov 6 in Tokyo. The household day is still Nov 5 in Chicago.
+    await adminDb.collection('users').doc(EMAIL).set({ email: EMAIL, timeZone: 'Asia/Tokyo', choreSettings: { reminderEnabled: false } });
+    await chore('due-5th', 'Mop', '2026-11-05');
+    await run(at('2026-11-05', 20));
+    const data = (await stable().get()).data()!;
+    assert.deepEqual(data.overdueChoreIds, ['sweep'], 'the chore due on the household day is not overdue yet');
+    assert.equal(data.lastPushDay, '2026-11-05');
   });
 });

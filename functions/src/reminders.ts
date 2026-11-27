@@ -841,13 +841,16 @@ export const runHouseholdReminders = async (
   for (const [index, member] of reachable.entries()) {
     const profile = profiles[index].data() || {};
     const settings = profile.choreSettings || {};
+    // D-6: the household's zone decides every reminder time and day; the
+    // zone a member's last device wrote to their profile is not used.
     const person = {
       uid: member.uid,
       email: member.email,
-      timeZone: safeTimeZone(profile.timeZone || timeZone),
+      timeZone,
       householdTimeZone: timeZone,
       reminderEnabled: Boolean(settings.reminderEnabled),
       reminderTime: settings.reminderTime,
+      overdueAlerts: settings.overdueAlerts !== false,
     };
     const notes = choreNotificationsFor(person, chores, now);
     let reminderSent = false;

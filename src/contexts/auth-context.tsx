@@ -254,7 +254,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (docSnap.exists()) {
       const profile = { uid: firebaseUser.uid, ...docSnap.data() } as User;
-      // Daily chore reminders fire at each person's chosen time in their own timezone.
+      // Kept on the profile; upkeep times every reminder in the household's zone (D-6).
       const timeZone = browserTimeZone();
       if (timeZone && profile.timeZone !== timeZone) {
         void setDoc(userDocRef, { timeZone }, { merge: true }).catch(() => undefined);
