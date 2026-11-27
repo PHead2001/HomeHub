@@ -11,7 +11,7 @@
 // expiring chips. Everything is read through the tablet's own listeners (`tabletListener`) under
 // the tablet's read rules (the Shopping section switch); every write is a device action.
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { Circle, Clock, Plus, ShoppingBasket, ShoppingCart } from 'lucide-react';
 import type { DocumentReference, DocumentSnapshot, Query, QuerySnapshot } from 'firebase/firestore';
 import { Input } from '@/components/ui/input';
@@ -30,7 +30,7 @@ import {
 } from '@/lib/devices/tablet-shopping';
 import { readCategoryConfig } from '@/lib/shopping/category-order';
 import { parseQuickAdd } from '@/lib/shopping/items';
-import { expiringChips, neededAisleGroups } from '@/lib/shopping/overview';
+import { expiringChips, neededAisleGroups, preferencesKnown } from '@/lib/shopping/overview';
 import { DEFAULT_SHOPPING_CATEGORIES } from '@/lib/shopping-items';
 import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import { cn } from '@/lib/utils';
@@ -114,6 +114,15 @@ function KitchenRow({ item, attribution, busy, onTick }: { item: KitchenItem; at
   );
 }
 
+const subscribeConnection = (onChange: () => void) => {
+  window.addEventListener('online', onChange);
+  window.addEventListener('offline', onChange);
+  return () => {
+    window.removeEventListener('online', onChange);
+    window.removeEventListener('offline', onChange);
+  };
+};
+
 /** The always-visible quick add: "milk, eggs, 2 bread" onto the shown list (`shopping.add`). */
 function KitchenQuickAdd({ list }: { list: KitchenList }) {
   const { runAction } = useTablet();
@@ -127,6 +136,7 @@ function KitchenQuickAdd({ list }: { list: KitchenList }) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (busy || entries.length === 0) return;
+    const submitted = text;
     if (!attempt.current || attempt.current.text !== text || attempt.current.listId !== list.id) {
       attempt.current = { text, listId: list.id, opId: crypto.randomUUID() };
     }
@@ -135,7 +145,8 @@ function KitchenQuickAdd({ list }: { list: KitchenList }) {
       const outcome = await runAction({ capability: 'shopping.add', label: `Add to ${list.name}`, opId: attempt.current.opId, intent: { listId: list.id, entries } });
       if (outcome.ok || outcome.queued) {
         attempt.current = null;
-        setText('');
+        // Only the words that were sent: anything typed while it ran stays.
+        setText((current) => (current === submitted ? '' : current.startsWith(submitted) ? current.slice(submitted.length).replace(/^[\s,]+/, '') : current));
       }
     } finally {
       setBusy(false);
@@ -174,7 +185,15 @@ export function TabletShoppingView({ listId }: { listId?: string }) {
     const value = (snapshot as DocumentSnapshot).get('defaultGroceryListId');
     return typeof value === 'string' && value ? value : null;
   });
-  const defaultKnown = Boolean(preferences && (preferences.failed || !preferences.fromCache || preferences.value !== null));
+  // As the personal Shopping view: offline, the cached preferences decide (a fallback list
+  // when they name none), so the kitchen never waits on "Loading…" without a connection.
+  const offline = useSyncExternalStore(subscribeConnection, () => navigator.onLine === false, () => false);
+  const defaultKnown = preferencesKnown({
+    status: !preferences ? 'loading' : preferences.failed ? 'error' : 'ready',
+    fromCache: preferences?.fromCache ?? true,
+    offline,
+    defaultListId: preferences?.value ?? null,
+  });
   const choice = kitchenListChoice({ lists: lists?.value ?? [], pickedId: listId, defaultListId: preferences?.value ?? null, defaultKnown });
   const list = choice.list;
 
