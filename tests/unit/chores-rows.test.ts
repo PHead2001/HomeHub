@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { nextFocusIndex, sameRowEntry } from '../../src/lib/chores/row-focus';
+import { ROW_CHECK, focusCandidates, nextFocusIndex, sameRowEntry } from '../../src/lib/chores/row-focus';
 import { keepUnchangedRows } from '../../src/lib/chores/live';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 
@@ -15,6 +15,52 @@ describe('chore rows: focus after completing (CH-16)', () => {
     assert.equal(nextFocusIndex(3, 2), 1);
     assert.equal(nextFocusIndex(1, 0), -1);
     assert.equal(nextFocusIndex(3, -1), -1);
+  });
+});
+
+describe('chore rows: focus targets (CH-16, review of PR #262)', () => {
+  const el = (attributes: Record<string, string>) => ({
+    name: attributes.name,
+    hasAttribute: (key: string) => key in attributes,
+    getAttribute: (key: string) => attributes[key] ?? null,
+  });
+
+  it('only a row\'s own done check is a candidate, never a step checkbox of the chore being completed', () => {
+    // Row A (being completed) with an open step in its details, then row B.
+    const doneA = el({ name: 'done A', 'data-chore-row-check': '', 'aria-checked': 'false' });
+    const stepA = el({ name: 'step A', 'aria-checked': 'false', role: 'checkbox' });
+    const doneB = el({ name: 'done B', 'data-chore-row-check': '', 'aria-checked': 'false' });
+    const candidates = focusCandidates([doneA, stepA, doneB]);
+    assert.deepEqual(candidates.map(c => c.name), ['done A', 'done B']);
+    assert.equal(candidates[nextFocusIndex(candidates.length, candidates.indexOf(doneA))].name, 'done B');
+  });
+
+  it('skips disabled (not due) and checked (completed) row checks', () => {
+    const candidates = focusCandidates([
+      el({ name: 'future', 'data-chore-row-check': '', disabled: '' }),
+      el({ name: 'done', 'data-chore-row-check': '', 'aria-checked': 'true' }),
+      el({ name: 'open', 'data-chore-row-check': '', 'aria-checked': 'false' }),
+    ]);
+    assert.deepEqual(candidates.map(c => c.name), ['open']);
+  });
+
+  it('queries the marked checks, which the rows set and the step boxes do not', () => {
+    assert.equal(ROW_CHECK, '[data-chore-id] button[data-chore-row-check]');
+    const check = read('src/components/chores/completion-check.tsx');
+    assert.match(check, /data-chore-row-check=\{rowCheck \? '' : undefined\}/);
+    const list = read('src/components/chores/chore-list.tsx');
+    assert.match(list, /<CompletionCheck\s+ref=\{checkRef\}\s+rowCheck/);
+  });
+});
+
+describe('room cards on a narrow phone (CH-13, review of PR #262)', () => {
+  it('lets the always-visible assignee shrink before the chore name does', () => {
+    const list = read('src/components/chores/chore-list.tsx');
+    assert.match(list, /const assigneeBox = large \? 'min-w-0 shrink' : 'shrink-0';/);
+    assert.match(list, /'min-w-0 max-w-\[5rem\] truncate text-sm font-medium text-foreground sm:max-w-\[10rem\] md:text-base'/);
+    // Both the reassign menu and the read-only assignee use it; the avatar itself never shrinks.
+    assert.equal((list.match(/assigneeBox\)\}/g) ?? []).length, 2);
+    assert.match(list, /decorative className="shrink-0" \/>/);
   });
 });
 

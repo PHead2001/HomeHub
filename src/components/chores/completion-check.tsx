@@ -11,6 +11,8 @@ type CompletionCheckProps = {
   label: string;
   disabled?: boolean;
   onToggle: () => void;
+  /** Marks the main done check of a chore row, the only focus target after completing (CH-16). */
+  rowCheck?: boolean;
   className?: string;
 };
 
@@ -21,7 +23,7 @@ type CompletionCheckProps = {
  * the end state shows instantly.
  */
 export const CompletionCheck = forwardRef<HTMLButtonElement, CompletionCheckProps>(function CompletionCheck(
-  { checked, label, disabled, onToggle, className },
+  { checked, label, disabled, onToggle, className, rowCheck },
   ref,
 ) {
   const reduced = useReducedMotion();
@@ -32,6 +34,7 @@ export const CompletionCheck = forwardRef<HTMLButtonElement, CompletionCheckProp
       role="checkbox"
       aria-checked={checked}
       aria-label={label}
+      data-chore-row-check={rowCheck ? '' : undefined}
       disabled={disabled}
       onClick={onToggle}
       className={cn('group grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center rounded-md disabled:cursor-not-allowed', className)}

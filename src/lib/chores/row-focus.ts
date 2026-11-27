@@ -18,8 +18,19 @@ export function sameRowEntry(before: ToDoEntry, after: ToDoEntry): boolean {
   return before.missed.every((chore, index) => chore === after.missed[index]);
 }
 
-/** A row's completion check (`CompletionCheck` renders it as a button with role checkbox). */
-const CHECK = '[data-chore-id] button[role="checkbox"]:not([disabled])';
+/**
+ * A row's own done check (`CompletionCheck` with `rowCheck`). Step checkboxes in a row's
+ * details are role="checkbox" buttons too, so only the marked check counts: a step of
+ * the chore being completed is never the next focus target.
+ */
+export const ROW_CHECK = '[data-chore-id] button[data-chore-row-check]';
+
+type CheckLike = Pick<Element, 'hasAttribute' | 'getAttribute'>;
+
+/** The checks focus may move to: a row's own done check, enabled and not checked. */
+export function focusCandidates<T extends CheckLike>(elements: readonly T[]): T[] {
+  return elements.filter(el => el.hasAttribute('data-chore-row-check') && !el.hasAttribute('disabled') && el.getAttribute('aria-checked') !== 'true');
+}
 
 /**
  * Called as a row's chore is being completed: once the row has left, focus moves to the
@@ -29,7 +40,7 @@ const CHECK = '[data-chore-id] button[role="checkbox"]:not([disabled])';
 export function focusAfterCompleting(check: HTMLElement): void {
   if (typeof document === 'undefined') return;
   const scope = check.closest('[data-chore-section]') ?? document;
-  const checks = Array.from(scope.querySelectorAll<HTMLElement>(CHECK)).filter(el => el.getAttribute('aria-checked') !== 'true');
+  const checks = focusCandidates(Array.from(scope.querySelectorAll<HTMLElement>(ROW_CHECK)));
   const target = checks[nextFocusIndex(checks.length, checks.indexOf(check))];
   if (!target) return;
   requestAnimationFrame(() => {

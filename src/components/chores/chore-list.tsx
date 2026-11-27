@@ -111,10 +111,13 @@ function ChoreRow(props: RowProps) {
 
   const large = props.large;
   const avatar = (
-    <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size={large ? 'md' : 'sm'} decorative />
+    <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size={large ? 'md' : 'sm'} decorative className="shrink-0" />
   );
   const nameSize = large ? 'text-lg md:text-xl' : 'text-sm md:text-base';
-  const assigneeName = large ? 'max-w-[10rem] truncate text-sm font-medium text-foreground md:text-base' : 'hidden max-w-[8rem] truncate sm:inline';
+  // The room view always shows the assignee's name: on a narrow phone it shrinks (and
+  // truncates) before the chore's name does, so the row never overflows.
+  const assigneeName = large ? 'min-w-0 max-w-[5rem] truncate text-sm font-medium text-foreground sm:max-w-[10rem] md:text-base' : 'hidden max-w-[8rem] truncate sm:inline';
+  const assigneeBox = large ? 'min-w-0 shrink' : 'shrink-0';
 
   return (
     <StaggerItem
@@ -153,6 +156,7 @@ function ChoreRow(props: RowProps) {
         ) : (
           <CompletionCheck
             ref={checkRef}
+            rowCheck
             checked={isCompleted}
             disabled={!capabilities.canComplete || isFuture}
             label={isCompleted ? `Mark ${chore.task} not done` : `Mark ${chore.task} done`}
@@ -214,7 +218,7 @@ function ChoreRow(props: RowProps) {
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="flex h-[var(--target-min)] min-w-[var(--target-min)] shrink-0 items-center justify-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent sm:px-2 coarse:text-sm"
+                className={cn('flex h-[var(--target-min)] min-w-[var(--target-min)] items-center justify-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent sm:px-2 coarse:text-sm', assigneeBox)}
                 aria-label={`Assigned to ${name}. Reassign ${chore.task}`}
               >
                 {avatar}
@@ -237,7 +241,7 @@ function ChoreRow(props: RowProps) {
             </DropdownMenuContent>
           </DropdownMenu>
         ) : (
-          <span className="flex h-[var(--target-min)] shrink-0 items-center gap-1.5 px-1.5 text-xs text-muted-foreground sm:px-2 coarse:text-sm">
+          <span className={cn('flex h-[var(--target-min)] items-center gap-1.5 px-1.5 text-xs text-muted-foreground sm:px-2 coarse:text-sm', assigneeBox)}>
             {avatar}
             <span className={assigneeName}>{name}</span>
             {!large && <span className="sr-only sm:hidden">Assigned to {name}</span>}
