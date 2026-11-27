@@ -237,7 +237,8 @@ export const householdUpkeep = onSchedule(
     const ts = (d: Date) => Timestamp.fromDate(d);
     const households = await db.collection("households").select().get();
     const totals = {households: 0, failed: 0, generatedChores: 0,
-      purgedChores: 0, expiredChores: 0, createdNotifications: 0, refreshedNotifications: 0,
+      purgedChores: 0, expiredChores: 0, createdNotifications: 0,
+      refreshedNotifications: 0,
       resolvedNotifications: 0, reopenedNotifications: 0};
     for (const household of households.docs) {
       try {

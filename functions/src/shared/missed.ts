@@ -36,8 +36,9 @@ export type MissedEntry = {
  * @param {string} today Household day.
  * @return {boolean} Expired.
  */
-export const missedDayExpired = (occurrenceDay: string, today: string): boolean =>
-  occurrenceDay < addDays(today, -MISSED_EXPIRY_DAYS);
+export const missedDayExpired = (
+  occurrenceDay: string, today: string,
+): boolean => occurrenceDay < addDays(today, -MISSED_EXPIRY_DAYS);
 
 /**
  * The day a chore is due now: its `originalDueDate` (a move updates it), else
@@ -69,7 +70,8 @@ export const readMissedEntries = (data: unknown): MissedEntry[] => {
       key: e.key,
       task: typeof e.task === "string" ? e.task : "Chore",
       day: e.day,
-      assignedToUid: typeof e.assignedToUid === "string" ? e.assignedToUid : null,
+      assignedToUid: typeof e.assignedToUid === "string" ?
+        e.assignedToUid : null,
       assignedToDisplayName: typeof e.assignedToDisplayName === "string" ?
         e.assignedToDisplayName : null,
     }];

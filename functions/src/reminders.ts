@@ -28,7 +28,9 @@ import {
   choreOccurrenceKey, deterministicNotificationId, occurrenceChoreId,
   storedOccurrenceKey,
 } from "./shared/ids";
-import {skippedOccurrenceKeys} from "./shared/skips";
+import {
+  skippedOccurrenceKeys, withSkippedOccurrences,
+} from "./shared/skips";
 import {
   MISSED_DOC_ID, effectiveDueDay, missedDayExpired, readMissedEntries,
   withMissedEntries, type MissedEntry,
@@ -245,7 +247,7 @@ export const runHouseholdReminders = async (
       template: Ref; templateVersion: FirestoreTimestamp | undefined;
     } |
     {kind: "purge"; ref: Ref; completedAt: string; year: number} |
-    {kind: "expire"; ref: Ref; key: string; day: string};
+    {kind: "expire"; ref: Ref; key: string; day: string; template?: Ref};
   const missedRef = house.collection("stats").doc(MISSED_DOC_ID);
   const commitGuarded = (ops: ChoreOp[]):
     Promise<{created: number; purged: number; expired: number} | null> =>
@@ -261,6 +263,12 @@ export const runHouseholdReminders = async (
         house.collection("stats").doc(choreStatsDocId(year)));
       // Expired missed days are recorded in stats/missed-recent (CH-7).
       const expiring = ops.some((op) => op.kind === "expire");
+      // A moved chore whose own occurrence day is still to come: its template
+      // records the key as skipped when it expires, or generation would
+      // bring that day back.
+      const skipTemplateRefs = [...new Map(ops.flatMap((op) =>
+        op.kind === "expire" && op.template ?
+          [[op.template.path, op.template] as const] : [])).values()];
       // Occurrences that already have a chore under another id (reassigned
       // or created by an overlapping run): never create a second one.
       const keys = [...new Set(ops.flatMap((op) =>
@@ -273,7 +281,8 @@ export const runHouseholdReminders = async (
       }
       const [[home, ...rest], keySnaps] = await Promise.all([
         tx.getAll(house, ...templateRefs, ...ops.map((op) => op.ref),
-          ...statsRefs, ...(expiring ? [missedRef] : [])),
+          ...statsRefs, ...(expiring ? [missedRef] : []),
+          ...skipTemplateRefs),
         Promise.all(keyQueries),
       ]);
       if (!home.exists || home.get("deletingAt")) return null;
@@ -289,6 +298,10 @@ export const runHouseholdReminders = async (
         templateRefs.length + ops.length + statsRefs.length);
       const missedSnap = expiring ?
         rest[templateRefs.length + ops.length + statsRefs.length] : undefined;
+      const skipTemplates = new Map(skipTemplateRefs.map((ref, index) =>
+        [ref.path, rest[templateRefs.length + ops.length + statsRefs.length +
+          (expiring ? 1 : 0) + index]]));
+      const skipKeys = new Map<string, string[]>();
       const missed: MissedEntry[] = [];
       let expired = 0;
       const purgedByYear = new Map<number, PurgedChore[]>();
@@ -309,6 +322,11 @@ export const runHouseholdReminders = async (
             const person = uid ? memberByUid.get(uid) : undefined;
             tx.delete(op.ref);
             expired++;
+            if (op.template && skipTemplates.get(op.template.path)?.exists) {
+              const keys = skipKeys.get(op.template.path) ?? [];
+              keys.push(op.key);
+              skipKeys.set(op.template.path, keys);
+            }
             missed.push({
               key: op.key, day: dueNow,
               task: typeof data.task === "string" ? data.task : "Chore",
@@ -362,6 +380,12 @@ export const runHouseholdReminders = async (
           readChoreStats(statsSnaps[index]?.data(), year), chores, members);
         tx.set(statsRefs[index], {...stats, updatedAt: ts(now)});
       });
+      for (const [path, keys] of skipKeys) {
+        const snap = skipTemplates.get(path);
+        if (!snap) continue;
+        tx.update(snap.ref, {skippedOccurrences: withSkippedOccurrences(
+          snap.get("skippedOccurrences"), keys, today)});
+      }
       if (missed.length > 0) {
         tx.set(missedRef, {
           entries: withMissedEntries(
@@ -528,7 +552,14 @@ export const runHouseholdReminders = async (
     // An older chore assigned by email is named only once the members'
     // emails are known (the uid beside it may be stale): it waits.
     if (assigneeEmailOf(chore) && !emailsKnown) continue;
-    choreOps.push({kind: "expire", ref: choreDoc.ref, key, day});
+    const keyDay = key.slice(key.lastIndexOf("|") + 1);
+    const templateId = typeof chore.templateId === "string" ?
+      chore.templateId : "";
+    choreOps.push({
+      kind: "expire", ref: choreDoc.ref, key, day,
+      ...(keyDay >= today && templateId ?
+        {template: house.collection("chore-templates").doc(templateId)} : {}),
+    });
   }
   if (choreOps.length > 0) {
     const done = await commitGuarded(choreOps);
