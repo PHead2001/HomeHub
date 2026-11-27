@@ -308,6 +308,11 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
       await scanIntoAddItem(page, JUICE);
       await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E Family Juice').get()).docs
         .map((document) => document.data().quantity), { timeout: 15_000 }).toEqual([2]);
+      // BL-23: that scan found the saved product, so it counts.
+      await expect.poll(async () => (await library.doc(JUICE).get()).data()?.scanCount, { timeout: 10_000 }).toBe(1);
+      await page.unroute((url) => url.pathname === '/shopping');
+      await open(page, '/library', 'Barcode Library');
+      await expect(page.getByRole('article', { name: 'E2E Family Juice' }).getByText('Scanned once')).toBeVisible();
     } finally {
       await library.doc(JUICE).delete();
     }

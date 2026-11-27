@@ -249,3 +249,26 @@ describe('allergens and Nutri-Score survive a delete and its Undo (BL-22)', () =
     assert.deepEqual(restored.data, { name: 'Peanut bar', imageUrl: '', createdAt: '2026-11-01T00:00:00.000Z', createdByUid: 'u2', allergens: ['peanuts'], nutriScore: 'd' });
   });
 });
+
+describe('favourites (BL-23)', () => {
+  test('most scanned first, then the latest scan, then name; never scanned counts 0', () => {
+    const items = [
+      { id: '1', name: 'Beans', createdAt: '2026-11-01T00:00:00.000Z', scanCount: 2, lastScannedAt: '2026-11-03T00:00:00.000Z' },
+      { id: '2', name: 'Apples', createdAt: '2026-11-02T00:00:00.000Z' },
+      { id: '3', name: 'Milk', createdAt: '2026-11-03T00:00:00.000Z', scanCount: 2, lastScannedAt: '2026-11-05T00:00:00.000Z' },
+      { id: '4', name: 'Rice', createdAt: '2026-11-04T00:00:00.000Z', scanCount: 9 },
+    ];
+    assert.deepEqual(sortLibrary(items, 'most-scanned').map((item) => item.name), ['Rice', 'Milk', 'Beans', 'Apples']);
+  });
+
+  test('a delete keeps the count for its Undo; a bad count is dropped', () => {
+    const at = { toDate: () => new Date('2026-11-05T00:00:00.000Z') };
+    const captured = capturedProduct('7', { name: 'Milk', imageUrl: '', scanCount: 3, lastScannedAt: at });
+    assert.equal(captured?.scanCount, 3);
+    assert.equal(captured?.lastScannedAt, at);
+    const restored = restoredProductData(captured!, { householdId: 'h', uid: 'u2', now });
+    assert.equal(restored.data.scanCount, 3);
+    assert.equal(restored.data.lastScannedAt, at);
+    assert.equal(capturedProduct('8', { name: 'X', scanCount: 1.5, lastScannedAt: 'yesterday' })?.scanCount, undefined);
+  });
+});

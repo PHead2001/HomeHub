@@ -1878,8 +1878,16 @@ service cloud.firestore {
     // carries a new createdAt (or none) and is refused (BL-3).
     // allergens (at most 20 entries; the app writes plain English words) and
     // nutriScore (a to e) come from Open Food Facts (BL-22).
+    // scanCount and lastScannedAt count scans that found the product (BL-23): a create
+    // (an Undo restore) may carry them; an update only adds exactly 1 at the server's time.
     function validBarcodeItemFields(householdId, data, keys) {
-      return keys.hasOnly(['name', 'imageUrl', 'imagePath', 'createdAt', 'createdByUid', 'allergens', 'nutriScore']) &&
+      return keys.hasOnly(['name', 'imageUrl', 'imagePath', 'createdAt', 'createdByUid', 'allergens', 'nutriScore', 'scanCount', 'lastScannedAt']) &&
+        (!('scanCount' in keys) || (data.scanCount is int &&
+          (resource == null
+            ? (data.scanCount >= 0 && data.scanCount <= 1000000)
+            : (data.scanCount == resource.data.get('scanCount', 0) + 1 && 'lastScannedAt' in keys)))) &&
+        (!('lastScannedAt' in keys) || (data.lastScannedAt is timestamp &&
+          (resource == null || (data.lastScannedAt == request.time && 'scanCount' in keys)))) &&
         (!('allergens' in keys) || (data.allergens is list && data.allergens.size() <= 20)) &&
         (!('nutriScore' in keys) || data.nutriScore in ['a', 'b', 'c', 'd', 'e']) &&
         (!('name' in keys) || nonEmptyString(data.name, 200)) &&

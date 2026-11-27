@@ -17,6 +17,7 @@ import { useOnTabDeactivate } from './tab-activity';
 import { useAuth } from '@/hooks/use-auth';
 import { libraryOfferFor, localLibraryLookup, type LocalLibraryEntry } from '@/lib/barcode/library-fill';
 import { useLibrarySaveOffer } from '../barcode/library-save-offer';
+import { countLibraryScan } from '@/lib/barcode/library-save';
 
 /**
  * "Scan to tick" on an open list (SH-33f). A scanned product that matches a
@@ -120,6 +121,8 @@ export function ScanToTick({
       if (!scanStillApplies(started, latest.current.list)) return;
       // Decided against the items as they are NOW (not as they were before the lookup).
       act(scanTickDecision(latest.current.items, barcode, result), barcode, result.libraryItem);
+      // BL-23: a scan that found a saved product counts toward its favourites.
+      if (result.source === 'household' && result.libraryItem) countLibraryScan(householdId, result.libraryItem.id);
       // BL-19: the scanner has closed, so the offer can be a toast.
       const offer = libraryOfferFor(result, barcode, householdId);
       if (offer) librarySave.offerToast(offer);

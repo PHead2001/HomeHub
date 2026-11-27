@@ -52,6 +52,7 @@ import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { libraryOfferFor, localLibraryLookup } from '@/lib/barcode/library-fill';
 import { LibrarySaveOffer, useLibrarySaveOffer } from './barcode/library-save-offer';
+import { countLibraryScan } from '@/lib/barcode/library-save';
 import { rowPhoto } from '@/lib/shopping/row-photo';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
@@ -835,6 +836,8 @@ export function ShoppingListClient({
           });
           const closing = final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close;
           if (closing) setIsAddItemDialogOpen(false);
+          // BL-23: a scan that found a saved product counts toward its favourites.
+          if (canEdit && result.source === 'household' && result.libraryItem) countLibraryScan(householdForLookup, result.libraryItem.id);
           const offer = canEdit ? libraryOfferFor(result, barcode, householdForLookup) : null;
           if (offer) {
             if (!closing && inSameDialog()) librarySave.setOffer(offer);

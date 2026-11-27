@@ -72,6 +72,7 @@ export function ProductCard({
         <h3 className="line-clamp-2 break-words font-medium leading-snug">{item.name}</h3>
         <p className="font-mono text-xs text-muted-foreground">{item.id}</p>
         {added && <p className="text-xs text-muted-foreground">Added {added}</p>}
+        {(item.scanCount ?? 0) > 0 && <p className="text-xs text-muted-foreground">Scanned {item.scanCount === 1 ? 'once' : `${item.scanCount} times`}</p>}
         <NutritionChips chips={nutritionChips(item)} />
         {(onEdit || onDelete) && (
           <div className="mt-auto flex justify-end gap-2 pt-2">

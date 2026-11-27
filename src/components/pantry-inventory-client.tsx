@@ -72,6 +72,7 @@ import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
 import { libraryOfferFor, localLibraryLookup, type LocalLibraryEntry } from '@/lib/barcode/library-fill';
 import { LibrarySaveOffer, useLibrarySaveOffer } from './barcode/library-save-offer';
+import { countLibraryScan } from '@/lib/barcode/library-save';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
@@ -269,6 +270,8 @@ function PantryItemDialog({
               pendingScannedUnit.current = amount.unit;
               setUnitCategory(getCategoryFromUnit(amount.unit));
             }
+            // BL-23: a scan that found a saved product counts toward its favourites.
+            if (scanOptions.canSave && result.libraryItem) countLibraryScan(currentUser.householdId, result.libraryItem.id);
             // BL-19: offered inside this dialog, which stays open.
             const offer = scanOptions.canSave ? libraryOfferFor(result, barcode, currentUser.householdId) : null;
             if (offer) librarySave.setOffer(offer);
