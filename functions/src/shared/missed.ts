@@ -9,7 +9,7 @@
 // stays until someone completes or deletes it. Shared by the web app and
 // Cloud Functions.
 
-import {addDays, isDayString} from "./calendar";
+import {addDays, isDayString, toDay} from "./calendar";
 
 /** Days a missed repeating day stays in To Do before upkeep expires it. */
 export const MISSED_EXPIRY_DAYS = 7;
@@ -38,6 +38,20 @@ export type MissedEntry = {
  */
 export const missedDayExpired = (occurrenceDay: string, today: string): boolean =>
   occurrenceDay < addDays(today, -MISSED_EXPIRY_DAYS);
+
+/**
+ * The day a chore is due now: its `originalDueDate` (a move updates it), else
+ * its `dueDate` read in the household's timezone.
+ * @param {object} chore Stored chore fields.
+ * @param {string} timeZone Household timezone.
+ * @return {string | null} Day, or null when it has none.
+ */
+export const effectiveDueDay = (
+  chore: {originalDueDate?: unknown; dueDate?: unknown},
+  timeZone: string,
+): string | null =>
+  isDayString(chore.originalDueDate) ?
+    chore.originalDueDate : toDay(chore.dueDate, timeZone);
 
 /**
  * Stored entries, read defensively.

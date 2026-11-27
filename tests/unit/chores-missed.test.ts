@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { MAX_MISSED_ENTRIES, missedDayExpired, readMissedEntries, recentMissed, withMissedEntries } from '../../functions/src/shared/missed';
+import { MAX_MISSED_ENTRIES, effectiveDueDay, missedDayExpired, readMissedEntries, recentMissed, withMissedEntries } from '../../functions/src/shared/missed';
 
 const entry = (day: string, key = `t|general|${day}`) => ({ key, day, task: 'Trash', assignedToUid: 'sam', assignedToDisplayName: 'Sam' });
 
@@ -17,6 +17,12 @@ describe('missed days (CH-7)', () => {
     assert.deepEqual(next.map(e => e.day), ['2026-11-12', '2026-11-10'], 'older than 28 days dropped, duplicate key kept once');
     const many = Array.from({ length: MAX_MISSED_ENTRIES + 5 }, (_, i) => entry('2026-11-20', `t|r${i}|2026-11-20`));
     assert.equal(withMissedEntries([], many, '2026-11-27').length, MAX_MISSED_ENTRIES);
+  });
+
+  test('the due day is the moved day, else the due instant in the household zone', () => {
+    assert.equal(effectiveDueDay({ originalDueDate: '2026-11-03', dueDate: '2026-10-15T05:00:00.000Z' }, 'America/Chicago'), '2026-11-03');
+    assert.equal(effectiveDueDay({ dueDate: '2026-10-15T05:00:00.000Z' }, 'America/Chicago'), '2026-10-15');
+    assert.equal(effectiveDueDay({}, 'America/Chicago'), null);
   });
 
   test('the summary counts the last two weeks', () => {

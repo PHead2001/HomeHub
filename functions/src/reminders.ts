@@ -30,8 +30,8 @@ import {
 } from "./shared/ids";
 import {skippedOccurrenceKeys} from "./shared/skips";
 import {
-  MISSED_DOC_ID, missedDayExpired, readMissedEntries, withMissedEntries,
-  type MissedEntry,
+  MISSED_DOC_ID, effectiveDueDay, missedDayExpired, readMissedEntries,
+  withMissedEntries, type MissedEntry,
 } from "./shared/missed";
 import {
   actionableReminders, buildMaintenanceReminders,
@@ -298,20 +298,25 @@ export const runHouseholdReminders = async (
         const snap = current[index];
         if (op.kind === "expire") {
           // Still open, still that occurrence, still a generated day.
+          // Still due long enough ago: a reschedule meanwhile keeps it.
           const data = snap.exists ? snap.data() ?? {} : null;
+          const dueNow = data ? effectiveDueDay(data, timeZone) : null;
           if (data && data.isCompleted !== true &&
               (data.sourceType === undefined || data.sourceType === null) &&
-              storedOccurrenceKey(snap.id, data) === op.key) {
+              storedOccurrenceKey(snap.id, data) === op.key &&
+              dueNow !== null && missedDayExpired(dueNow, today)) {
+            const uid = resolveAssigneeUid(data, members) || null;
+            const person = uid ? memberByUid.get(uid) : undefined;
             tx.delete(op.ref);
             expired++;
             missed.push({
-              key: op.key, day: op.day,
+              key: op.key, day: dueNow,
               task: typeof data.task === "string" ? data.task : "Chore",
-              assignedToUid: typeof data.assignedToUid === "string" ?
-                data.assignedToUid : null,
-              assignedToDisplayName:
-                typeof data.assignedToDisplayName === "string" ?
-                  data.assignedToDisplayName : null,
+              // Resolved like every reader (an older chore's email first).
+              assignedToUid: uid,
+              assignedToDisplayName: person?.displayName ||
+                (typeof data.assignedToDisplayName === "string" ?
+                  data.assignedToDisplayName : null),
             });
           }
           return;
@@ -517,8 +522,12 @@ export const runHouseholdReminders = async (
     if (chore.isCompleted === true || choreOps.length >= 450) continue;
     if (chore.sourceType !== undefined && chore.sourceType !== null) continue;
     const key = storedOccurrenceKey(choreDoc.id, chore);
-    const day = key ? key.slice(key.lastIndexOf("|") + 1) : null;
+    // The day it is due now (a moved chore keeps its key but not its day).
+    const day = effectiveDueDay(chore, timeZone);
     if (!key || !day || !missedDayExpired(day, today)) continue;
+    // An older chore assigned by email is named only once the members'
+    // emails are known (the uid beside it may be stale): it waits.
+    if (assigneeEmailOf(chore) && !emailsKnown) continue;
     choreOps.push({kind: "expire", ref: choreDoc.ref, key, day});
   }
   if (choreOps.length > 0) {
