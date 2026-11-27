@@ -130,6 +130,11 @@ export type OverdueInput = {
   reminderSentNow: boolean;
   /** Today's daily reminder is still to come and will carry the count. */
   reminderPending: boolean;
+  /**
+   * The person wants overdue pushes (NO-4). False: news is still listed
+   * (unread, in the bell) but never pushed. Absent means true.
+   */
+  pushAllowed?: boolean;
   /** Due day of each overdue chore (decides news past the list cap). */
   overdueDays?: ReadonlyMap<string, string>;
 };
@@ -223,7 +228,7 @@ export const decideOverdue = (input: OverdueInput): OverdueDecision => {
   const remembered = [...history, ...current];
   const pushedToday = base?.lastPushDay === today;
   const push = fresh && !pushedToday && !input.reminderSentNow &&
-    !input.reminderPending;
+    !input.reminderPending && input.pushAllowed !== false;
   // The person is told today by this push, an earlier push today, or
   // today's daily reminder (sent now or still to come).
   const lastPushDay = fresh || input.reminderSentNow ?

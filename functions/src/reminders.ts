@@ -228,6 +228,11 @@ export const runHouseholdReminders = async (
   now: Date,
   ts: (d: Date) => Timestamp,
 ): Promise<HouseholdRunResult> => {
+  // Every day and reminder time is derived from `now`; an invalid instant
+  // would make localDay throw deep inside the run, so refuse it up front.
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new RangeError("runHouseholdReminders needs a valid instant.");
+  }
   const result: HouseholdRunResult = {
     householdId, generatedChores: 0, purgedChores: 0, expiredChores: 0,
     createdNotifications: 0, refreshedNotifications: 0,
@@ -692,6 +697,8 @@ export const runHouseholdReminders = async (
         sourceType: r.sourceType,
         sourceId: r.sourceId,
         stateKey: r.stateKey,
+        // Due from local midnight: the push waits for the morning (NO-3).
+        holdUntilMorning: true,
       });
     if (!kept) return result;
   }
@@ -770,6 +777,9 @@ export const runHouseholdReminders = async (
         sourceType: r.sourceType,
         sourceId: r.sourceId,
         stateKey: r.stateKey,
+        // A dose with a set time pushes at that time; one due on a day
+        // waits for the morning (NO-3).
+        holdUntilMorning: !r.timed,
       }, {refreshCopy: true});
     if (!kept) return result;
   }
@@ -841,13 +851,16 @@ export const runHouseholdReminders = async (
   for (const [index, member] of reachable.entries()) {
     const profile = profiles[index].data() || {};
     const settings = profile.choreSettings || {};
+    // D-6: the household's zone decides every reminder time and day; the
+    // zone a member's last device wrote to their profile is not used.
     const person = {
       uid: member.uid,
       email: member.email,
-      timeZone: safeTimeZone(profile.timeZone || timeZone),
+      timeZone,
       householdTimeZone: timeZone,
       reminderEnabled: Boolean(settings.reminderEnabled),
       reminderTime: settings.reminderTime,
+      overdueAlerts: settings.overdueAlerts !== false,
     };
     const notes = choreNotificationsFor(person, chores, now);
     let reminderSent = false;

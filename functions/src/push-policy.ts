@@ -103,6 +103,29 @@ const sameInstant = (left: unknown, right: unknown): boolean => {
 };
 
 /**
+ * Members a held push was just released to (NO-3, NO-24): upkeep moved
+ * `pushRelease.at` (functions/src/held-pushes.ts). Empty for every other
+ * update. Clients cannot write the field.
+ * @param {Record<string, unknown>} before Document before the update.
+ * @param {Record<string, unknown>} after Document after the update.
+ * @return {string[]} uids to push to now.
+ */
+export const releasedUids = (
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): string[] => {
+  const next = after.pushRelease as {at?: unknown; uids?: unknown} | undefined;
+  const previous = before.pushRelease as {at?: unknown} | undefined;
+  if (!next || typeof next !== "object" || !next.at || after.resolvedAt) {
+    return [];
+  }
+  if (previous && typeof previous === "object" &&
+      sameInstant(previous.at, next.at)) return [];
+  return Array.isArray(next.uids) ?
+    next.uids.filter((uid): uid is string => typeof uid === "string") : [];
+};
+
+/**
  * Whether an updated notification is pushed again: only when upkeep moved its
  * `renotifyAt` (the overdue notification gained a chore). Read, dismiss,
  * refresh and resolve updates leave it alone; clients cannot write it (the

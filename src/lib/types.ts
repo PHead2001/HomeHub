@@ -586,6 +586,8 @@ export type User = {
   choreSettings?: {
     reminderTime: string; // e.g. "17:00"
     reminderEnabled: boolean;
+    /** Pushes about newly overdue chores (NO-4); absent means on. */
+    overdueAlerts?: boolean;
   }
   /**
    * Legacy push tokens. New tokens live in `users/{email}/private/push`, which

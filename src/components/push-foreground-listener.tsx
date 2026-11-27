@@ -2,10 +2,13 @@
 
 import { useEffect, useRef } from 'react';
 import { onMessage } from 'firebase/messaging';
+import { doc, updateDoc } from 'firebase/firestore';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
-import { getFirebaseMessaging } from '@/lib/firebase';
+import { db, getFirebaseMessaging } from '@/lib/firebase';
 import { syncPushForSignedInUser } from '@/lib/push-registration';
+import { createNotificationAction } from '@/lib/notifications';
+import { openedNotificationId, withoutOpenedNotification } from '@/lib/push-open';
 
 /**
  * Shows push messages that arrive while HomeHub is open as toasts. It imports
@@ -27,8 +30,30 @@ export function PushForegroundListener() {
   });
 
   useEffect(() => {
-    if (email) void syncPushForSignedInUser({ email, fcmTokens: legacyTokens.current });
+    if (!email) return;
+    const sync = () => void syncPushForSignedInUser({ email, fcmTokens: legacyTokens.current });
+    sync();
+    // Coming back online retries work that needed the network, such as a "Turn off"
+    // made offline (the registration is removed then).
+    window.addEventListener('online', sync);
+    return () => window.removeEventListener('online', sync);
   }, [email]);
+
+  // NO-9: a push opened this page (`?n=<id>`): mark that notification read for
+  // this member, then drop the parameter so a reload or a shared link does not
+  // repeat it. The rules refuse it for a notification not addressed to them.
+  const uid = currentUser?.uid;
+  const householdId = currentUser?.householdId;
+  const displayName = currentUser?.displayName;
+  useEffect(() => {
+    if (typeof window === 'undefined' || !uid || !householdId) return;
+    const id = openedNotificationId(window.location.search);
+    if (!id) return;
+    window.history.replaceState(window.history.state, '', withoutOpenedNotification(window.location.href));
+    updateDoc(doc(db, 'households', householdId, 'notifications', id), {
+      [`readBy.${uid}`]: createNotificationAction({ uid, displayName: displayName ?? '' }),
+    }).catch((error: unknown) => console.warn('The opened notification could not be marked read.', error));
+  }, [uid, householdId, displayName]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;

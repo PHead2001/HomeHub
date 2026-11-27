@@ -370,7 +370,7 @@ The tablet's controls are in **Maintenance on the tablet (M8b)** below. `src/lib
 
 ### Night dimming (F3; design 14.4, D-T1, JC-20)
 
-`households/{h}.quietHours = { start: 'HH:mm', end: 'HH:mm', updatedAt, updatedByUid }` or null/absent (no dimming), in the household's time zone; a range may cross midnight (start inside, end outside); the wall-clock minute in the zone decides, so DST needs no special case (`isQuietAt`). Set by `updateQuietHours` (server, owners and admins by role, active, household not being deleted; `validateQuietHours`: two different `HH:mm` times or null; unchanged is a no-op; activity `device.quiet_hours_changed` with the old and new range). The client cannot write it: the household update rule allows only `timeZone` and `updatedAt`. Push muting by these hours is not part of this goal.
+`households/{h}.quietHours = { start: 'HH:mm', end: 'HH:mm', updatedAt, updatedByUid }` or null/absent (no dimming), in the household's time zone; a range may cross midnight (start inside, end outside); the wall-clock minute in the zone decides, so DST needs no special case (`isQuietAt`). Set by `updateQuietHours` (server, owners and admins by role, active, household not being deleted; `validateQuietHours`: two different `HH:mm` times or null; unchanged is a no-op; activity `device.quiet_hours_changed` with the old and new range). The client cannot write it: the household update rule allows only `timeZone` and `updatedAt`. The push function also holds household-wide (`['*']`) pushes during these hours and upkeep sends them when they end (audit 16.3, NO-3; see [Notifications](../notifications/README.md), "Held pushes"); targeted notices are not held by them.
 
 ### Flags (how the devices feature is turned on)
 

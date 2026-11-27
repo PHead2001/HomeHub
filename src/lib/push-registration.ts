@@ -16,9 +16,14 @@ import {
   pushSignOutGate,
   pushSignOutPlan,
   readPushDevice,
+  readPushOff,
+  readPushOffPending,
+  writePushOffPending,
   withoutPushToken,
   writePushDevice,
+  writePushOff,
 } from '@/lib/push-tokens';
+import { pushTokenMissing } from '@/lib/push-status';
 
 /** Failures worded for people; anything else goes through friendlyError. */
 export class PushSetupError extends Error {}
@@ -156,6 +161,11 @@ export function registerPushOnThisDevice(user: { email: string; fcmTokens?: unkn
  */
 export async function unregisterPushOnThisDevice(): Promise<boolean> {
   await pushSignOutGate.drain();
+  return removeThisDeviceRegistration();
+}
+
+/** The removal itself, without waiting for registrations (callers inside the gate use it directly). */
+async function removeThisDeviceRegistration(): Promise<boolean> {
   const storage = deviceStorage();
   const record = readPushDevice(storage);
   const email = auth.currentUser?.email;
@@ -168,6 +178,40 @@ export async function unregisterPushOnThisDevice(): Promise<boolean> {
   const removed = accountDone && deviceDone;
   if (removed) clearPushDevice(storage);
   return removed;
+}
+
+/**
+ * NO-5: whether the signed-in account holds this device's token, for Profile's
+ * push card ("This device is registered" or "Re-connect").
+ */
+export async function pushRegisteredHere(email: string): Promise<boolean> {
+  const record = readPushDevice(deviceStorage());
+  if (!record || record.email !== email) return false;
+  const stored = await getDoc(doc(db, 'users', email, 'private', 'push'));
+  return !pushTokenMissing(stored.get('fcmTokens'), record.token);
+}
+
+/**
+ * "Turn off on this device": remembers the choice (so the silent registration
+ * after sign-in leaves it off) and removes this device's registration. True when
+ * nothing is left.
+ */
+export async function turnOffPushOnThisDevice(email: string): Promise<boolean> {
+  const storage = deviceStorage();
+  writePushOff(storage, email, true);
+  // Until the removal succeeds, it is retried on later loads and on reconnect.
+  writePushOffPending(storage, email, true);
+  const removed = await unregisterPushOnThisDevice().catch(() => false);
+  if (removed) writePushOffPending(storage, email, false);
+  return removed;
+}
+
+/** Turns push back on for this device after "Turn off" (permission is already granted). */
+export async function turnOnPushOnThisDevice(user: { email: string; fcmTokens?: unknown }): Promise<void> {
+  const storage = deviceStorage();
+  writePushOff(storage, user.email, false);
+  writePushOffPending(storage, user.email, false);
+  await registerPushOnThisDevice(user);
 }
 
 let syncInFlight: { email: string; done: Promise<void> } | null = null;
@@ -186,12 +230,29 @@ export function syncPushForSignedInUser(user: { email: string; fcmTokens?: unkno
     try {
       const pass = pushSignOutGate.pass();
       if (pass === null || auth.currentUser?.email !== user.email || isBrowserOffline()) return;
-      const action = pushSignInAction({
+      const storage = deviceStorage();
+      const record = readPushDevice(storage);
+      const optedOut = readPushOff(storage, user.email);
+      let action = pushSignInAction({
         permission: notificationPermission(),
         email: user.email,
-        record: readPushDevice(deviceStorage()),
+        record,
         now: Date.now(),
+        optedOut,
+        cleanupPending: readPushOffPending(storage, user.email),
       });
+      if (action === 'cleanup') {
+        // A "Turn off" made offline: remove the account token and the browser
+        // subscription now, and keep retrying until both are gone.
+        if (await removeThisDeviceRegistration().catch(() => false)) writePushOffPending(storage, user.email, false);
+        return;
+      }
+      // NO-5: a recent record is not enough. The server removes a token FCM
+      // reports invalid, so check the account still holds this device's token.
+      if (action === 'none' && !optedOut && notificationPermission() === 'granted' && record?.email === user.email) {
+        const stored = await getDoc(doc(db, 'users', user.email, 'private', 'push'));
+        if (pushTokenMissing(stored.get('fcmTokens'), record.token)) action = 'register';
+      }
       if (action === 'none') return;
       const messaging = await getFirebaseMessaging();
       if (!messaging) return;

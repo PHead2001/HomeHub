@@ -35,13 +35,15 @@ function ChoreReminderSettings() {
 
   const [enabled, setEnabled] = useState(currentUser?.choreSettings?.reminderEnabled || false);
   const [time, setTime] = useState(currentUser?.choreSettings?.reminderTime || '17:00');
+  // NO-4: overdue pushes can be turned off; the bell still lists overdue chores.
+  const [overdueAlerts, setOverdueAlerts] = useState(currentUser?.choreSettings?.overdueAlerts !== false);
 
   const handleSave = async () => {
     setIsSaving(true);
     try {
       // Silent: one outcome toast here instead of the generic "Profile Updated".
       // A failed write still shows updateUser's error toast.
-      await updateUser({ choreSettings: { reminderEnabled: enabled, reminderTime: time } }, undefined, { silent: true });
+      await updateUser({ choreSettings: { reminderEnabled: enabled, reminderTime: time, overdueAlerts } }, undefined, { silent: true });
       toast({ title: 'Reminder saved', description: enabled ? `We'll remind you at ${time} each day.` : 'Daily chore reminders are off.' });
     } finally {
       setIsSaving(false);
@@ -52,7 +54,7 @@ function ChoreReminderSettings() {
     <Card>
       <CardHeader>
         <CardTitle className="font-headline flex items-center gap-2"><BellRing aria-hidden /> Chore Reminders</CardTitle>
-        <CardDescription>A daily nudge about chores you haven&apos;t finished yet.</CardDescription>
+        <CardDescription>A daily nudge about chores you haven&apos;t finished yet. Times use the household&apos;s time zone.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between gap-3 rounded-lg border p-4">
@@ -71,6 +73,12 @@ function ChoreReminderSettings() {
             onChange={(e) => setTime(e.target.value)}
             className="w-48"
           />
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-lg border p-4">
+          <Label htmlFor="overdue-alerts" className="text-base">
+            Alert me when a chore becomes overdue
+          </Label>
+          <Switch id="overdue-alerts" checked={overdueAlerts} onCheckedChange={setOverdueAlerts} />
         </div>
         <Button onClick={handleSave} disabled={isSaving} className="w-full">
           {isSaving && <Loader2 className="mr-2 animate-spin" />}

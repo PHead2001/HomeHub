@@ -39,6 +39,67 @@ export const PUSH_DEVICE_KEY = 'homehub.push-device';
 export type PushDeviceRecord = { v: 1; token: string; email: string; at: number };
 type DeviceStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
+/**
+ * "Turn off on this device" (NO-5, NO-24): the accounts that turned push off here,
+ * one entry per account (a shared browser keeps each person's choice). Browser
+ * permission stays granted, so without this the silent registration after sign-in
+ * would turn it back on. Turning push on again clears only that account's entry.
+ * An older build stored a single email as plain text; it is read as a one-entry list.
+ */
+export const PUSH_OFF_KEY = 'homehub.push-off';
+/**
+ * Accounts whose "Turn off" could not finish removing this device's registration
+ * (offline, or the server could not be reached). Retried on the next signed-in load
+ * and when the browser comes back online, until it succeeds.
+ */
+export const PUSH_OFF_PENDING_KEY = 'homehub.push-off-pending';
+
+const readEmailList = (storage: DeviceStorage | null, key: string): string[] => {
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return [];
+    if (!raw.startsWith('[')) return [raw];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && value.length > 0) : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeEmailList = (storage: DeviceStorage | null, key: string, emails: string[]): void => {
+  try {
+    if (emails.length === 0) storage?.removeItem(key);
+    else storage?.setItem(key, JSON.stringify([...new Set(emails)]));
+  } catch {
+    // Storage blocked: the setting is not remembered on this device.
+  }
+};
+
+const setInList = (storage: DeviceStorage | null, key: string, email: string, on: boolean): void => {
+  const list = readEmailList(storage, key).filter((entry) => entry !== email);
+  writeEmailList(storage, key, on ? [...list, email] : list);
+};
+
+export function readPushOff(storage: DeviceStorage | null, email: string | null | undefined): boolean {
+  return Boolean(email) && readEmailList(storage, PUSH_OFF_KEY).includes(email as string);
+}
+
+/** Turns push off (`off: true`) or back on for one account on this device; others are untouched. */
+export function writePushOff(storage: DeviceStorage | null, email: string, off: boolean): void {
+  if (!email) return;
+  setInList(storage, PUSH_OFF_KEY, email, off);
+}
+
+export function readPushOffPending(storage: DeviceStorage | null, email: string | null | undefined): boolean {
+  return Boolean(email) && readEmailList(storage, PUSH_OFF_PENDING_KEY).includes(email as string);
+}
+
+export function writePushOffPending(storage: DeviceStorage | null, email: string, pending: boolean): void {
+  if (!email) return;
+  setInList(storage, PUSH_OFF_PENDING_KEY, email, pending);
+}
+
 /** FCM refreshes web tokens weekly; a record older than this is confirmed again. */
 export const PUSH_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;
 /** Sign-out waits at most this long for the push registration to be removed. */
@@ -80,19 +141,28 @@ export function clearPushDevice(storage: DeviceStorage | null): void {
  * - `register`: permission is granted and no token is remembered (after a
  *   sign-out, or a device subscribed before the record existed), or the
  *   account's token is due its weekly confirmation;
+ * - `cleanup`: the account turned push off here but removing the registration did
+ *   not finish; remove it now (and nothing is registered);
  * - `replace`: the remembered token belongs to another account or to an
  *   unfinished sign-out; it is revoked first so the new account gets a token the
  *   previous account never held.
  */
-export type PushSignInAction = 'none' | 'register' | 'replace';
+export type PushSignInAction = 'none' | 'register' | 'replace' | 'cleanup';
 export function pushSignInAction(input: {
   permission: NotificationPermission | 'unsupported';
   email: string | null | undefined;
   record: PushDeviceRecord | null;
   now: number;
+  /** The member turned push off on this device (`PUSH_OFF_KEY`). */
+  optedOut?: boolean;
+  /** Their "Turn off" did not finish removing the registration (`PUSH_OFF_PENDING_KEY`). */
+  cleanupPending?: boolean;
 }): PushSignInAction {
   const { permission, email, record, now } = input;
-  if (permission !== 'granted' || !email) return 'none';
+  if (!email) return 'none';
+  // Opted out: never register; finish an unfinished removal whatever the permission.
+  if (input.optedOut) return input.cleanupPending ? 'cleanup' : 'none';
+  if (permission !== 'granted') return 'none';
   if (!record) return 'register';
   if (record.email !== email) return 'replace';
   return now - record.at >= PUSH_REFRESH_MS ? 'register' : 'none';

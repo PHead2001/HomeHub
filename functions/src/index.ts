@@ -4,6 +4,7 @@ import {
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {getApp, initializeApp} from "firebase-admin/app";
 import {
+  FieldPath,
   FieldValue,
   getFirestore,
   Timestamp,
@@ -27,11 +28,15 @@ import {
   isApprovedMember,
   pushOnCreate,
   pushOnUpdate,
+  releasedUids,
   safeDeepLink,
   selectRecipientEmails,
   type MemberRecord,
 } from "./push-policy";
 import {filterRecipientsByCategory} from "./shared/push-audience";
+import {pushHoldUntil, readLocalWindow} from "./shared/push-hold";
+import {safeTimeZone} from "./shared/calendar";
+import {releaseHeldPushes} from "./held-pushes";
 import {
   memberCanView,
   resolvePushImage,
@@ -63,12 +68,15 @@ const readDoc = async (path: string) => (await db.doc(path).get()).data();
  * @param {string} householdId Household from the document path.
  * @param {string} notificationId Notification document ID (the push tag).
  * @param {Record<string, unknown>} notificationData The document.
+ * @param {string[]} onlyUids Send only to these members (a held push
+ *   released by upkeep); every addressed member when absent.
  * @return {Promise<unknown>} Settles when sending and cleanup are done.
  */
 const deliverPush = async (
   householdId: string,
   notificationId: string,
   notificationData: Record<string, unknown>,
+  onlyUids?: string[],
 ) => {
   if (notificationData.householdId !== householdId) {
     logger.warn("Notification householdId does not match its path.");
@@ -89,14 +97,54 @@ const deliverPush = async (
     house, records.filter(isApprovedMember).map((m) => m.uid)));
   // Members who cannot see this category in the app (for example no
   // pets.view for a pets reminder) get no push at all, matching the bell.
-  const recipientEmails = filterRecipientsByCategory(
+  const uidByEmail = new Map(members.filter(isApprovedMember)
+    .flatMap((m) => typeof m.email === "string" ?
+      [[m.email.toLowerCase(), m.uid] as const] : []));
+  const only = onlyUids ? new Set(onlyUids) : null;
+  const addressed = filterRecipientsByCategory(
     members.filter(isApprovedMember),
     selectRecipientEmails(members, notificationData),
-    notificationData.category);
-  if (recipientEmails.length === 0) {
+    notificationData.category)
+    .filter((email) => !only ||
+      only.has(uidByEmail.get(email.toLowerCase()) ?? ""));
+  if (addressed.length === 0) {
     logger.log("No approved recipients for notification.");
     return;
   }
+
+  // NO-3 and household quiet hours (16.3): a push that may not be sent now
+  // is recorded on the notification and sent by hourly upkeep
+  // (./held-pushes.ts). The notification itself is already in the bell.
+  const householdData = (await house.get()).data() ?? {};
+  const timeZone = safeTimeZone(householdData.timeZone);
+  const audience = notificationData.audience;
+  const householdWide = Array.isArray(audience) ? audience.includes("*") :
+    !notificationData.targetUserUid && !notificationData.targetUserEmail;
+  const now = new Date();
+  const held = new Map<string, Date>();
+  const recipientEmails = addressed.filter((email) => {
+    const uid = uidByEmail.get(email.toLowerCase());
+    const until = uid ? pushHoldUntil({
+      now, timeZone, householdWide,
+      morningHold: notificationData.holdUntilMorning === true,
+      householdQuiet: readLocalWindow(householdData.quietHours),
+    }) : null;
+    if (uid && until) held.set(uid, until);
+    return !until;
+  });
+  if (held.size > 0) {
+    const times = [...held.values()].map((d) => d.getTime());
+    const stored = notificationData.pushHeldNext as Timestamp | undefined;
+    if (stored && typeof stored.toMillis === "function") {
+      times.push(stored.toMillis());
+    }
+    const pairs = [...held].flatMap(([uid, until]) =>
+      [new FieldPath("pushHeld", uid), Timestamp.fromDate(until)]);
+    await house.collection("notifications").doc(notificationId).update(
+      "pushHeldNext", Timestamp.fromMillis(Math.min(...times)), ...pairs);
+    logger.log("Push held for later.", {held: held.size});
+  }
+  if (recipientEmails.length === 0) return;
 
   const image: PushImage | null = await resolvePushImage(
     readDoc, householdId, notificationData,
@@ -220,9 +268,16 @@ export const sendPushOnRenotify = onDocumentUpdated(
   async (event) => {
     const before = event.data?.before.data();
     const after = event.data?.after.data();
-    if (!before || !after || !pushOnUpdate(before, after)) return;
+    if (!before || !after) return;
+    if (pushOnUpdate(before, after)) {
+      return deliverPush(event.params.householdId,
+        event.params.notificationId, after);
+    }
+    // A held push whose time has come (released by hourly upkeep).
+    const uids = releasedUids(before, after);
+    if (uids.length === 0) return;
     return deliverPush(event.params.householdId, event.params.notificationId,
-      after);
+      after, uids);
   },
 );
 
@@ -243,6 +298,8 @@ export const householdUpkeep = onSchedule(
     for (const household of households.docs) {
       try {
         const result = await runHouseholdReminders(db, household.id, now, ts);
+        // Pushes held for the morning or for quiet hours whose time has come.
+        await releaseHeldPushes(db, household.ref, now, ts);
         totals.households++;
         totals.generatedChores += result.generatedChores;
         totals.purgedChores += result.purgedChores;

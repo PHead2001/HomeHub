@@ -10,7 +10,9 @@ import {
   OVERDUE_SOURCE_ID, overdueNotificationId, type OverdueDecision,
   type StoredOverdue,
 } from "./shared/overdue-notification";
-import {overdueMessage, type OverdueView} from "./shared/chore-reminders";
+import {
+  overdueMessage, overdueTitle, type OverdueView,
+} from "./shared/chore-reminders";
 import {notificationAudience} from "./shared/notification-audience";
 
 type Timestamp = FirestoreTimestamp;
@@ -103,6 +105,7 @@ export const syncOverdueNotification = async (
     alertsAllowed: view.alertsAllowed,
     reminderSentNow: run.reminderSentNow,
     reminderPending: run.reminderPending,
+    pushAllowed: view.pushAllowed,
     existingChoreIds: run.existingChoreIds,
     overdueDays,
   });
@@ -137,11 +140,11 @@ export const syncOverdueNotification = async (
       });
       return "resolved";
     }
+    const names = decision.choreIds.map((id) => tasks.get(id) ?? "A chore");
     const fields: Record<string, unknown> = {
       category: "chores",
-      title: "Overdue chores",
-      message: overdueMessage(decision.choreIds.map((id) =>
-        tasks.get(id) ?? "A chore"), decision.total),
+      title: overdueTitle(names, decision.total),
+      message: overdueMessage(names, decision.total),
       deepLink: "/chores?due=overdue",
       sourceType: "chore-reminder",
       sourceId: OVERDUE_SOURCE_ID,
