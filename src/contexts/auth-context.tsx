@@ -52,6 +52,7 @@ import { friendlyError } from '@/lib/friendly-error';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
 import { hasTabletMarker } from '@/lib/devices/former-tablet';
 import { codeFromSetupFragment } from '@/lib/devices/device-codes';
+import { retryUntil } from '@/lib/shell/auto-retry';
 import { DEVICE_GOOGLE_SIGN_IN_REFUSAL, PERSONAL_PRINCIPAL, devicePrincipalOf, looksLikeDevice, retryDeviceClaims, type Principal } from '@/lib/devices/principal';
 import type {
   Household,
@@ -580,7 +581,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setLoading(false);
         }
         // On refresh, we only fetch the existing profile. Creation happens at sign-in.
-        const userProfile = await fetchOrCreateUserProfile(firebaseUser);
+        // SL-12: a failed read (offline with a cold cache, a server error) is retried on
+        // its own (backoff, and at once when back online) instead of leaving the page on
+        // its skeleton for good; it stops when another account (or nobody) is signed in.
+        const fetched = await retryUntil(() => fetchOrCreateUserProfile(firebaseUser), {
+          keepGoing: () => auth.currentUser?.uid === firebaseUser.uid,
+          onError: (error) => console.warn('Your profile could not be loaded; retrying.', error instanceof Error ? error.message : String(error)),
+        });
+        if (fetched.aborted) return;
+        const userProfile = fetched.value;
         if (userProfile) {
           publishProfile(userProfile);
           setProfileConfirmed(true);
