@@ -252,3 +252,24 @@ describe('occurrence identity in upkeep (CH-3)', () => {
     assert.equal(friday.length, 1, 'Friday still gets its own occurrence');
   });
 });
+
+describe('who may reopen (CH-6)', () => {
+  test('the completer, the assignee or someone who may edit chores; anyone else is refused and nothing changes', async () => {
+    const kim = { uid: 'cc-kim', email: 'cc.kim@example.test' };
+    await house().collection('members').doc(kim.uid).set({ uid: kim.uid, role: 'child', status: 'active', displayName: 'Kim' });
+    // Assigned to the owner, completed by Sam.
+    await seedChore('helped');
+    await completeChoresAs(adminDb, sam, HOUSE, { choreIds: ['helped'] }, AFTER_MIDNIGHT);
+    assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: 'helped' }, kim)).status, 'refused');
+    assert.equal((await read('helped')).completedByUid, sam.uid, 'a refused reopen writes nothing');
+    assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: 'helped' }, sam)).status, 'reopened', 'the completer');
+
+    await completeChoresAs(adminDb, sam, HOUSE, { choreIds: ['helped'] }, AFTER_MIDNIGHT);
+    assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: 'helped' }, { uid: owner.uid, email: owner.email })).status, 'reopened', 'the assignee, who may also edit');
+
+    // Assigned to Kim by uid, completed before attribution existed: it counts as Kim's.
+    await seedChore('legacy', { assignedToEmail: null, assignedToUid: kim.uid, isCompleted: true, completedAt: '2026-11-05T12:00:00.000Z' });
+    assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: 'legacy' }, sam)).status, 'refused');
+    assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: 'legacy' }, kim)).status, 'reopened');
+  });
+});

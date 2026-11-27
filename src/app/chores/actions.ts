@@ -78,5 +78,6 @@ export async function undoChoreCompletion(input: ChoreActionContext & { choreId:
 
 /** Reopens a completed chore (it changes points, so it runs on the server). */
 export async function reopenChore(input: ChoreActionContext & { choreId: string }) {
-  return runChoreAction(input, user => reopenChoreAs(adminDb, user.householdId, input));
+  // Only the completer, the assignee or a member who may edit chores (CH-6).
+  return runChoreAction(input, user => reopenChoreAs(adminDb, user.householdId, input, { uid: user.uid, email: user.email }));
 }
