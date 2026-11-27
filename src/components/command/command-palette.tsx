@@ -65,7 +65,7 @@ import { undoFeed } from '@/lib/pets/feed-operation';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { householdWallClock } from '@/lib/household-zone';
 import { useCommandIndex } from './use-command-index';
-import { groupContiguous, resultsAnnouncement, recentItemsKey, recentPicksKey, recentUse, searchScore } from '@/lib/dashboard/command-search';
+import { exactResultHidesGuess, groupContiguous, resultsAnnouncement, recentItemsKey, recentPicksKey, recentUse, searchScore } from '@/lib/dashboard/command-search';
 import { highlightRowWhenShown } from './search-hit';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance, undoOneTimeChore, undoQuickMaintenance, undoShoppingAdd } from './quick-add-actions';
 import { QUICK_ADD_UNDO_MS } from '@/lib/dashboard/quick-add-undo';
@@ -171,7 +171,7 @@ export function CommandPalette({
   // Scan into quick add (QA-24): the camera is on while `scan.open`.
   const [scan, setScan] = useState<{ open: boolean; status: 'idle' | 'looking' | 'miss' | 'error'; message?: string }>({ open: false, status: 'idle' });
   // Several things from one sentence (QA-25), shown stacked with one Confirm.
-  const [batch, setBatch] = useState<{ intents: QuickAddIntent[]; notes: string[] } | null>(null);
+  const [batch, setBatch] = useState<{ intents: QuickAddIntent[]; notes: string[]; restricted?: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
   // Shopping entries saved but not confirmed yet ("Still sending…"): the preview
@@ -428,12 +428,22 @@ export function CommandPalette({
         icon: Plus,
         run: () => {
           invalidateAi();
-          setBatch({ intents: clauses, notes: [] });
+          // The stack shows the assignee each chore will really get (without
+          // chores.assign, yourself), exactly as it will be saved.
+          let restricted = false;
+          const intents = clauses.map((entry) => {
+            if (entry.kind !== 'chore' || (entry.assigneeQuery && !entry.assignee)) return entry;
+            const resolved = resolveChoreAssignee(entry.assignee, assignable, self);
+            restricted ||= resolved.restricted;
+            return { ...entry, assignee: resolved.assignee };
+          });
+          setBatch({ intents, notes: [], restricted });
         },
       });
     }
     // Bare words ("milk and eggs") become a shopping suggestion only when search finds nothing.
-    if (intent && !(intent.kind === 'shopping' && !intent.explicit && records.length + pageOptions.length > 0)) {
+    // A bare-words guess gives way only to an exact result (QA-2, QA-11).
+    if (intent && !(intent.kind === 'shopping' && !intent.explicit && exactResultHidesGuess(search, [...records, ...pageOptions]))) {
       const description = describeIntent(intent, self);
       quick.push({
         id: 'quick-add',
@@ -497,7 +507,7 @@ export function CommandPalette({
     }] : [];
     // Group, then rank: each group's options stay together (QA-5).
     return groupContiguous([...quick, ...records, ...pageOptions, ...ai]);
-  }, [text, permissions, index.entries, index.loading, intent, self, navigate, offerAi, readWithAi, invalidateAi, bareOffer, quickContext, picks, recentItems, clauses]);
+  }, [text, permissions, index.entries, index.loading, intent, self, navigate, offerAi, readWithAi, invalidateAi, bareOffer, quickContext, picks, recentItems, clauses, assignable]);
 
   const active = Math.min(activeChoice, Math.max(0, options.length - 1));
 
@@ -789,10 +799,13 @@ export function CommandPalette({
             recentItems.record(outcome.saved.map((item) => item.name));
             notifyDataChanged({ module: 'shopping', householdId, listId: entry.list.id });
           }
-          const rest = [...outcome.unconfirmed, ...outcome.failed];
+          // Unconfirmed entries are waited for here, so a second Confirm can never add them twice.
+          const late = outcome.unconfirmed.length > 0 ? (await outcome.settled).failed : [];
+          if (outcome.unconfirmed.length > late.length) notifyDataChanged({ module: 'shopping', householdId, listId: entry.list.id });
+          const rest = [...late, ...outcome.failed];
           if (rest.length > 0) {
             left.push({ ...entry, items: rest });
-            notes.push(outcome.unconfirmed.length > 0 ? `${rest.map((item) => item.name).join(', ')}: not confirmed yet.` : quickAddRetryMessage(rest) ?? '');
+            notes.push(quickAddRetryMessage(rest) ?? '');
           } else saved.push(title);
         } else if (entry.kind === 'feeding') {
           const portion = feedingPortion(entry);
@@ -839,7 +852,7 @@ export function CommandPalette({
       close();
       return;
     }
-    setBatch({ intents: left, notes });
+    setBatch({ intents: left, notes, restricted: batch.restricted });
   };
 
   const onScanned = async (barcode: string) => {
@@ -973,6 +986,7 @@ export function CommandPalette({
           <BatchPreview
             intents={batch.intents}
             notes={batch.notes}
+            restricted={Boolean(batch.restricted)}
             self={self}
             vehicleCount={index.vehicles.length}
             indexLoading={index.loading}
@@ -1437,8 +1451,10 @@ function QuickAddPreview({
 
 /** The stacked preview for several things from one sentence (QA-25): one Confirm. */
 function BatchPreview({
-  intents, notes, self, vehicleCount, indexLoading, saving, onRemove, onBack, onConfirm,
+  intents, notes, restricted, self, vehicleCount, indexLoading, saving, onRemove, onBack, onConfirm,
 }: {
+  /** A named assignee was replaced by the viewer (no chores.assign). */
+  restricted: boolean;
   intents: QuickAddIntent[];
   /** Why entries were kept or skipped after the last Confirm. */
   notes: string[];
@@ -1477,6 +1493,11 @@ function BatchPreview({
           );
         })}
       </ul>
+      {restricted && (
+        <p className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-assignee-restricted">
+          You can only assign chores to yourself, so those chores will be yours.
+        </p>
+      )}
       {notes.filter(Boolean).length > 0 && (
         <ul role="alert" className="mt-3 space-y-1 text-sm text-destructive" data-testid="quick-add-batch-notes">
           {notes.filter(Boolean).map((note) => <li key={note}>{note}</li>)}

@@ -8,7 +8,7 @@ import { parseQuickAdd, splitItems, looksLikeItems, namedPets, foodFromText, typ
 import { canSplitChip, describeIntent, joinChips, removeChip, splitChip } from '../../src/lib/dashboard/quick-add-preview';
 import { mileageInText, portionInText, readMileage } from '../../src/lib/dashboard/quick-add-numbers';
 import { householdWallClock } from '../../src/lib/household-zone';
-import { groupContiguous, resultsAnnouncement, indexCacheKey, recentUse, searchScore, withinOneEdit } from '../../src/lib/dashboard/command-search';
+import { forgetPaletteHistory, exactResultHidesGuess, groupContiguous, resultsAnnouncement, indexCacheKey, recentUse, searchScore, withinOneEdit } from '../../src/lib/dashboard/command-search';
 import { redactPersonal } from '../../src/ai/redact';
 import { choreUndoPlan, itemUndoPlan, parseItemUndos, QUICK_ADD_UNDO_GRACE_MS } from '../../src/lib/dashboard/quick-add-undo';
 import { intentFromAiParse, mentionsDay, buildAiParseRequest } from '../../src/lib/dashboard/quick-add-ai';
@@ -408,5 +408,44 @@ describe('QA-23: the tablet offers its own room first', () => {
     const labels = (room?: string) => matchLocalIntents('wipe', { pets: [], chores, sections, room }).map((intent) => intent.kind === 'complete' && intent.choreId);
     assert.deepEqual(labels(), ['a', 'b']);
     assert.deepEqual(labels('kitchen'), ['b', 'a']);
+  });
+});
+
+describe('QA-3 follow-up: shopping verbs flip to chores only on clear day words', () => {
+  it('keeps fractions and short weekday words in items', () => {
+    const bolts = parse('add 3/8 bolts');
+    assert.ok(bolts?.kind === 'shopping' && bolts.items[0].name === '3/8 bolts');
+    const sun = parse('buy sun dried tomatoes');
+    assert.ok(sun?.kind === 'shopping' && sun.items[0].name === 'Sun dried tomatoes');
+    assert.equal(parse('sun dried tomatoes')?.kind, 'shopping');
+    const sat = parse('vacuum on sat');
+    assert.ok(sat?.kind === 'chore' && sat.dueDate === '2026-08-01');
+  });
+  it('leaves the e2e AI-fallback sentence to the AI reader', () => {
+    assert.equal(parse('could sam deal with the recycling, a tuesdayish job'), null);
+    assert.equal(parseQuickAddClauses('could sam deal with the recycling, a tuesdayish job', context), null);
+  });
+});
+
+describe('QA-2 follow-up: when a grocery guess gives way to search', () => {
+  it('only to an exact, non-pantry result', () => {
+    assert.equal(exactResultHidesGuess('eggs', [{ label: 'Eggs', group: 'Shopping' }]), true);
+    assert.equal(exactResultHidesGuess('milk', [{ label: 'Milk', group: 'Pantry' }]), false);
+    assert.equal(exactResultHidesGuess('soap', [{ label: 'Soup', group: 'Shopping' }]), false);
+    assert.equal(exactResultHidesGuess('milk', [{ label: 'Oat milk', group: 'Shopping' }]), false);
+  });
+  it('never guesses a pet, vehicle or asset name', () => {
+    for (const text of ['rex', 'maple', 'civic']) assert.equal(parse(text), null, text);
+  });
+});
+
+describe('palette history is forgotten with the household', () => {
+  it('removes one household, or every household at sign-out', () => {
+    const values = new Map([['homehub.palette.picks.h1', '{}'], ['homehub.palette.items.h1', '{}'], ['homehub.palette.items.h2', '{}'], ['homehub.appearance', 'x']]);
+    const storage = { get length() { return values.size; }, key: (index: number) => [...values.keys()][index] ?? null, removeItem: (key: string) => void values.delete(key) };
+    forgetPaletteHistory(storage, 'h1');
+    assert.deepEqual([...values.keys()], ['homehub.palette.items.h2', 'homehub.appearance']);
+    forgetPaletteHistory(storage, null);
+    assert.deepEqual([...values.keys()], ['homehub.appearance']);
   });
 });

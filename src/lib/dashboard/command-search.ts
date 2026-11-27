@@ -148,3 +148,37 @@ export function resultsAnnouncement(options: ReadonlyArray<{ group: string; labe
   if (top.group === 'Quick add' || top.group === 'Add again') return `${top.group}: ${top.label}${top.detail ? `, ${top.detail}` : ''}. ${count}`;
   return count;
 }
+
+/** Device keys of the palette's use history; removed when this device forgets a household. */
+export const PALETTE_KEY_PREFIXES = ['homehub.palette.picks.', 'homehub.palette.items.'] as const;
+
+/** Removes the palette's use history for `householdId` (null: every household, at sign-out). */
+export function forgetPaletteHistory(storage: Pick<Storage, 'removeItem' | 'key' | 'length'> | null, householdId: string | null): void {
+  if (!storage) return;
+  try {
+    if (householdId !== null) {
+      for (const prefix of PALETTE_KEY_PREFIXES) storage.removeItem(`${prefix}${householdId}`);
+      return;
+    }
+    const keys: string[] = [];
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (key && PALETTE_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) keys.push(key);
+    }
+    keys.forEach((key) => storage.removeItem(key));
+  } catch {
+    // Storage blocked: nothing was saved either.
+  }
+}
+
+/**
+ * Whether a bare-words grocery guess ("milk") gives way to search: only when a result
+ * is exactly what was typed (a pet, an asset, an item already on a list, a page),
+ * never for a typo or partial match, and never for a pantry item (typing what is in
+ * the pantry usually means buying more).
+ */
+export function exactResultHidesGuess(text: string, results: ReadonlyArray<{ label: string; group: string }>): boolean {
+  const typed = searchTokens(text).join(' ');
+  if (!typed) return false;
+  return results.some((result) => result.group !== 'Pantry' && searchTokens(result.label).join(' ') === typed);
+}
