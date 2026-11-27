@@ -768,6 +768,19 @@ const setProfileCache = (transaction: Tx, email: string, fields: { householdId?:
   transaction.set(adminDb.collection('users').doc(email), fields, { mergeFields: Object.keys(fields) });
 };
 
+/**
+ * Whether a person's profile cache may be updated for a change in this household
+ * (HO-6): only a profile that exists and still points here. A missing profile is
+ * never created as a stub, and one that points at another household is left alone;
+ * either way the membership change itself goes ahead. A read, so call it before
+ * the transaction's first write.
+ */
+const profileCachedHere = async (transaction: Tx, email: string | undefined, householdId: string): Promise<boolean> => {
+  if (!email) return false;
+  const snapshot = await transaction.get(adminDb.collection('users').doc(email));
+  return snapshot.exists && snapshot.get('householdId') === householdId;
+};
+
 const requireHouseholdName = (raw: unknown): string => {
   const checked = readHouseholdName(raw);
   if (!checked.ok) throw new MembershipError(checked.message, 'invalid_input');
@@ -1086,6 +1099,7 @@ export const changeMemberRole = async (
     const approving = target.role === 'newuser';
     if (target.role === nextRole && target.status === 'active') return { role: nextRole, approved: false };
     const aboutTarget = approving ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
+    const cacheProfile = await profileCachedHere(transaction, target.email, context.householdRef.id);
     const iso = now.toISOString();
     transaction.update(ref, {
       role: nextRole,
@@ -1094,7 +1108,7 @@ export const changeMemberRole = async (
       approvedAt: iso,
       approvedByUid: caller.uid,
     });
-    setProfileCache(transaction, target.email, { role: nextRole, permissions: {} });
+    if (cacheProfile) setProfileCache(transaction, target.email, { role: nextRole, permissions: {} });
     writeAudit(transaction, context, caller, now, {
       action: approving ? 'member.approved' : 'member.role_changed',
       target,
@@ -1174,8 +1188,9 @@ export const updateMemberPermissions = async (
     enforce(canEditPermissions(context.actor, target, changes));
     const changed = Object.keys(changes) as HouseholdPermission[];
     if (changed.length === 0) return { permissions: next };
+    const cacheProfile = await profileCachedHere(transaction, target.email, context.householdRef.id);
     transaction.update(ref, { permissions: next });
-    setProfileCache(transaction, target.email, { permissions: next });
+    if (cacheProfile) setProfileCache(transaction, target.email, { permissions: next });
     writeAudit(transaction, context, caller, now, {
       action: 'member.permissions_changed',
       target,
@@ -1330,6 +1345,10 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
     const context = await loadActor(transaction, caller, householdId);
     const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
     enforce(canTransferOwnership(context.actor, target));
+    const [cacheTarget, cacheCaller] = await Promise.all([
+      profileCachedHere(transaction, target.email, context.householdRef.id),
+      profileCachedHere(transaction, caller.email, context.householdRef.id),
+    ]);
     const iso = now.toISOString();
     // The owner is `ownerUid`; a legacy `ownerEmail` (the previous owner's) is removed, never rewritten.
     transaction.update(context.householdRef, {
@@ -1339,8 +1358,8 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
     });
     transaction.update(ref, { role: 'owner', status: 'active', permissions: {} });
     transaction.update(context.householdRef.collection('members').doc(caller.uid), { role: 'admin', status: 'active', permissions: {} });
-    setProfileCache(transaction, target.email, { role: 'owner', permissions: {} });
-    setProfileCache(transaction, caller.email, { role: 'admin', permissions: {} });
+    if (cacheTarget) setProfileCache(transaction, target.email, { role: 'owner', permissions: {} });
+    if (cacheCaller) setProfileCache(transaction, caller.email, { role: 'admin', permissions: {} });
     writeAudit(transaction, context, caller, now, { action: 'ownership.transferred', target });
     const householdName = typeof context.household.name === 'string' && context.household.name ? context.household.name : 'the household';
     // One household-wide notice per transfer; a transaction retry reuses the ID.
