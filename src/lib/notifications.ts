@@ -215,6 +215,8 @@ export const buildNotificationDocument = ({
   // Kid profiles (`kid_…`, docs/modules/devices/README.md) have no account: nobody could
   // ever read a notice targeted to one, so none is ever created.
   if (targetUser?.uid.startsWith('kid_')) throw new Error('Kid profiles cannot receive targeted notifications.');
+  // Tablet guest passes (`guest_…`, HO-24) have no account either.
+  if (targetUser?.uid.startsWith('guest_')) throw new Error('Tablet guest passes cannot receive targeted notifications.');
   const createdAt = new Date();
 
   const document = {

@@ -91,6 +91,8 @@ export function useMemberTabletControls({ householdId, currentMember, members }:
 
   const actionsFor = useCallback((member: HouseholdMember): MemberTabletActions | undefined => {
     if (!enabled || !currentMember || member.role === 'newuser' || (member.status ?? 'active') !== 'active') return undefined;
+    // A tablet guest pass (WT-21) has no PIN and no profile to edit: Remove only.
+    if (member.kind === 'identity' && member.role === 'guest') return { isKid: false, hasPin: false, locked: false, actions: [] };
     const isKid = member.kind === 'identity';
     const status = statuses[member.uid] ?? { hasPin: false, locked: false };
     const outranks = member.uid !== currentMember.uid && rank(currentMember.role) > rank(member.role);

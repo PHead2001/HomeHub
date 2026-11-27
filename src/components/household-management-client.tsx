@@ -87,6 +87,7 @@ import { ALL_ROLES, RolesPanel } from '@/components/household/roles-panel';
 import { InviteRoleSelect, type InviteRoleChoice } from '@/components/household/invite-role-select';
 import { TimeZoneSetting } from '@/components/household/time-zone-setting';
 import { InvitePassSelect, type InvitePassChoice } from '@/components/household/invite-pass-select';
+import { TabletGuestPassDialog } from '@/components/household/tablet-guest-pass-dialog';
 import { accessUntilMs, guestPassLabel, readGuestPassHours } from '@/lib/guest-pass';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
@@ -189,6 +190,7 @@ export function HouseholdManagementClient() {
   // QR code and link are shown.
   const [inviteRole, setInviteRole] = useState<InviteRoleChoice>('none');
   const [invitePass, setInvitePass] = useState<InvitePassChoice>('none');
+  const [guestPassOpen, setGuestPassOpen] = useState(false);
   const [shareInvite, setShareInvite] = useState<InviteCode | null>(null);
   const inviteRoles = assignableRoles.filter((role) => rank(role) < rank(currentMember?.role));
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -426,7 +428,9 @@ export function HouseholdManagementClient() {
   const askRemove = (member: HouseholdMember) => setConfirm({
     title: `Remove ${memberName(member)}?`,
     description: member.kind === 'identity'
-      ? 'The kid profile disappears from wall tablets. Open chores assigned to it become unassigned; completed chores stay in the history.'
+      ? member.role === 'guest'
+        ? 'The guest pass ends now and its face disappears from wall tablets. What was done under it stays in the history.'
+        : 'The kid profile disappears from wall tablets. Open chores assigned to it become unassigned; completed chores stay in the history.'
       : `They lose access to ${householdDisplayName} right away. Open chores assigned to them become unassigned.`,
     confirmLabel: 'Remove',
     destructive: true,
@@ -706,13 +710,22 @@ export function HouseholdManagementClient() {
             {tablet.enabled && (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm text-muted-foreground">Kids without their own account can still use wall tablets.</p>
-                <Button variant="outline" onClick={tablet.openCreateKid}>
-                  <UserPlus className="mr-2 h-4 w-4" aria-hidden />
-                  Add a kid profile
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={tablet.openCreateKid}>
+                    <UserPlus className="mr-2 h-4 w-4" aria-hidden />
+                    Add a kid profile
+                  </Button>
+                  <Button variant="outline" onClick={() => setGuestPassOpen(true)}>
+                    <UserPlus className="mr-2 h-4 w-4" aria-hidden />
+                    Add a tablet guest pass
+                  </Button>
+                </div>
               </div>
             )}
             {tablet.dialogs}
+            {tablet.enabled && household?.id && (
+              <TabletGuestPassDialog open={guestPassOpen} householdId={household.id} onOpenChange={setGuestPassOpen} />
+            )}
             {live.membersFailed && (
               <p role="status" className="rounded-md border border-warning/50 bg-warning/10 p-3 text-sm">
                 We couldn&apos;t load everyone right now. Check your connection; this list updates on its own.

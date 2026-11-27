@@ -109,7 +109,9 @@ export function MemberCard({
               {roleLabel(member.role)}
             </span>
             {isKid && (
-              <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">Kid profile, no sign-in</span>
+              <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+                {member.role === 'guest' ? 'Tablet guest pass, no sign-in' : 'Kid profile, no sign-in'}
+              </span>
             )}
             {tablet?.locked ? (
               <span className="rounded-full border border-warning/60 px-2 py-0.5 text-xs">Tablet PIN locked</span>
