@@ -50,6 +50,38 @@ export function choreLiveStatus(state: ChoreLiveState): ChoreLiveStatus {
   return missing.some(collection => state.failures[collection]) ? 'error' : 'loading';
 }
 
+/** Whether two stored values are the same (plain data, arrays, maps and Firestore timestamps). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function sameRow(a: object, b: object): boolean {
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) if (!sameValue(left[key], right[key])) return false;
+  return true;
+}
+
+/**
+ * CH-26: the next rows, reusing the previous object for every row whose content is
+ * unchanged, so a snapshot that changed one chore re-renders only that row (rows
+ * are memoised by object identity). Returns `previous` itself when nothing changed.
+ */
+export function keepUnchangedRows<T extends { id: string }>(next: readonly T[], previous: readonly T[]): T[] {
+  const before = new Map(previous.map(row => [row.id, row]));
+  let changed = next.length !== previous.length;
+  const rows = next.map((row, index) => {
+    const old = before.get(row.id);
+    const kept = old && (old === row || sameRow(old, row)) ? old : row;
+    if (kept !== previous[index]) changed = true;
+    return kept;
+  });
+  return changed ? rows : (previous as T[]);
+}
+
 /**
  * The rows the page shows: the listener's rows, except chores with a write in flight
  * (`pending`), which keep the page's own optimistic version (or stay hidden when the

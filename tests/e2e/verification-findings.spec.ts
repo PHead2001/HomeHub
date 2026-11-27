@@ -286,19 +286,22 @@ test.describe('verification finding regressions', () => {
     desktopOnly(testInfo);
     await openAuthenticated(page, '/chores', 'Chore Chart');
 
-    await page.getByRole('button', { name: 'Delete Fold clean laundry' }).click();
+    await page.getByRole('button', { name: 'More actions for Fold clean laundry' }).click();
+    await page.getByRole('menuitem', { name: /^Delete/ }).click();
     const activeDialog = page.getByRole('alertdialog', { name: 'Delete Fold clean laundry?' });
     await expect(activeDialog).toContainText('active chore');
     await activeDialog.getByRole('button', { name: 'Cancel' }).click();
     expect((await household.collection('chores').doc('chore-laundry').get()).exists).toBe(true);
 
-    await page.getByRole('button', { name: 'Delete Fold clean laundry' }).click();
+    await page.getByRole('button', { name: 'More actions for Fold clean laundry' }).click();
+    await page.getByRole('menuitem', { name: /^Delete/ }).click();
     await page.getByRole('alertdialog', { name: 'Delete Fold clean laundry?' }).getByRole('button', { name: 'Delete Chore' }).click();
     await expect.poll(async () => (await household.collection('chores').doc('chore-laundry').get()).exists).toBe(false);
 
     await page.getByRole('button', { name: /^Completed \(/ }).click();
     await page.getByRole('button', { name: /Garage/ }).click();
-    await page.getByRole('button', { name: 'Delete Take bins to curb' }).click();
+    await page.getByRole('button', { name: 'More actions for Take bins to curb' }).click();
+    await page.getByRole('menuitem', { name: /^Delete/ }).click();
     const completedDialog = page.getByRole('alertdialog', { name: 'Delete Take bins to curb?' });
     await expect(completedDialog).toContainText('completed chore');
     await completedDialog.getByRole('button', { name: 'Delete Chore' }).click();
@@ -415,9 +418,11 @@ test.describe('verification finding regressions', () => {
 
   test('affected icon controls and dialogs expose accessible names and descriptions', async ({ page, context }, testInfo) => {
     await openAuthenticated(page, '/chores', 'Chore Chart');
-    const choreDelete = page.getByRole('button', { name: 'Delete Fold clean laundry' });
-    await expect(choreDelete).toBeVisible();
-    await choreDelete.click();
+    // CH-16: delete sits behind the row's More actions menu.
+    const choreMore = page.getByRole('button', { name: 'More actions for Fold clean laundry' });
+    await expect(choreMore).toBeVisible();
+    await choreMore.click();
+    await page.getByRole('menuitem', { name: /^Delete/ }).click();
     const choreDialog = page.getByRole('alertdialog', { name: 'Delete Fold clean laundry?' });
     await expect(choreDialog).toHaveAttribute('aria-describedby', /.+/);
     await choreDialog.getByRole('button', { name: 'Cancel' }).click();

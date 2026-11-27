@@ -59,6 +59,27 @@ async function openRoute(page: Page, route: Route) {
   await expect(page.getByRole('heading', { name: route.heading, exact: true })).toBeVisible();
   await expect(route.ready(page)).toBeVisible();
   await expect(page.getByText('Sign in with Google', { exact: false })).toHaveCount(0);
+  await settle(page);
+}
+
+/**
+ * Waits until nothing on the page moves: running CSS and Web animations have finished
+ * (accordions opening, entrances) and every control's box is the same in two frames
+ * 100 ms apart (layout driven by script, such as a list settling after live data).
+ * Hit areas are measured only then, never mid-animation.
+ */
+async function settle(page: Page) {
+  await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))));
+  const boxes = () => page.evaluate(() => Array.from(document.querySelectorAll('button, a, [role="checkbox"], input'))
+    .map((element) => { const box = element.getBoundingClientRect(); return `${box.x},${box.y},${box.width},${box.height}`; }).join('|'));
+  let previous = '';
+  await expect.poll(async () => {
+    const current = await boxes();
+    const stable = current === previous;
+    previous = current;
+    if (!stable) await page.waitForTimeout(100);
+    return stable;
+  }, { message: 'the page settles before hit areas are measured', timeout: 5000 }).toBe(true);
 }
 
 async function setTextScale(page: Page, scale: 100 | 115 | 130) {

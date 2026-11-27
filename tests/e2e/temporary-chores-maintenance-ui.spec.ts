@@ -210,11 +210,13 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await expect.poll(async () => (await chore.ref.get()).data()?.isCompleted).toBe(true);
     await page.getByRole('button', { name: /^Completed \(/ }).click();
     await page.getByRole('button', { name: /Living Room/ }).last().click();
-    await page.getByRole('button', { name: `Delete ${taskName}` }).click();
+    await page.getByRole('button', { name: `More actions for ${taskName}` }).click();
+    await page.getByRole('menuitem', { name: /^Delete/ }).click();
     const deleteDialog = page.getByRole('alertdialog', { name: `Delete ${taskName}?` });
     await deleteDialog.getByRole('button', { name: 'Cancel' }).click();
     expect((await chore.ref.get()).exists).toBe(true);
-    await page.getByRole('button', { name: `Delete ${taskName}` }).click();
+    await page.getByRole('button', { name: `More actions for ${taskName}` }).click();
+    await page.getByRole('menuitem', { name: /^Delete/ }).click();
     await page.getByRole('alertdialog', { name: `Delete ${taskName}?` }).getByRole('button', { name: 'Delete Chore' }).click();
     await expect.poll(async () => (await chore.ref.get()).exists).toBe(false);
   });

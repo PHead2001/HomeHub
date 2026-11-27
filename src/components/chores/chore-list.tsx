@@ -1,19 +1,20 @@
 'use client';
 
-import { useId, useRef } from 'react';
+import { memo, useEffect, useId, useMemo, useRef } from 'react';
 import { AnimatePresence, useIsPresent } from 'motion/react';
-import { ChevronDown, Trash2 } from 'lucide-react';
+import { ChevronDown, MoreHorizontal, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { assignablePeople, publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { Checkbox } from '@/components/ui/checkbox';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Label } from '@/components/ui/label';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { MemberAvatar } from '@/components/member-avatar';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
+import { focusAfterCompleting, sameRowEntry } from '@/lib/chores/row-focus';
 import type { MemberColor } from '@/lib/member-colors';
 import { SPRING_UI } from '@/lib/motion';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { inertProps } from '@/lib/inert';
 import { cn, stableSlugify } from '@/lib/utils';
 import { memberName } from './assignee-select';
@@ -48,6 +49,29 @@ type ChoreListProps = ChoreListHandlers & {
   large?: boolean;
 };
 
+type RowHandlers = ChoreListHandlers & { onToggleOpen: (id: string) => void };
+
+/** What one row needs. Everything but `entry` is a primitive or a reference the page keeps stable (CH-26). */
+type RowProps = {
+  entry: ToDoEntry;
+  today: string;
+  householdToday: string;
+  timeZone: string | undefined;
+  usersByUid: Map<string, HouseholdPerson>;
+  users: HouseholdPerson[];
+  colors: Map<string, MemberColor>;
+  capabilities: ChoreCapabilities;
+  selectMode: boolean;
+  selected: boolean;
+  open: boolean;
+  large: boolean;
+  /** Changes only when this list's rows change, so only that group animates its layout (CH-26). */
+  layoutKey: string;
+  /** Reduced motion (system or in-app): no layout animation at all. */
+  reduced: boolean;
+  handlers: RowHandlers;
+};
+
 function dueLabel(day: string, today: string): string {
   if (!day) return '';
   if (day === today) return 'Today';
@@ -56,7 +80,8 @@ function dueLabel(day: string, today: string): string {
   return format(dayFromKey(day), 'EEE, MMM d');
 }
 
-function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps }) {
+function ChoreRow(props: RowProps) {
+  const { entry, capabilities, today, handlers } = props;
   const { chore, missed } = entry;
   // A row that is leaving (completed, so it moved to Completed) is only a visual
   // echo during its exit slide: hidden from assistive tech and inert, so each
@@ -64,7 +89,6 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   const leaving = !useIsPresent();
   const detailsId = useId();
   const checkRef = useRef<HTMLButtonElement>(null);
-  const { capabilities, today } = props;
   const due = choreDueKey(chore);
   const isCompleted = chore.isCompleted;
   const isOverdue = !isCompleted && due !== '' && due < today;
@@ -72,7 +96,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   // timezone exactly as the server judges it (it refuses earlier ones, CH-2).
   const isFuture = !isCompleted && isDueAfterHouseholdDay(chore, props.householdToday, props.timeZone);
   const hasDetails = Boolean(chore.notes || (chore.subTasks && chore.subTasks.length > 0));
-  const isOpen = props.openIds.has(chore.id);
+  const isOpen = props.open;
   // `assignedToUid` was resolved when the page loaded (functions/src/shared/assignee.ts).
   const user = chore.assignedToUid ? props.usersByUid.get(chore.assignedToUid) : undefined;
   const name = user ? memberName(user) : publicDisplayName(chore.assignedToDisplayName, 'Unassigned');
@@ -85,7 +109,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
     return completer ? memberName(completer) : undefined;
   }) : null;
 
-  const large = props.large === true;
+  const large = props.large;
   const avatar = (
     <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size={large ? 'md' : 'sm'} decorative />
   );
@@ -95,7 +119,10 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
   return (
     <StaggerItem
       as="li"
-      layout="position"
+      // CH-26: layout changes are measured only when this group's rows change, and
+      // never under reduced motion, so the list is still from its first frame.
+      layout={props.reduced ? false : 'position'}
+      layoutDependency={props.layoutKey}
       exit={{ opacity: 0, y: 12, transition: { duration: 0.18 } }}
       transition={SPRING_UI}
       className={cn(
@@ -104,7 +131,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         'transition-shadow data-[highlight=true]:ring-2 data-[highlight=true]:ring-primary',
         large && 'shadow-raised',
         isOverdue && 'border-l-4 border-l-destructive',
-        props.selectedIds.has(chore.id) && 'border-primary',
+        props.selected && 'border-primary',
         leaving && 'pointer-events-none',
       )}
       data-chore-id={leaving ? undefined : chore.id}
@@ -113,22 +140,27 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
     >
       <div className="flex items-start gap-1 p-1 md:gap-2 md:p-1.5">
         {props.selectMode && !isCompleted ? (
-          <span className="grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center">
+          // CH-16: the whole target-sized cell is the checkbox's label, so a tap anywhere in it selects.
+          <label className={cn('grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center rounded-md', isFuture ? 'cursor-not-allowed' : 'cursor-pointer')}>
             <Checkbox
-              checked={props.selectedIds.has(chore.id)}
-              onCheckedChange={() => props.onToggleSelect(chore)}
+              checked={props.selected}
+              onCheckedChange={() => handlers.onToggleSelect(chore)}
               disabled={isFuture}
               aria-label={`Select ${chore.task}`}
-              className="h-5 w-5"
+              className="h-6 w-6"
             />
-          </span>
+          </label>
         ) : (
           <CompletionCheck
             ref={checkRef}
             checked={isCompleted}
             disabled={!capabilities.canComplete || isFuture}
             label={isCompleted ? `Mark ${chore.task} not done` : `Mark ${chore.task} done`}
-            onToggle={() => props.onToggleDone(chore, checkRef.current)}
+            onToggle={() => {
+              // CH-16: completing moves focus to the next row's check instead of dropping it.
+              if (!isCompleted && checkRef.current) focusAfterCompleting(checkRef.current);
+              handlers.onToggleDone(chore, checkRef.current);
+            }}
           />
         )}
 
@@ -139,7 +171,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
               className="group flex min-h-[var(--target-min)] w-full items-center gap-1 rounded-sm text-left"
               aria-expanded={isOpen}
               aria-controls={detailsId}
-              onClick={() => props.onToggleOpen(chore.id)}
+              onClick={() => handlers.onToggleOpen(chore.id)}
             >
               <span className={cn('line-clamp-2 min-w-0 flex-1 break-words font-medium', nameSize, isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
                 {chore.task}
@@ -152,7 +184,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
               {chore.task}
             </span>
           )}
-          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground coarse:text-sm">
             {isCompleted && completedAt
               ? <span>{completedBy ? `Done by ${completedBy} · ${format(completedAt, 'MMM d')}` : `Done ${format(completedAt, 'MMM d')}`}</span>
               : <span>{dueLabel(due, today)}</span>}
@@ -166,7 +198,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
                     type="button"
                     className="inline-flex min-h-[var(--target-min)] min-w-[var(--target-min)] items-center justify-center rounded px-1 font-medium text-primary underline-offset-2 hover:underline"
                     aria-label={`Clear ${missed.length} earlier missed ${chore.task}`}
-                    onClick={() => props.onClearMissed(entry)}
+                    onClick={() => handlers.onClearMissed(entry)}
                   >
                     Clear
                   </button>
@@ -192,7 +224,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel>Assign to</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={chore.assignedToUid || ''} onValueChange={(uid) => props.onReassign(chore, uid)}>
+              <DropdownMenuRadioGroup value={chore.assignedToUid || ''} onValueChange={(uid) => handlers.onReassign(chore, uid)}>
                 {assignablePeople(props.users, chore.assignedToUid).map(member => (
                   <DropdownMenuRadioItem key={member.uid} value={member.uid}>
                     <span className="flex items-center gap-2">
@@ -213,14 +245,23 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         )}
 
         {capabilities.canDelete && (
-          <button
-            type="button"
-            className="grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-destructive"
-            aria-label={`Delete ${chore.task}`}
-            onClick={() => props.onDelete(chore)}
-          >
-            <Trash2 aria-hidden className="h-4 w-4" />
-          </button>
+          // CH-16: delete sits behind a menu (and still confirms), never beside Done.
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent"
+                aria-label={`More actions for ${chore.task}`}
+              >
+                <MoreHorizontal aria-hidden className="h-5 w-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem className="min-h-[var(--target-min)] text-destructive focus:text-destructive" onSelect={() => handlers.onDelete(chore)}>
+                <Trash2 aria-hidden className="mr-2 h-4 w-4" /> Delete…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
 
@@ -230,21 +271,9 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
           {total > 0 && (
             <div className="space-y-0.5">
               <h4 className="text-xs font-semibold text-foreground">Steps</h4>
-              {chore.subTasks!.map(subTask => {
-                const id = `subtask-${chore.id}-${stableSlugify(subTask)}`;
-                return (
-                  // Each step is a target-tall row, so the checkboxes' hit areas never overlap (D-2).
-                  <div key={subTask} className="flex min-h-[var(--target-min)] items-center gap-3">
-                    <Checkbox
-                      id={id}
-                      checked={(chore.completedSubTasks || []).includes(subTask)}
-                      onCheckedChange={() => props.onSubTaskToggle(chore, subTask)}
-                      disabled={isCompleted || !capabilities.canComplete}
-                    />
-                    <Label htmlFor={id} className={cn('text-sm font-normal', isCompleted && 'text-muted-foreground line-through')}>{subTask}</Label>
-                  </div>
-                );
-              })}
+              {chore.subTasks!.map(subTask => (
+                <StepRow key={subTask} chore={chore} subTask={subTask} disabled={isCompleted || !capabilities.canComplete} onToggle={handlers.onSubTaskToggle} />
+              ))}
             </div>
           )}
         </div>
@@ -254,15 +283,71 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
 }
 
 /**
+ * One step: the whole target-tall row is the checkbox's label (CH-16), so the box is
+ * never the only thing to hit, and rows never overlap (D-2).
+ */
+export function StepRow({ chore, subTask, disabled, onToggle }: { chore: ChoreRecord; subTask: string; disabled: boolean; onToggle: (chore: ChoreRecord, subTask: string) => void }) {
+  const id = `subtask-${chore.id}-${stableSlugify(subTask)}`;
+  const done = (chore.completedSubTasks || []).includes(subTask);
+  return (
+    <label htmlFor={id} className={cn('flex min-h-[var(--target-min)] w-full items-center gap-3 rounded-md px-1', disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-accent/50')}>
+      <Checkbox id={id} checked={done} onCheckedChange={() => onToggle(chore, subTask)} disabled={disabled} className="h-5 w-5 coarse:h-6 coarse:w-6" />
+      <span className={cn('text-sm font-normal coarse:text-base', disabled && done && 'text-muted-foreground line-through')}>{subTask}</span>
+    </label>
+  );
+}
+
+const MemoRow = memo(ChoreRow, (before, after) => {
+  const keys = Object.keys(after) as (keyof RowProps)[];
+  return keys.every(key => (key === 'entry' ? sameRowEntry(before.entry, after.entry) : before[key] === after[key]));
+});
+
+/**
  * Chore rows for one room group. Rows enter with the shared stagger (H12, at most
  * 30 ms apart and 400 ms in all; instant under reduced motion) and completed rows
  * leave with a short slide. Rows are interactive from the first frame.
+ *
+ * CH-26: rows are memoised; the handlers they get are stable (they read the latest
+ * props through a ref), so a tick re-renders only the rows whose chore changed, and a
+ * group measures its layout only when its own rows change.
  */
 export function ChoreList(props: ChoreListProps) {
+  const latest = useRef(props);
+  useEffect(() => { latest.current = props; });
+  const handlers = useMemo<RowHandlers>(() => ({
+    onToggleDone: (chore, origin) => latest.current.onToggleDone(chore, origin),
+    onToggleSelect: chore => latest.current.onToggleSelect(chore),
+    onSubTaskToggle: (chore, subTask) => latest.current.onSubTaskToggle(chore, subTask),
+    onReassign: (chore, uid) => latest.current.onReassign(chore, uid),
+    onDelete: chore => latest.current.onDelete(chore),
+    onClearMissed: entry => latest.current.onClearMissed(entry),
+    onToggleOpen: id => latest.current.onToggleOpen(id),
+  }), []);
+  const layoutKey = props.entries.map(entry => entry.chore.id).join('|');
+  const reduced = useReducedMotion();
   return (
     <Stagger as="ul" className="space-y-2" count={props.entries.length}>
       <AnimatePresence>
-        {props.entries.map(entry => <ChoreRow key={entry.chore.id} entry={entry} props={props} />)}
+        {props.entries.map(entry => (
+          <MemoRow
+            key={entry.chore.id}
+            entry={entry}
+            today={props.today}
+            householdToday={props.householdToday}
+            timeZone={props.timeZone}
+            usersByUid={props.usersByUid}
+            users={props.users}
+            colors={props.colors}
+            capabilities={props.capabilities}
+            selectMode={props.selectMode}
+            selected={props.selectedIds.has(entry.chore.id)}
+            open={props.openIds.has(entry.chore.id)}
+            large={props.large === true}
+            layoutKey={layoutKey}
+            reduced={reduced}
+            handlers={handlers}
+          />
+        ))}
       </AnimatePresence>
     </Stagger>
   );

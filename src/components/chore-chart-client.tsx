@@ -14,8 +14,6 @@ import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
 import { format } from 'date-fns';
 import type { ChoreTemplate, Recurrence, Room } from '@/lib/types';
 import { Button, buttonVariants } from '@/components/ui/button';
-import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -53,7 +51,8 @@ import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
 import { useChoreLiveData } from '@/components/chores/use-chore-live-data';
-import { mergeLiveRows } from '@/lib/chores/live';
+import { keepUnchangedRows, mergeLiveRows } from '@/lib/chores/live';
+import { ChoresSkeleton } from '@/components/chores/chores-skeleton';
 import { MissedRecently } from '@/components/chores/missed-recently';
 import { useMissedEntries } from '@/components/chores/use-missed-entries';
 import { LeaderboardRibbon } from '@/components/chores/leaderboard-ribbon';
@@ -243,7 +242,8 @@ export function ChoreChartClient() {
     for (const [id, settled] of settledAt.current) {
       if (settled.snapshot !== docs.chores || now >= settled.until) settledAt.current.delete(id);
     }
-    setAssignedChores(previous => mergeLiveRows(serverChores, previous, new Set([...held.current.keys(), ...settledAt.current.keys()])));
+    // CH-26: unchanged chores keep their object, so only changed rows re-render.
+    setAssignedChores(previous => keepUnchangedRows(mergeLiveRows(serverChores, previous, new Set([...held.current.keys(), ...settledAt.current.keys()])), previous));
   }, [live.state, currentUser, settleTick]);
 
   const loading = Boolean(liveKey) && live.status === 'loading';
@@ -1034,21 +1034,8 @@ export function ChoreChartClient() {
   );
 
   if (loading || !isMounted) {
-    return frame(
-      <div className="space-y-8">
-        <Card>
-          <CardHeader>
-            <Skeleton className="h-8 w-1/2" />
-            <Skeleton className="h-4 w-3/4" />
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </CardContent>
-        </Card>
-      </div>
-    );
+    // CH-26: the same skeleton as the route's loading state, so nothing flashes between them.
+    return frame(<ChoresSkeleton inPage />);
   }
 
   if (!currentUser) {
@@ -1473,7 +1460,7 @@ export function ChoreChartClient() {
             )}
 
             <Accordion type="multiple" value={sectionsOpen} onValueChange={setOpenSections} className="w-full space-y-3 md:space-y-4">
-              <AccordionItem value="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
+              <AccordionItem value="todo" data-chore-section="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
                 <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl"><span>To Do (<NumberTicker value={todoEntries.length} animateOnMount={false} />)</span></AccordionTrigger>
                 <AccordionContent className="pt-1">
                   {todoEntries.length > 0 ? roomGroups('todo', todoEntries, true) : (
