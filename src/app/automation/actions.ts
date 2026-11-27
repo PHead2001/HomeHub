@@ -11,7 +11,7 @@ import {
 import { changeConfig, deleteCredentials, persistCredentials, readConfig, readConnectedUrl, readCredentials, syncConnectedFlag } from '@/lib/server/home-assistant-store';
 import { forgetSnapshot, householdSnapshot, takeControlSlot } from '@/lib/server/home-assistant-snapshot';
 import { maySeeSensitive, visibleEntities, type HomeAssistantEntitySummary } from '@/lib/automation/entities';
-import { configForViewer, type AutomationConfig } from '@/lib/automation/config';
+import { configForViewer, type AlertRule, type AutomationConfig } from '@/lib/automation/config';
 import { controlService, isSafeScene } from '@/lib/automation/controls';
 import { homeStatus, houseDevices, type HomeStatus, type RoomDevices } from '@/lib/automation/home-status';
 import type { HouseholdPermission } from '@/lib/types';
@@ -175,6 +175,17 @@ export async function setAutomationFavorite(context: Context, input: { entityId:
 export async function setAutomationRoom(context: Context, input: { entityId: string; roomId: string | null }): Promise<Result<AutomationConfig>> {
   return run(context, 'automation.manage', (user) =>
     changeFor(user, { kind: 'room', entityId: input?.entityId, roomId: input?.roomId }));
+}
+
+/** AU-17: add one alert rule, or remove one by id; other settings are kept. */
+export async function addAutomationAlert(context: Context, input: { rule: AlertRule }): Promise<Result<AutomationConfig>> {
+  return run(context, 'automation.manage', (user) =>
+    changeFor(user, { kind: 'alertAdd', rule: input?.rule }));
+}
+
+export async function removeAutomationAlert(context: Context, input: { id: string }): Promise<Result<AutomationConfig>> {
+  return run(context, 'automation.manage', (user) =>
+    changeFor(user, { kind: 'alertRemove', id: input?.id }));
 }
 
 export async function setMembersSeeSensitive(context: Context, input: { show: boolean }): Promise<Result<AutomationConfig>> {
