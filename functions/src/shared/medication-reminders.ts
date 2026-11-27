@@ -56,6 +56,11 @@ export type MedicationReminder = {
   title: string;
   message: string;
   deepLink: string;
+  /**
+   * Due at a set time of day (a course occurrence with a time). Others
+   * become due at local midnight and wait for the morning to push (NO-3).
+   */
+  timed: boolean;
 };
 
 /** When course reminders are judged: the instant and the household zone. */
@@ -162,6 +167,7 @@ const legacyReminders = (pet: PetInput, today: string):
         message: `Open ${name}'s Medication tab to record the dose once ` +
           "it's given, or to confirm its schedule.",
         deepLink: medicationDeepLink(pet.id),
+        timed: false,
       };
     });
 };
@@ -187,6 +193,7 @@ const courseReminders = (pet: PetInput, clock: ReminderClock):
       `${name}'s ${medication} dose is overdue`,
     message: `${dosage}Tap to record it once it's given.`,
     deepLink: medicationDeepLink(pet.id, course.id),
+    timed: Boolean(due.occurrence.time),
   }];
 });
 

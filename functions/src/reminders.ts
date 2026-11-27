@@ -692,6 +692,8 @@ export const runHouseholdReminders = async (
         sourceType: r.sourceType,
         sourceId: r.sourceId,
         stateKey: r.stateKey,
+        // Due from local midnight: the push waits for the morning (NO-3).
+        holdUntilMorning: true,
       });
     if (!kept) return result;
   }
@@ -770,6 +772,9 @@ export const runHouseholdReminders = async (
         sourceType: r.sourceType,
         sourceId: r.sourceId,
         stateKey: r.stateKey,
+        // A dose with a set time pushes at that time; one due on a day
+        // waits for the morning (NO-3).
+        holdUntilMorning: !r.timed,
       }, {refreshCopy: true});
     if (!kept) return result;
   }

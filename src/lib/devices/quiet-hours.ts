@@ -2,7 +2,8 @@
 // D-T1, WT-14g, JC-20). `households/{h}.quietHours = { start: 'HH:mm', end: 'HH:mm' }`
 // in the household's time zone, or absent/null for none. Written only by the server
 // (owners and admins, `updateQuietHoursAction`); wall tablets dim their screen during
-// them. Push muting by these hours is not part of this goal. Pure: shared by the server
+// them, and household-wide pushes are held until they end (NO-3; the push function reads
+// the same field through functions/src/shared/push-hold.ts). Pure: shared by the server
 // validation, the Household settings form and the tablet.
 
 import { localMinutes, parseTimeOfDay, safeTimeZone } from '@functions/shared/calendar';

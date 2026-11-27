@@ -16,8 +16,8 @@ import { updateQuietHoursAction } from '@/app/household/quiet-hours-actions';
 
 // Household quiet hours (docs/modules/devices/README.md, "Night dimming"; D-T1, JC-20):
 // wall tablets dim their screen during them, in the household's time zone. Owners and
-// admins (role) change them; the server validates and stores them. Push notifications are
-// not muted by them.
+// admins (role) change them; the server validates and stores them. Household-wide push
+// notifications are held until they end (NO-3, audit 16.3; functions/src/shared/push-hold.ts).
 
 export function QuietHoursSetting({ householdId }: { householdId: string }) {
   const { household } = useAuth();
@@ -68,7 +68,7 @@ export function QuietHoursSetting({ householdId }: { householdId: string }) {
     <Card>
       <CardHeader>
         <CardTitle>Quiet hours</CardTitle>
-        <CardDescription>Wall tablets dim their screen during these hours, in the household&apos;s time zone. Now: {describeQuietHours(current)}.</CardDescription>
+        <CardDescription>Wall tablets dim their screen and household-wide pushes wait until these hours end, in the household&apos;s time zone. Now: {describeQuietHours(current)}.</CardDescription>
       </CardHeader>
       <CardContent>
         <form noValidate onSubmit={submit} className="space-y-4" data-testid="quiet-hours-form">
