@@ -9,7 +9,7 @@ import type {
   Timestamp as FirestoreTimestamp,
 } from "firebase-admin/firestore";
 import {
-  addDays, localDay, localMinutes, safeTimeZone, zonedMidnightIso,
+  addDays, localDay, localMinutes, safeTimeZone,
 } from "./shared/calendar";
 import {
   choreNotificationsFor, overdueChoresFor, UPKEEP_INTERVAL_MS,
@@ -22,7 +22,7 @@ import {
   type PurgedChore,
 } from "./shared/chore-stats";
 import {
-  assigneeEmailOf, assigneeFields, resolveAssigneeUid,
+  assigneeEmailOf, resolveAssigneeUid,
 } from "./shared/assignee";
 import {
   choreOccurrenceKey, deterministicNotificationId, occurrenceChoreId,
@@ -35,6 +35,7 @@ import {
   MISSED_DOC_ID, effectiveDueDay, missedDayExpired, readMissedEntries,
   withMissedEntries, type MissedEntry,
 } from "./shared/missed";
+import {generatedOccurrence} from "./shared/occurrence-chore";
 import {
   occurrenceNumber, rotationAnchor, rotationOf, rotationTurn,
 } from "./shared/rotation";
@@ -505,20 +506,10 @@ export const runHouseholdReminders = async (
         choreIds.add(id);
         occurrenceKeys.add(occurrenceKey);
         const choreRef = house.collection("chores").doc(id);
-        const chore = {
-          task: template.task,
-          ...assigneeFields(assignee),
-          assignedToDisplayName: assignee.displayName || "Member",
-          dueDate: zonedMidnightIso(day, timeZone),
-          isCompleted: false,
-          notes: template.notes || "",
-          subTasks: template.subTasks || [],
-          completedSubTasks: [],
-          templateId: templateDoc.id,
-          originalDueDate: day,
-          occurrenceKey,
-          roomIds: roomId === "general" ? [] : [roomId],
-        };
+        const chore = generatedOccurrence({
+          template, templateId: templateDoc.id, person: assignee, roomId, day,
+          timeZone,
+        }).data;
         choreOps.push({
           kind: "create", ref: choreRef, data: chore,
           template: templateDoc.ref, templateVersion: templateDoc.updateTime,
