@@ -4,7 +4,8 @@ import { describe, it } from 'node:test';
 import { DEVICE_ACTION_POLICY, UNDO_OF, UNDO_PROVEN, requiredLevel } from '../../src/lib/devices/action-policy';
 import { addedNames, choreAnswerMeaning, queuedSendResult, SENDABLE_CAPABILITIES, UNDO_CAPABILITY_OF } from '../../src/lib/devices/device-action-answers';
 import { dropNotice, createQueuedAction, queueAllowed } from '../../src/lib/devices/offline-queue';
-import { deviceAddEntries } from '../../src/lib/devices/tablet-shopping';
+import { deviceAddEntries, kitchenActivity, kitchenAttribution, kitchenItems, kitchenListChoice, kitchenLists, rosterFirstNames } from '../../src/lib/devices/tablet-shopping';
+import { devicePermissions } from '../../src/lib/devices/tablet-settings-apply';
 import { restoreItemData } from '../../src/lib/shopping/items';
 
 // Shopping on registered wall tablets (docs/modules/devices/README.md, "Device actions:
@@ -127,5 +128,94 @@ describe('a phone restoring a deleted item a tablet wrote', () => {
     assert.equal('purchaseDeviceAttribution' in restored, false);
     assert.equal(restored.addedByUid, 'max');
     assert.equal(restored.restoredByUid, 'olive');
+  });
+});
+
+describe('kitchen mode on the tablet (SH-11)', () => {
+  const lists = kitchenLists([
+    { id: 'hardware', name: 'Hardware', type: 'Hardware' },
+    { id: 'costco', name: 'Costco', type: 'Grocery', storeId: 'costco-store' },
+    { id: 'weekly', name: 'Weekly', type: 'Grocery' },
+  ]);
+
+  it('lists by name, with their store', () => {
+    assert.deepEqual(lists.map((list) => [list.id, list.storeId]), [['costco', 'costco-store'], ['hardware', null], ['weekly', null]]);
+  });
+
+  it('shows the list in the address, else the household default Grocery list, else the first Grocery list, else any list', () => {
+    assert.equal(kitchenListChoice({ lists, pickedId: 'hardware', defaultListId: 'weekly', defaultKnown: true }).list?.id, 'hardware');
+    assert.equal(kitchenListChoice({ lists, pickedId: null, defaultListId: 'weekly', defaultKnown: true }).list?.id, 'weekly');
+    assert.equal(kitchenListChoice({ lists, pickedId: 'gone', defaultListId: null, defaultKnown: true }).list?.id, 'costco');
+    assert.deepEqual(kitchenListChoice({ lists, pickedId: null, defaultListId: null, defaultKnown: false }), { list: null, waiting: true });
+    const noGrocery = kitchenLists([{ id: 'hardware', name: 'Hardware', type: 'Hardware' }]);
+    assert.equal(kitchenListChoice({ lists: noGrocery, pickedId: null, defaultListId: null, defaultKnown: false }).list?.id, 'hardware');
+    assert.deepEqual(kitchenListChoice({ lists: [], pickedId: null, defaultListId: null, defaultKnown: true }), { list: null, waiting: false });
+  });
+});
+
+describe('attribution and "is shopping" on the tablet (SH-28)', () => {
+  const now = Date.parse('2026-11-20T15:00:00Z');
+  const names = rosterFirstNames([{ uid: 'sam', name: 'Sam Lee' }, { uid: 'alex', name: 'Alex' }]);
+  const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
+
+  it('rows say who added an item by first name and how long ago; never "You"; an unknown adder is "Member"', () => {
+    assert.equal(kitchenAttribution({ addedByUid: 'sam', createdAt: new Date(now - 2 * 86_400_000) }, names, now), 'Sam added · 2d');
+    assert.equal(kitchenAttribution({ addedByUid: 'former', createdAt: minutesAgo(5) }, names, now), 'Member added · 5m');
+    assert.equal(kitchenAttribution({ addedByUid: undefined, createdAt: minutesAgo(5) }, names, now), null);
+  });
+
+  it('a tablet tick is bound to its purchase: a later phone purchase of the same item is not a tablet tick', () => {
+    const [own, later] = kitchenItems([
+      { id: 'a', name: 'Milk', status: 'purchased', purchaseOpId: 'op-1', purchaseDeviceAttribution: { deviceId: 'd', purchaseOpId: 'op-1' } },
+      { id: 'b', name: 'Eggs', status: 'purchased', purchaseOpId: 'phone-2', purchaseDeviceAttribution: { deviceId: 'd', purchaseOpId: 'op-0' } },
+    ]);
+    assert.equal(own.tickedOnTablet, true);
+    assert.equal(later.tickedOnTablet, false);
+  });
+
+  it('"Alex is shopping · 1 left" from a member\'s ticks elsewhere in the last 10 minutes; ticks on a wall tablet never count', () => {
+    const items = kitchenItems([
+      { id: '1', name: 'Milk', status: 'purchased', purchasedByUid: 'alex', purchasedAt: minutesAgo(2), purchaseOpId: 'p1' },
+      { id: '2', name: 'Eggs', status: 'purchased', purchasedByUid: 'alex', purchasedAt: minutesAgo(1), purchaseOpId: 'p2' },
+      { id: '3', name: 'Tea', status: 'needed' },
+      { id: '4', name: 'Rice', status: 'purchased', purchasedByUid: 'sam', purchasedAt: minutesAgo(1), purchaseOpId: 't1', purchaseDeviceAttribution: { purchaseOpId: 't1' } },
+      { id: '5', name: 'Oats', status: 'purchased', purchasedByUid: 'sam', purchasedAt: minutesAgo(1), purchaseOpId: 't2', purchaseDeviceAttribution: { purchaseOpId: 't2' } },
+    ]);
+    assert.equal(kitchenActivity(items, names, now)?.label, 'Alex is shopping · 1 left');
+    const kitchenOnly = items.filter((item) => item.id !== '1' && item.id !== '2');
+    assert.equal(kitchenActivity(kitchenOnly, names, now), null);
+    const old = kitchenItems([
+      { id: '1', status: 'purchased', purchasedByUid: 'alex', purchasedAt: minutesAgo(30), purchaseOpId: 'p1' },
+      { id: '2', status: 'purchased', purchasedByUid: 'alex', purchasedAt: minutesAgo(25), purchaseOpId: 'p2' },
+    ]);
+    assert.equal(kitchenActivity(old, names, now), null);
+  });
+});
+
+describe('the tablet shell and dashboard', () => {
+  const read = (path: string) => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+
+  it('the Shopping section grants the tile its Tick (shopping.edit) and takes it away when switched off', () => {
+    const sections = { chores: true, shopping: true, pets: true, calendar: true, maintenance: true };
+    assert.equal(devicePermissions(sections)['shopping.edit'], true);
+    assert.equal(devicePermissions({ ...sections, shopping: false })['shopping.edit'], false);
+    assert.equal(devicePermissions(sections)['shopping.delete'], false);
+  });
+
+  it('the dashboard tile ticks through the device action on a tablet, and hides its palette "+" there', () => {
+    const tick = read('src/components/dashboard/shopping-tick.tsx');
+    assert.match(tick, /tablet\.runAction\(\{ capability: 'shopping\.tick'/);
+    assert.ok(tick.indexOf('if (tablet)') < tick.indexOf('if (!householdId || !uid'), 'the tablet branch comes before the signed-in check');
+    assert.match(read('src/components/dashboard/bento-grid.tsx'), /permissions\['shopping\.edit'\] && scopeKind !== 'device'/);
+  });
+
+  it('the kitchen view writes only through device actions and reads only through the tablet listener', () => {
+    const view = read('src/components/devices/tablet-shopping.tsx');
+    assert.doesNotMatch(view, /\b(setDoc|updateDoc|addDoc|deleteDoc|runTransaction|writeBatch)\b/);
+    assert.doesNotMatch(view, /@\/lib\/shopping\/(add-items|tick|tick-firestore|item-transactions|item-writes|live)'/);
+    assert.match(view, /runAction\(\{ capability: 'shopping\.tick'/);
+    assert.match(view, /runAction\(\{ capability: 'shopping\.add'/);
+    assert.match(view, /tabletListener<Snapshot>\(/);
+    assert.doesNotMatch(read('src/components/devices/tablet-views.tsx'), /read-only on wall tablets/);
   });
 });

@@ -4,18 +4,15 @@
 // shell"). Home is the household resting view: the dashboard drawn for the household
 // (the house, the household brief with household totals and no greeting by name, the
 // tiles of the sections that are on; HP-3b, HP-21, HP-32b, WT-5a). The section views are
-// read-only (Shopping and Calendar stay read-only on tablets, JC-24) except Chores, whose rows
-// have Done and Take (device actions, F4a), Pets, whose rows have Feed (and hold) and Care
-// (F4b-1), and Maintenance (M8b: tablet-maintenance.tsx, the personal page's Needs doing with
-// Done, Snooze and Log service), built from the same live household data, so they show only
-// what the tablet's rules let it read.
+// read-only (Calendar stays read-only on tablets) except Chores, whose rows have Done and Take
+// (device actions, F4a), Pets, whose rows have Feed (and hold) and Care (F4b-1), Maintenance
+// (M8b: tablet-maintenance.tsx, the personal page's Needs doing with Done, Snooze and Log
+// service) and Shopping (tablet-shopping.tsx, kitchen mode: tick and quick add, SH-11), built
+// from the same live household data, so they show only what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { neededListItems, type TabletShoppingItem } from '@/lib/devices/tablet-shopping';
-import { tabletListener } from '@/lib/devices/tablet-listener';
-import type { QuerySnapshot } from 'firebase/firestore';
-import { Bell, CalendarDays, Check, CheckSquare, Clock, Hand, HeartPulse, PawPrint, ShoppingCart, UtensilsCrossed } from 'lucide-react';
+import { Bell, CalendarDays, Check, CheckSquare, Clock, Hand, HeartPulse, PawPrint, UtensilsCrossed } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -35,10 +32,10 @@ import {
   calendarSection,
   choresSection,
   petsSection,
-  shoppingListsSection,
 } from '@/lib/devices/tablet-sections';
 import { useTablet } from './tablet-context';
 import { TabletMaintenanceView } from './tablet-maintenance';
+import { TabletShoppingView } from './tablet-shopping';
 import { TabletMedicationChips, TabletPetSheet, usePetDocument } from './tablet-pet-sheet';
 import { useTabletSubmit } from './use-tablet-submit';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -350,74 +347,6 @@ function PetsView() {
   );
 }
 
-/** One list's needed items, live (the section view shows them all; JC-24 read-only). */
-function useListItems(householdId: string, listId: string | undefined) {
-  const [state, setState] = useState<{ listId: string; items: TabletShoppingItem[] | null; failed: boolean } | null>(null);
-  useEffect(() => {
-    if (!listId) return;
-    let stop: (() => void) | null = null;
-    let stopped = false;
-    void Promise.all([import('@/lib/firebase'), import('firebase/firestore')]).then(([{ db }, { collection, onSnapshot }]) => {
-      if (stopped) return;
-      const ref = collection(db, 'households', householdId, 'shopping-lists', listId, 'items');
-      stop = tabletListener<QuerySnapshot>(
-        (next, error) => onSnapshot(ref, { includeMetadataChanges: true }, next, error),
-        {
-          confirmed: (snapshot) => !snapshot.metadata.fromCache,
-          next: (snapshot) => setState({ listId, items: neededListItems(snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))), failed: false }),
-          onDenied: () => setState((previous) => ({ listId, items: previous?.listId === listId ? previous.items : null, failed: true })),
-        },
-      ).stop;
-    });
-    return () => {
-      stopped = true;
-      stop?.();
-    };
-  }, [householdId, listId]);
-  return state && state.listId === listId ? state : null;
-}
-
-function ShoppingView({ listId }: { listId?: string }) {
-  const { data, householdId, navigate } = useTablet();
-  const allLists = shoppingListsSection(data.sectionFacts ?? {});
-  const status = loadingOr(Boolean(allLists), data.failed.has('shopping'));
-  const lists = allLists ?? [];
-  const selected = listId ? lists.find((list) => list.id === listId) : undefined;
-  const live = useListItems(householdId, listId);
-  return (
-    <Section title={selected ? selected.name : 'Shopping'} icon={ShoppingCart} testId="tablet-view-shopping" empty={status ?? (lists.length === 0 ? 'No shopping lists yet.' : null)}>
-      {listId ? (
-        live?.items ? (
-          live.items.length === 0 ? <p className="text-lg text-muted-foreground">Nothing needed on this list.</p> : (
-            <ul className="space-y-2" data-testid="tablet-shopping-items">
-              {live.items.map((item) => <Row key={item.id} title={item.name} detail={item.quantity > 1 ? String(item.quantity) : null} />)}
-            </ul>
-          )
-        ) : (
-          <p className="text-lg text-muted-foreground">{live?.failed ? "This list couldn't be loaded right now. It tries again on its own." : 'Loading…'}</p>
-        )
-      ) : (
-        <ul className="space-y-2">
-          {lists.map((list) => (
-            <li key={list.id}>
-              <button
-                type="button"
-                onClick={() => navigate(`/shopping?list=${encodeURIComponent(list.id)}`)}
-                className="flex min-h-14 w-full items-center justify-between gap-4 rounded-xl border border-border bg-card px-4 py-3 text-left"
-                data-testid={`tablet-shopping-list-${list.id}`}
-              >
-                <span className="min-w-0 text-lg font-medium">{list.name}</span>
-                <span className="shrink-0 text-sm text-muted-foreground">{list.needed} needed</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="text-sm text-muted-foreground">Shopping is read-only on wall tablets. Add or tick items from a phone.</p>
-    </Section>
-  );
-}
-
 /** Calendar has no data of its own: upcoming chores and maintenance from the sections that are on. */
 function CalendarView() {
   const { data, settings } = useTablet();
@@ -464,7 +393,7 @@ export function TabletView() {
     case 'pets':
       return <PetsView />;
     case 'shopping':
-      return <ShoppingView listId={view.listId} />;
+      return <TabletShoppingView listId={view.listId} />;
     case 'maintenance':
       return <TabletMaintenanceView />;
     case 'calendar':
