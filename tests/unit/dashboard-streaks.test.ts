@@ -70,6 +70,14 @@ describe('assemble: streaks and home health', () => {
   const access: DashboardAccess = { chores: true, shopping: false, pantry: false, maintenance: true, pets: false, notifications: false };
   const context = { viewer: { uid: 'a', email: 'alex@example.test' }, now, timeZone: 'America/Chicago', recentFeedings: 12 };
 
+  it('counts "this week" in the household\'s week (CA-16; review round 3)', () => {
+    // Sunday Aug 2's completion: in a Sunday-first week on Wednesday Aug 5, not in a Monday-first one.
+    const raw: DashboardRaw = { completedChores: [done('sun', 'alex@example.test', 2)] as never, openChores: [], missedRecent: [], members: memberRecords as never, leaderboard: 'on' };
+    assert.equal(assembleDashboardFacts(raw, new Set(), access, context).facts.streaks?.weekCompleted, 0);
+    assert.equal(assembleDashboardFacts(raw, new Set(), access, { ...context, weekStartsOn: 0 }).facts.streaks?.weekCompleted, 1);
+    assert.equal(assembleDashboardFacts(raw, new Set(), access, { ...context, weekStartsOn: 1 }).facts.streaks?.weekCompleted, 0);
+  });
+
   it('builds streaks once completions and members have answered, and hides them on failure', () => {
     const raw: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, openChores: [], missedRecent: [], members: memberRecords as never, leaderboard: 'on' };
     assert.equal(assembleDashboardFacts(raw, new Set(), access, context).facts.streaks?.longest, 1);

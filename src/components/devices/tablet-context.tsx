@@ -19,6 +19,8 @@ export type TabletHousehold = {
   timeZone: string;
   quietHours: QuietHours | null;
   pointsPin: PointsPinPolicy;
+  /** The household's first weekday (CA-16), for the resting dashboard's "this week". */
+  weekStartsOn?: 0 | 1;
 };
 
 export type { DeviceNotice } from '@/lib/devices/device-session';

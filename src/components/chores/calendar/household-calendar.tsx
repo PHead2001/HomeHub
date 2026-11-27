@@ -466,7 +466,7 @@ export function HouseholdCalendar() {
     // completion, and keeps what it deleted so Undo can put it back.
     const result = await skipChoreDaysAction({ idToken: await user.getIdToken(), householdId, items: plan.items });
     if (!result.ok) {
-      fail(result.code === 'forbidden' ? "You don't have permission to skip chores." : "Couldn't skip. Try again.");
+      fail(result.code === 'forbidden' ? "You don't have permission to skip chores." : result.code === 'too-many' ? 'Too many days at once: skip fewer days.' : "Couldn't skip. Try again.");
       return false;
     }
     playFeedback('add');

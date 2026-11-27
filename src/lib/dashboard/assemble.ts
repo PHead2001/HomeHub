@@ -88,6 +88,8 @@ export function assembleDashboardFacts(
     viewer: DashboardViewer;
     now: Date;
     timeZone?: string | null;
+    /** The household's first weekday (CA-16; absent: Monday): the streak tile's week, as on Chores. */
+    weekStartsOn?: 0 | 1;
     recentFeedings: number;
     /** The member's view permissions, for the bell's category check (none: every category). */
     canView?: (permission: ViewPermission) => boolean;
@@ -149,11 +151,11 @@ export function assembleDashboardFacts(
   if (access.chores && (raw.leaderboard === 'off' || failed.has(LEADERBOARD_FAILURE))) facts.streaksHidden = true;
   // Fair streaks (CH-19) need the open chores too (a missed day ends a streak), and
   // read days in the household's zone (D-6), like the Chores page; missed days that upkeep
-  // expired (CH-7) still count as days left undone.
+  // expired (CH-7) still count as days left undone. The week is the household's (CA-16).
   if (access.chores && mayShowRanking(leaderboard) && !failed.has('chores') && !failed.has(STREAKS_FAILURE) && raw.completedChores && raw.openChores && raw.members && raw.missedRecent) {
     const merged = new Map<string, RawDoc>();
     [...raw.openChores, ...raw.completedChores].forEach((chore) => merged.set(chore.id, chore));
-    facts.streaks = streakTileModel(computeChoreStats([...merged.values()] as unknown as ChoreRecord[], streakMembersFrom(raw.members), context.now, { today, timeZone: zone, missed: raw.missedRecent }));
+    facts.streaks = streakTileModel(computeChoreStats([...merged.values()] as unknown as ChoreRecord[], streakMembersFrom(raw.members), context.now, { today, timeZone: zone, missed: raw.missedRecent, weekStartsOn: context.weekStartsOn ?? 1 }));
   }
 
   // HP-11b: the golden roof counts the same completions listener, so it turns gold live.

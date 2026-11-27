@@ -268,6 +268,15 @@ describe('review fixes (Codex, PR #234)', () => {
   });
 });
 
+describe('review round 3 (Codex, PR #234)', () => {
+  it('the away dialog caps a skip and reports a failed one instead of hanging', () => {
+    const dialog = readFileSync(resolve(process.cwd(), 'src/components/chores/calendar/away-dialog.tsx'), 'utf8');
+    assert.match(dialog, /if \(n > maxItems\) return setError/);
+    assert.match(dialog, /\} catch \{\r?\n\s+setError\(/);
+    assert.match(dialog, /\} finally \{\r?\n\s+setBusy\(false\);/);
+  });
+});
+
 describe('view switch names (CI: chores-ux day agenda)', () => {
   it('no other toggle on the page has a name containing Day, Week or Month', () => {
     const page = readFileSync(resolve(process.cwd(), 'src/components/chores/calendar/household-calendar.tsx'), 'utf8');

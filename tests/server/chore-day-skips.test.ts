@@ -56,9 +56,13 @@ describe('skipping days on the server', () => {
     assert.equal((await chores().doc(id('2026-11-07')).get()).get('isCompleted'), true, 'a completion is never deleted');
     assert.equal((await chores().doc(id('2026-11-08')).get()).exists, true);
     assert.deepEqual((await template().get()).get('skippedOccurrences'), [key('2026-11-06'), key('2026-11-07'), key('2026-11-08'), key('2026-11-10')]);
-    const op = (await house().collection('calendar-ops').doc(outcome.opId).get()).data()!;
+    const opRef = house().collection('calendar-ops').doc(outcome.opId);
+    const op = (await opRef.get()).data()!;
     assert.equal(op.kind, 'skip');
-    assert.deepEqual(op.removed.map((entry: { id: string }) => entry.id), [id('2026-11-06')]);
+    assert.equal('removed' in op, false, 'backups are not in the record itself');
+    // One bounded document per deleted chore (review round 3: never near the 1 MiB limit).
+    const backups = (await opRef.collection('removed').get()).docs.map(d => d.get('id'));
+    assert.deepEqual(backups, [id('2026-11-06')]);
   });
 
   test('a day sent as planned that upkeep generated meanwhile is found and skipped (review round 2)', async () => {
@@ -79,6 +83,28 @@ describe('skipping days on the server', () => {
     // Undo puts both back.
     assert.deepEqual(await undoSkipChoreDays(adminDb, HOUSE, { opId: outcome.opId }, 'sk-owner', NOW), { restored: 2, regenerate: 0 });
     assert.equal((await chores().doc('legacy-trash-day').get()).exists, true);
+  });
+
+  test('Undo removes only the keys this skip added; a day someone skipped before stays skipped (review round 3)', async () => {
+    await template().update({ skippedOccurrences: [key('2026-11-06')] });
+    const { opId } = await skipChoreDays(adminDb, HOUSE, { items: [
+      { templateId: 'trash', key: key('2026-11-06') },
+      { templateId: 'trash', key: key('2026-11-07') },
+    ] }, 'sk-owner', NOW);
+    const op = (await house().collection('calendar-ops').doc(opId).get()).data()!;
+    assert.deepEqual(op.keys, [{ templateId: 'trash', keys: [key('2026-11-07')] }]);
+    await undoSkipChoreDays(adminDb, HOUSE, { opId }, 'sk-owner', NOW);
+    assert.deepEqual((await template().get()).get('skippedOccurrences'), [key('2026-11-06')]);
+    assert.equal((await house().collection('calendar-ops').doc(opId).collection('removed').get()).size, 0, 'backups go with the Undo');
+  });
+
+  test('a skip of more days than one transaction can hold is refused as too many', async () => {
+    const items = Array.from({ length: 121 }, (_, i) => {
+      const day = new Date(Date.UTC(2026, 10, 6 + i)).toISOString().slice(0, 10);
+      return { templateId: 'trash', key: key(day) };
+    });
+    assert.equal(await code(skipChoreDays(adminDb, HOUSE, { items }, 'sk-owner', NOW)), 'too-many');
+    assert.equal(await code(skipChoreDays(adminDb, HOUSE, { items: items.slice(0, 120) }, 'sk-owner', NOW)), 'ok');
   });
 
   test('refuses keys of another template, one-time chores and malformed input', async () => {

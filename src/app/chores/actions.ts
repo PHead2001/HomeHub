@@ -89,7 +89,7 @@ export async function reopenChore(input: ChoreActionContext & { choreId: string 
 /* Planned days of repeating chores (audit CA-15, CA-27)                       */
 /* -------------------------------------------------------------------------- */
 
-export type PlannedMoveResult<T> = { ok: true; data: T } | { ok: false; code: 'unauthenticated' | 'forbidden' | 'invalid' | 'not-found' | 'conflict' | 'failed' };
+export type PlannedMoveResult<T> = { ok: true; data: T } | { ok: false; code: 'unauthenticated' | 'forbidden' | 'invalid' | 'not-found' | 'conflict' | 'too-many' | 'failed' };
 
 const runCalendarAction = async <T>(
   context: ChoreActionContext,

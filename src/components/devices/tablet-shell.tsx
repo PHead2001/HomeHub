@@ -47,6 +47,7 @@ import { setPetListenerRecovery } from '@/lib/pets/live-listener';
 import type { DocumentSnapshot, QuerySnapshot } from 'firebase/firestore';
 import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tablet';
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
+import { readWeekStartsOn } from '@/lib/chores/week-start';
 import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, noTabletPinMessage, type DeviceRefusal } from '@/lib/devices/action-policy';
 import { rosterFrom, isOwnerOrAdmin, personMayUse, type RosterPerson } from '@/lib/devices/roster';
 import {
@@ -274,6 +275,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
               name: typeof data.name === 'string' && data.name.trim() ? data.name : 'Home',
               timeZone: typeof data.timeZone === 'string' ? data.timeZone : 'America/Chicago',
               quietHours: readQuietHours(data.quietHours),
+              weekStartsOn: readWeekStartsOn(data.weekStartsOn),
               pointsPin: readPointsPinPolicy(data as { devicePolicy?: { pointsPin?: unknown } }),
             });
           },
@@ -383,6 +385,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
     householdId,
     householdName: household.name,
     timeZone: household.timeZone,
+    weekStartsOn: household.weekStartsOn,
     uid: '',
     email: '',
     greetingName: null,

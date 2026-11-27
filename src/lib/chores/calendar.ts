@@ -710,6 +710,14 @@ export function skipPlan(events: readonly CalendarEvent[], today: string): { key
   return { keys, items };
 }
 
+/**
+ * Most repeating-chore days one skip may name (CA-27; review round 3). One skip is one
+ * Firestore transaction: per day it may delete a chore and store its backup (two writes),
+ * plus the templates and the operation record, all inside the 500-write limit. "We're
+ * away" says so and refuses a larger range; the server refuses it too (`too-many`).
+ */
+export const MAX_SKIP_ITEMS = 120;
+
 /** The repeating chores to skip while the household is away (CA-27): every open or planned day from `from` to `to`. */
 export function awayEvents(events: readonly CalendarEvent[], from: string, to: string): CalendarEvent[] {
   return events.filter(event => event.kind === 'chore' && !event.completed && Boolean(event.templateId && event.occurrenceKey) && event.day >= from && event.day <= to);

@@ -9,6 +9,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { addDaysToKey, dayFromKey, isDayKey } from '@/lib/chores/dates';
+import { MAX_SKIP_ITEMS } from '@/lib/chores/calendar';
+
+const maxItems = MAX_SKIP_ITEMS;
 
 // "We're away" (audit CA-27): pick the days and every repeating chore on them (planned
 // or already on the chart, still open) is skipped, with Undo. Built on the skip mechanism
@@ -34,10 +37,17 @@ export function AwayDialog({ today, count, onSkip }: {
     if (from < today) return setError('Pick today or a later day.');
     if (to < from) return setError('The last day is before the first.');
     if (n === 0) return setError('No repeating chores fall on those days.');
+    if (n > maxItems) return setError(`Too many at once: pick fewer days (up to ${maxItems} repeating chores per skip).`);
     setBusy(true);
-    const done = await onSkip(from, to);
-    setBusy(false);
-    if (done) setOpen(false);
+    try {
+      const done = await onSkip(from, to);
+      if (done) setOpen(false);
+      else setError("Couldn't skip those days. Try again.");
+    } catch {
+      setError("Couldn't skip those days. Check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -51,7 +61,7 @@ export function AwayDialog({ today, count, onSkip }: {
         <form onSubmit={submit} noValidate className="space-y-4">
           <DialogHeader>
             <DialogTitle>We&apos;re away</DialogTitle>
-            <DialogDescription>Skip every repeating chore on these days. One-time chores stay. You can undo it right after.</DialogDescription>
+            <DialogDescription>Skip every repeating chore on these days (up to {maxItems} at a time). One-time chores stay. You can undo it right after.</DialogDescription>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">

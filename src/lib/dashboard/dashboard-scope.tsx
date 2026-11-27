@@ -13,12 +13,15 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import { useAuth } from '@/hooks/use-auth';
 import type { HouseholdPermission } from '@/lib/types';
+import { readWeekStartsOn } from '@/lib/chores/week-start';
 
 export type DashboardScope = {
   kind: 'personal' | 'device';
   householdId: string | null;
   householdName: string | null;
   timeZone: string | null;
+  /** The household's first weekday (CA-16; absent: Monday), for "this week" in the streaks. */
+  weekStartsOn?: 0 | 1;
   /** The reader ('' on a tablet: nothing is "yours"). */
   uid: string;
   email: string;
@@ -47,6 +50,7 @@ export function useDashboardScope(): DashboardScope {
     householdId: currentUser?.householdId ?? null,
     householdName: household?.name ?? null,
     timeZone: household?.timeZone ?? null,
+    weekStartsOn: readWeekStartsOn(household?.weekStartsOn),
     uid: currentUser?.uid ?? '',
     email: currentUser?.email ?? '',
     greetingName: currentUser?.firstName || currentUser?.displayName || null,
