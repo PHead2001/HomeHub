@@ -82,6 +82,16 @@ describe('pending-member reminder timing', () => {
     assert.equal(pendingReminderDue(hoursAgo(0), now), false);
   });
 
+  test('never reminded: measured from when they asked to join, not "long ago" (HO-7)', () => {
+    assert.equal(pendingReminderDue(undefined, now, hoursAgo(1)), false);
+    assert.equal(pendingReminderDue(null, now, hoursAgo(23.9)), false);
+    assert.equal(pendingReminderDue(undefined, now, hoursAgo(24)), true);
+    // A reminder stamp wins over the join time.
+    assert.equal(pendingReminderDue(hoursAgo(2), now, hoursAgo(72)), false);
+    // Neither readable: due, so nobody waits forever.
+    assert.equal(pendingReminderDue(undefined, now, 'not a date'), true);
+  });
+
   test('the state key is per UTC day', () => {
     assert.equal(pendingReminderStateKey(now), 'pending|2026-08-01');
     assert.equal(pendingReminderStateKey(new Date('2026-08-01T23:59:59.000Z')), 'pending|2026-08-01');

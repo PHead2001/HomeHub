@@ -185,14 +185,15 @@ export function HouseholdManagementClient() {
   }))), [members]);
 
   // Daily "still pending" reminder: when someone who can approve opens this page
-  // and a pending person has not been reminded about for 24 hours, the server
+  // and a pending person asked 24 hours ago or more and has not been reminded about
+  // for 24 hours, the server
   // stamps the reminder and writes the notification (see remindPendingMembers).
   const remindingRef = useRef(false);
   useEffect(() => {
     const firebaseUser = auth.currentUser;
     if (!household?.id || !canRemind || !firebaseUser || remindingRef.current) return;
     const now = new Date();
-    if (!pendingMembers.some((member) => pendingReminderDue(member.lastNewUserReminderAt, now))) return;
+    if (!pendingMembers.some((member) => pendingReminderDue(member.lastNewUserReminderAt, now, member.joinedAt))) return;
     remindingRef.current = true;
     const householdId = household.id;
     void (async () => {

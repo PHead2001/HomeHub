@@ -15,6 +15,7 @@ import {
   canRemindPendingMembers,
   canRenameHousehold,
   canTransferOwnership,
+  holdsPermission,
   isOwnerOnlyPermission,
   normalizeOverrides,
   permissionChanges,
@@ -33,7 +34,12 @@ import {
   pendingReminderStateKey,
   readHouseholdName,
 } from '@/lib/household-records';
-import { getDeterministicNotificationId } from '@/lib/notifications';
+import {
+  isOpenPendingNotice,
+  memberNoticeId,
+  memberRoleNotice,
+  pendingReminderNoticeId,
+} from '@/lib/household-notices';
 import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
 import { DEVICE_CODE_AS_INVITE_MESSAGE } from '@/lib/devices/device-codes';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
@@ -780,42 +786,72 @@ export const createHousehold = async (
 };
 
 /**
+ * The people who may approve a pending person: active accounts (not kid profiles)
+ * holding `household.manageMembers` (role default or override).
+ */
+const approverUids = (members: FirebaseFirestore.QuerySnapshot): string[] => members.docs
+  .map(d => toStoredMember(d))
+  .filter((m): m is StoredMember => Boolean(m) && m!.kind !== 'identity' && holdsPermission(m, 'household.manageMembers'))
+  .map(m => m.uid);
+
+/**
+ * Resolves the open "New member needs approval" and "still needs a household role"
+ * notices about one pending person once their request is settled (approved, denied or
+ * cancelled), so nobody is asked to act on something already done (HO-7, NO-10).
+ * `aboutPerson` is read in the same transaction, before any write.
+ */
+const readPendingNotices = (transaction: Tx, householdRef: DocRef, uid: string) =>
+  transaction.get(householdRef.collection('notifications').where('sourceId', '==', uid));
+
+const resolvePendingNotices = (transaction: Tx, aboutPerson: FirebaseFirestore.QuerySnapshot, now: Date) => {
+  aboutPerson.docs
+    .filter(d => isOpenPendingNotice(d.data()))
+    .forEach(d => transaction.update(d.ref, { resolvedAt: Timestamp.fromDate(now) }));
+};
+
+/**
  * The daily "still needs a household role" reminder (`household.manageMembers`).
- * Household Manager calls it when someone who can approve opens the page. For
- * each pending person not reminded in the last 24 hours, one transaction stamps
- * `lastNewUserReminderAt` and writes a household-wide system notification whose
- * ID is fixed per person and day, so overlapping visits never duplicate it.
+ * Household Manager calls it when someone who can approve opens the page. A pending
+ * person is due 24 hours after they asked to join, then every 24 hours (HO-7). For each
+ * one due, one transaction stamps `lastNewUserReminderAt` and writes one notification
+ * per person who may approve them (`household.manageMembers`), addressed to that person
+ * alone, with an ID fixed per pending person, recipient and day, so overlapping visits
+ * never duplicate it. Kids, guests and members without the permission get nothing.
  */
 export const remindPendingMembers = async (caller: VerifiedCaller, householdId: string, now = new Date()): Promise<{ count: number }> => {
   return adminDb.runTransaction(async transaction => {
     const context = await loadActor(transaction, caller, householdId);
     enforce(canRemindPendingMembers(context.actor));
-    const pending = await transaction.get(context.householdRef.collection('members').where('role', '==', 'newuser'));
-    const due = pending.docs.filter(d => pendingReminderDue(d.get('lastNewUserReminderAt'), now));
+    const members = await transaction.get(context.householdRef.collection('members'));
+    const pending = members.docs.filter(d => d.get('role') === 'newuser');
+    const due = pending.filter(d => pendingReminderDue(d.get('lastNewUserReminderAt'), now, d.get('joinedAt')));
+    const recipients = approverUids(members);
     const iso = now.toISOString();
     const stateKey = pendingReminderStateKey(now);
     for (const person of due) {
       const data = person.data();
-      // Household-wide, so the public name only, never the email.
+      // The public name only, never the email.
       const name = publicMemberName(data.displayName) || 'A member';
       transaction.update(person.ref, { lastNewUserReminderAt: iso });
-      const notificationId = getDeterministicNotificationId({ sourceType: PENDING_REMINDER_SOURCE_TYPE, sourceId: person.id, stateKey });
-      transaction.set(context.householdRef.collection('notifications').doc(notificationId), {
-        householdId: context.householdRef.id,
-        category: 'system',
-        title: 'Pending member approval',
-        message: `${name} still needs a household role.`,
-        createdAt: Timestamp.fromDate(now),
-        expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
-        deepLink: '/household?tab=members',
-        sourceType: PENDING_REMINDER_SOURCE_TYPE,
-        sourceId: person.id,
-        stateKey,
-        // Household-wide, as before: every member with `notifications.view` sees it.
-        audience: notificationAudience({}),
-        readBy: {},
-        dismissedBy: {},
-      });
+      for (const recipient of recipients) {
+        transaction.set(context.householdRef.collection('notifications').doc(pendingReminderNoticeId(person.id, recipient, stateKey)), {
+          householdId: context.householdRef.id,
+          category: 'system',
+          title: 'Pending member approval',
+          message: `${name} still needs a household role.`,
+          createdAt: Timestamp.fromDate(now),
+          expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
+          deepLink: '/household?tab=members',
+          sourceType: PENDING_REMINDER_SOURCE_TYPE,
+          sourceId: person.id,
+          stateKey,
+          // Only the people who may approve (HO-7).
+          targetUserUid: recipient,
+          audience: notificationAudience({ targetUserUid: recipient }),
+          readBy: {},
+          dismissedBy: {},
+        });
+      }
     }
     return { count: due.length };
   });
@@ -940,6 +976,7 @@ export const changeMemberRole = async (
     enforce(canAssignRole(context.actor, target, nextRole));
     const approving = target.role === 'newuser';
     if (target.role === nextRole && target.status === 'active') return { role: nextRole, approved: false };
+    const aboutTarget = approving ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
     const iso = now.toISOString();
     transaction.update(ref, {
       role: nextRole,
@@ -953,6 +990,31 @@ export const changeMemberRole = async (
       action: approving ? 'member.approved' : 'member.role_changed',
       target,
       details: { role: nextRole, previousRole: target.role },
+    });
+    if (aboutTarget) resolvePendingNotices(transaction, aboutTarget, now);
+    // The person themself is told, wherever they are signed in (HO-1, HO-28): addressed
+    // to them alone, so it reaches their phone as a push too.
+    const notice = memberRoleNotice({
+      approved: approving,
+      role: nextRole,
+      previousRole: target.role,
+      householdName: typeof context.household.name === 'string' ? context.household.name : '',
+    });
+    transaction.set(context.householdRef.collection('notifications').doc(memberNoticeId(notice.sourceType, target.uid, now)), {
+      householdId: context.householdRef.id,
+      category: 'system',
+      title: notice.title,
+      message: notice.message,
+      createdAt: Timestamp.fromDate(now),
+      expiresAt: Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS),
+      deepLink: notice.deepLink,
+      sourceType: notice.sourceType,
+      sourceId: target.uid,
+      stateKey: String(now.getTime()),
+      targetUserUid: target.uid,
+      audience: notificationAudience({ targetUserUid: target.uid }),
+      readBy: {},
+      dismissedBy: {},
     });
     return { role: nextRole, approved: approving };
   });
@@ -1057,9 +1119,10 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     const chores = assignedDocs(choresByEmail, choresByUid, target.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
     const tabletState = await readMemberTabletState(transaction, context.householdRef, target.uid);
+    const denied = target.role === 'newuser';
+    const aboutTarget = denied ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
 
     const iso = now.toISOString();
-    const denied = target.role === 'newuser';
     transaction.delete(ref);
     transaction.delete(memberContactRef(context.householdRef, target.uid));
     memberPinRefs(context.householdRef, target.uid).forEach(pinRef => transaction.delete(pinRef));
@@ -1085,6 +1148,7 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
       target,
       ...(denied ? { details: { pending: true } } : {}),
     });
+    if (aboutTarget) resolvePendingNotices(transaction, aboutTarget, now);
     return { denied };
   });
   if (removedIdentity) await deleteIdentityAvatarFiles(householdId, removedIdentity);

@@ -678,3 +678,58 @@ describe('concurrent changes', () => {
     assert.equal((await memberRef(member).get()).exists, true);
   });
 });
+
+describe('membership notices (HO-1, HO-7, HO-28)', () => {
+  const notifications = async () => (await house().collection('notifications').get()).docs.map(d => ({ id: d.id, ...d.data() } as FirebaseFirestore.DocumentData));
+
+  test('approval tells the person, addressed to them alone, and resolves the approval requests about them', async () => {
+    // As redeemInvite and the reminder leave them: one request per approver, one reminder.
+    await house().collection('notifications').doc('household-newuser-x-owner').set({
+      sourceType: 'household-newuser', sourceId: pending.uid, targetUserUid: owner.uid, audience: [owner.uid], title: 'New member needs approval',
+    });
+    await house().collection('notifications').doc('household-newuser-reminder-x').set({
+      sourceType: 'household-newuser-reminder', sourceId: pending.uid, targetUserUid: admin.uid, audience: [admin.uid],
+    });
+    await house().collection('notifications').doc('unrelated').set({ sourceType: 'household-member-left', sourceId: pending.uid });
+
+    await changeMemberRole(admin, HOUSE, pending.uid, 'member', NOW);
+    const all = await notifications();
+    const notice = all.find(n => n.sourceType === 'household-member-approved');
+    assert.ok(notice, 'approval notice missing');
+    assert.equal(notice.targetUserUid, pending.uid);
+    assert.deepEqual(notice.audience, [pending.uid]);
+    assert.equal(notice.title, "You're in");
+    assert.equal(notice.message, 'You joined Manage House as Member.');
+    assert.equal(notice.category, 'system');
+    assert.equal(notice.sourceId, pending.uid);
+    assert.ok(!JSON.stringify(notice).includes(pending.email), 'no email in the notice');
+    const resolved = (id: string) => all.find(n => n.id === id)?.resolvedAt;
+    assert.ok(resolved('household-newuser-x-owner'));
+    assert.ok(resolved('household-newuser-reminder-x'));
+    assert.equal(resolved('unrelated'), undefined);
+  });
+
+  test('a role change tells the person from and to; assigning the same role tells nobody', async () => {
+    await changeMemberRole(owner, HOUSE, member.uid, 'admin', NOW);
+    const [notice] = (await notifications()).filter(n => n.sourceType === 'household-member-role-changed');
+    assert.equal(notice.targetUserUid, member.uid);
+    assert.equal(notice.title, 'Your role changed');
+    assert.equal(notice.message, 'Your role in Manage House changed from Member to Admin.');
+    await changeMemberRole(owner, HOUSE, member.uid, 'admin', new Date(NOW.getTime() + 1000));
+    assert.equal((await notifications()).length, 1);
+  });
+
+  test('a refused change sends nothing', async () => {
+    await refused(changeMemberRole(member, HOUSE, guest.uid, 'member', NOW), 'missing_permission');
+    assert.equal((await notifications()).length, 0);
+  });
+
+  test('denying a request resolves the approval requests about that person', async () => {
+    await house().collection('notifications').doc('household-newuser-y-admin').set({
+      sourceType: 'household-newuser', sourceId: pending.uid, targetUserUid: admin.uid, audience: [admin.uid],
+    });
+    await removeMember(owner, HOUSE, pending.uid, NOW);
+    const [request] = await notifications();
+    assert.ok(request.resolvedAt);
+  });
+});
