@@ -108,6 +108,20 @@ describe('releasing held pushes', () => {
 });
 
 describe('which reminders wait for the morning', () => {
+  test('a timed course dose pushes at its time while due, but its overdue state waits for the morning', () => {
+    const course = (time: string) => ({
+      id: 'c1', data: { name: 'Apoquel', schedule: { kind: 'days', everyDays: 1, times: [time] }, startDay: '2026-11-01', status: 'active' },
+    });
+    const due = buildMedicationReminders([{ id: 'maple', name: 'Maple', logs: [], courses: [course('08:00')] }], '2026-11-12',
+      { now: new Date('2026-11-12T15:00:00Z'), timeZone: 'America/Chicago' });
+    const overdue = buildMedicationReminders([{ id: 'maple', name: 'Maple', logs: [], courses: [course('08:00')] }], '2026-11-13',
+      { now: new Date('2026-11-13T06:30:00Z'), timeZone: 'America/Chicago' });
+    assert.ok(due.length > 0 && overdue.length > 0, 'the course is read');
+    for (const r of due) assert.equal(r.timed, r.state === 'due');
+    assert.ok(overdue.some((r) => r.state === 'overdue'));
+    for (const r of overdue) if (r.state === 'overdue') assert.equal(r.timed, false);
+  });
+
   test('a legacy medication due on a day waits; it is flagged untimed', () => {
     const reminders = buildMedicationReminders([{
       id: 'maple', name: 'Maple',

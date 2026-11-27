@@ -866,7 +866,7 @@ export const runHouseholdReminders = async (
     return resolved ? "reopened" : "updated";
   });
 
-  // Chore reminders (per person, in their own timezone). Reminder documents
+  // Chore reminders (per person, household zone, D-6). Reminder documents
   // are fixed per day once written, so they must see this run's generated
   // and purged chores: re-read when this run changed any.
   const choreDocs = result.generatedChores > 0 || result.purgedChores > 0 ||

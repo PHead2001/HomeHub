@@ -34,11 +34,14 @@ export function validateHouseAnnouncement(input: unknown): HouseAnnouncementVali
 }
 
 /** The newest house message still up, for the tablet's top bar (NO-25). */
-export function pinnedAnnouncement<T extends { sourceType?: string | null; createdAt: Date | null; expiresAt?: Date | null }>(
+export function pinnedAnnouncement<T extends { category: string; sourceType?: string | null; createdAt: Date | null; expiresAt?: Date | null }>(
   notices: T[],
   nowMs: number,
 ): T | null {
-  const live = notices.filter((notice) => notice.sourceType === HOUSE_ANNOUNCEMENT_SOURCE_TYPE
+  // `general` too: members may create household-wide notices in their own module
+  // categories with any sourceType, but only owners and admins can create `general`
+  // ones, so nobody else can pin a message on the wall.
+  const live = notices.filter((notice) => notice.category === 'general' && notice.sourceType === HOUSE_ANNOUNCEMENT_SOURCE_TYPE
     && (!notice.expiresAt || notice.expiresAt.getTime() > nowMs));
   live.sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
   return live[0] ?? null;
