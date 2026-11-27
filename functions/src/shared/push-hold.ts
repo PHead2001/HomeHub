@@ -67,6 +67,16 @@ export const nextLocalTime = (
   const today = localDay(now, timeZone);
   const at = zonedWallInstant(today, minutes, timeZone);
   if (at >= now.getTime()) return new Date(at);
+  // When clocks go back, a wall time happens twice and zonedWallInstant gives
+  // the first; the second (30 or 60 minutes later) may still be ahead today.
+  for (const shift of [30, 60]) {
+    const again = at + shift * 60000;
+    const when = new Date(again);
+    if (again >= now.getTime() && localDay(when, timeZone) === today &&
+        localMinutes(when, timeZone) === minutes) {
+      return new Date(again);
+    }
+  }
   return new Date(zonedWallInstant(addDays(today, 1), minutes, timeZone));
 };
 

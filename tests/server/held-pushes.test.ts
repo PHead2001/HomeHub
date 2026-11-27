@@ -3,6 +3,7 @@ import { after, beforeEach, describe, test } from 'node:test';
 import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { releaseHeldPushes } from '../../functions/src/held-pushes';
+import { deterministicNotificationId } from '../../functions/src/shared/ids';
 
 // NO-3 / 16.3: pushes held for the morning or quiet hours are released by hourly upkeep,
 // once, only to members who have not seen the notification, never for a closed one.
@@ -73,5 +74,16 @@ describe('held pushes (NO-3)', () => {
     await house().update({ deletingAt: Timestamp.now() });
     assert.equal(await release(), 0);
     assert.equal((await notes().doc('n4').get()).data()!.pushRelease, undefined);
+  });
+  test('a held "due" dose push is dropped once the overdue reminder for the same dose exists', async () => {
+    const held = { pushHeld: { a: at('2026-11-13T13:00:00Z') }, pushHeldNext: at('2026-11-13T13:00:00Z') };
+    const due = deterministicNotificationId('pet_medication', 'maple:course:c1', 'due|c1@2026-11-12T23:00');
+    const overdue = deterministicNotificationId('pet_medication', 'maple:course:c1', 'overdue|c1@2026-11-12T23:00');
+    await note(due, { category: 'pets', sourceType: 'pet_medication', sourceId: 'maple:course:c1', stateKey: 'due|c1@2026-11-12T23:00', ...held });
+    await note(overdue, { category: 'pets', sourceType: 'pet_medication', sourceId: 'maple:course:c1', stateKey: 'overdue|c1@2026-11-12T23:00', ...held });
+    assert.equal(await release(), 1, 'one push for the dose');
+    assert.equal((await notes().doc(due).get()).data()!.pushRelease, undefined, 'the superseded due notice is not pushed');
+    assert.deepEqual((await notes().doc(due).get()).data()!.pushHeld, {});
+    assert.deepEqual((await notes().doc(overdue).get()).data()!.pushRelease.uids, ['a']);
   });
 });

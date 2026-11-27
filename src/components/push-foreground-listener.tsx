@@ -30,7 +30,13 @@ export function PushForegroundListener() {
   });
 
   useEffect(() => {
-    if (email) void syncPushForSignedInUser({ email, fcmTokens: legacyTokens.current });
+    if (!email) return;
+    const sync = () => void syncPushForSignedInUser({ email, fcmTokens: legacyTokens.current });
+    sync();
+    // Coming back online retries work that needed the network, such as a "Turn off"
+    // made offline (the registration is removed then).
+    window.addEventListener('online', sync);
+    return () => window.removeEventListener('online', sync);
   }, [email]);
 
   // NO-9: a push opened this page (`?n=<id>`): mark that notification read for

@@ -144,6 +144,12 @@ export async function GET() {
       }
     }
 
+    // NO-27: dismissing a notification from the tray also refreshes the badge (the
+    // closed app cannot), and the worker stays alive until that is done.
+    self.addEventListener('notificationclose', (event) => {
+        event.waitUntil(updateBadge());
+    });
+
     // NO-9 / SL-16: a tap reuses an open HomeHub window (focused, then sent to the
     // link) and opens a new one only when none is open or it cannot be navigated
     // (an uncontrolled window rejects navigate()).

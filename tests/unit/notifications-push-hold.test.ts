@@ -4,6 +4,7 @@ import {
   MORNING_PUSH_MINUTES, inLocalWindow, nextLocalTime, pushHoldUntil, readLocalWindow, releaseHeld,
 } from '../../functions/src/shared/push-hold';
 import { releasedUids } from '../../functions/src/push-policy';
+import { supersedingStateKey } from '../../functions/src/held-pushes';
 import { buildMedicationReminders } from '../../functions/src/shared/medication-reminders';
 
 // NO-3 (no midnight pushes) and household quiet hours (16.3): when a push may be sent.
@@ -54,6 +55,18 @@ describe('push hold (NO-3, 16.3)', () => {
     assert.deepEqual(readLocalWindow({ start: '09:00', end: '17:30', extra: 1 }), { start: '09:00', end: '17:30' });
   });
 
+  test('the second occurrence of a repeated hour when clocks go back', () => {
+    // 2026-11-01: Chicago repeats 01:00-02:00. 07:15Z is the second 01:15 (UTC-6);
+    // quiet hours 22:00-01:30 end 15 minutes later, not the next day.
+    const now = new Date('2026-11-01T07:15:00Z');
+    assert.equal(nextLocalTime(now, CHI, 90).toISOString(), '2026-11-01T07:30:00.000Z');
+    assert.equal(pushHoldUntil({ ...base, now, householdQuiet: { start: '22:00', end: '01:30' } })?.toISOString(), '2026-11-01T07:30:00.000Z');
+    // The first 01:15 (06:15Z, UTC-5) waits for the first 01:30.
+    assert.equal(nextLocalTime(new Date('2026-11-01T06:15:00Z'), CHI, 90).toISOString(), '2026-11-01T06:30:00.000Z');
+    // After the second 01:30 has passed, the next one is tomorrow.
+    assert.equal(nextLocalTime(new Date('2026-11-01T07:45:00Z'), CHI, 90).toISOString(), '2026-11-02T07:30:00.000Z');
+  });
+
   test('the next 07:00 across the spring-forward night', () => {
     // US DST starts 2027-03-14 at 02:00 local: 07:00 that day is 12:00Z (UTC-5).
     const now = new Date('2027-03-14T07:30:00Z');
@@ -74,6 +87,13 @@ describe('releasing held pushes', () => {
     assert.deepEqual(releaseHeld({ a: at(12), b: at(12) }, at(13), { closed: false, seenBy: new Set(['a']) }).release, ['b']);
     const closed = releaseHeld({ a: at(12), b: at(20) }, at(13), { closed: true, seenBy: new Set() });
     assert.deepEqual(closed, { release: [], remaining: {}, next: null });
+  });
+
+  test('a held "due" dose push is superseded by the overdue reminder for the same dose', () => {
+    assert.equal(supersedingStateKey('pet_medication', 'due|c1@2026-11-12T23:00'), 'overdue|c1@2026-11-12T23:00');
+    assert.equal(supersedingStateKey('pet_medication', 'due|2026-11-12'), 'overdue|2026-11-12');
+    assert.equal(supersedingStateKey('pet_medication', 'overdue|2026-11-12'), null);
+    assert.equal(supersedingStateKey('maintenance_asset_schedule', 'due|2026-11-12'), null);
   });
 
   test('the update trigger sends only when pushRelease moves', () => {

@@ -5,7 +5,7 @@ import { GET } from '../../src/app/api/sw/route';
 import { pushOpenLink, safePushLink } from '../../functions/src/shared/push-link';
 import { openedNotificationId, withoutOpenedNotification } from '../../src/lib/push-open';
 import { isIOSDevice, pushCardState, pushSupport, pushTokenMissing } from '../../src/lib/push-status';
-import { pushSignInAction, readPushOff, writePushOff } from '../../src/lib/push-tokens';
+import { PUSH_OFF_KEY, pushSignInAction, readPushOff, readPushOffPending, writePushOff, writePushOffPending } from '../../src/lib/push-tokens';
 
 // Section 7 "make push trustworthy": NO-5 (real status, token re-check), NO-9 / SL-16
 // (reuse the open window, mark read on landing), NO-17 (iPhone guidance), NO-27 (badge).
@@ -44,7 +44,12 @@ async function loadWorker(clientsList: Client[] = [], trayCount = 0) {
     listeners.notificationclick({ notification: { data: { link }, close: () => undefined }, waitUntil: (p: Promise<unknown>) => { done = p; } });
     await done;
   };
-  return { shown, opened, badges, click, background: (payload: unknown) => background!(payload) };
+  const close = async () => {
+    let done: Promise<unknown> = Promise.resolve();
+    listeners.notificationclose({ notification: {}, waitUntil: (p: Promise<unknown>) => { done = p; } });
+    await done;
+  };
+  return { shown, opened, badges, click, close, background: (payload: unknown) => background!(payload) };
 }
 
 describe('NO-9: the opened notification is marked read', () => {
@@ -114,6 +119,15 @@ describe('NO-27: the app badge while closed', () => {
     assert.deepEqual(worker.badges, [3]);
   });
 
+  test('dismissing one from the tray refreshes the badge while the app is closed', async () => {
+    const worker = await loadWorker([], 1);
+    await worker.close();
+    assert.deepEqual(worker.badges, [1]);
+    const empty = await loadWorker([], 0);
+    await empty.close();
+    assert.deepEqual(empty.badges, ['clear']);
+  });
+
   test('opening the last one clears it', async () => {
     const worker = await loadWorker([], 0);
     await worker.click('/');
@@ -162,13 +176,42 @@ describe('NO-5: a real status, and the token checked on every load', () => {
   test('"Turn off on this device" stops the silent registration for that account only', () => {
     const store = new Map<string, string>();
     const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
-    writePushOff(storage, 'sam@example.test');
+    writePushOff(storage, 'sam@example.test', true);
     assert.equal(readPushOff(storage, 'sam@example.test'), true);
     assert.equal(readPushOff(storage, 'alex@example.test'), false);
     const input = { permission: 'granted' as const, email: 'sam@example.test', record: null, now: 0 };
     assert.equal(pushSignInAction({ ...input, optedOut: true }), 'none');
     assert.equal(pushSignInAction(input), 'register');
-    writePushOff(storage, null);
+    writePushOff(storage, 'sam@example.test', false);
     assert.equal(readPushOff(storage, 'sam@example.test'), false);
+  });
+
+  test('on a shared browser each account keeps its own opt-out', () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+    writePushOff(storage, 'a@example.test', true);
+    writePushOff(storage, 'b@example.test', true);
+    assert.equal(readPushOff(storage, 'a@example.test'), true, "B turning push off keeps A's choice");
+    writePushOff(storage, 'b@example.test', false);
+    assert.equal(readPushOff(storage, 'a@example.test'), true, "B turning push on again keeps A's choice");
+    assert.equal(readPushOff(storage, 'b@example.test'), false);
+    // An older build stored one email as plain text.
+    store.set(PUSH_OFF_KEY, 'old@example.test');
+    assert.equal(readPushOff(storage, 'old@example.test'), true);
+    writePushOff(storage, 'new@example.test', true);
+    assert.equal(readPushOff(storage, 'old@example.test'), true);
+  });
+
+  test('a "Turn off" that could not finish is retried, never left as registered', () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } };
+    writePushOff(storage, 'sam@example.test', true);
+    writePushOffPending(storage, 'sam@example.test', true);
+    const base = { email: 'sam@example.test', record: { v: 1 as const, token: 't', email: 'sam@example.test', at: 0 }, now: 0, optedOut: true };
+    assert.equal(pushSignInAction({ ...base, permission: 'granted', cleanupPending: readPushOffPending(storage, 'sam@example.test') }), 'cleanup');
+    assert.equal(pushSignInAction({ ...base, permission: 'default', cleanupPending: true }), 'cleanup', 'whatever the permission');
+    writePushOffPending(storage, 'sam@example.test', false);
+    assert.equal(pushSignInAction({ ...base, permission: 'granted', cleanupPending: readPushOffPending(storage, 'sam@example.test') }), 'none');
+    assert.equal(readPushOffPending(storage, 'alex@example.test'), false);
   });
 });

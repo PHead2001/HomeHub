@@ -11,6 +11,23 @@ import type {
   Timestamp as FirestoreTimestamp,
 } from "firebase-admin/firestore";
 import {releaseHeld} from "./shared/push-hold";
+import {deterministicNotificationId} from "./shared/ids";
+import {MEDICATION_SOURCE_TYPE} from "./shared/medication-reminders";
+
+/**
+ * The overdue state that supersedes a medication reminder's "due" state for
+ * the same dose (its state key with `overdue` in place of `due`), or null.
+ * Both are pending for the same occurrence, so a held "due" push is dropped
+ * once the overdue reminder exists: one push per dose, never two at 07:00.
+ * @param {unknown} sourceType The held notification's source type.
+ * @param {unknown} stateKey Its state key.
+ * @return {string | null} The superseding state key, or null.
+ */
+export const supersedingStateKey = (
+  sourceType: unknown, stateKey: unknown,
+): string | null => sourceType === MEDICATION_SOURCE_TYPE &&
+  typeof stateKey === "string" && stateKey.startsWith("due|") ?
+  `overdue|${stateKey.slice("due|".length)}` : null;
 
 type Timestamp = FirestoreTimestamp;
 
@@ -59,17 +76,25 @@ export const releaseHeldPushes = async (
   let released = 0;
   for (const note of due.docs) {
     const sent = await db.runTransaction(async (tx) => {
-      const [home, snap] = await Promise.all([tx.get(house),
-        tx.get(note.ref)]);
+      const later = supersedingStateKey(note.get("sourceType"),
+        note.get("stateKey"));
+      const sourceId = note.get("sourceId");
+      const laterRef = later && typeof sourceId === "string" ?
+        house.collection("notifications").doc(deterministicNotificationId(
+          MEDICATION_SOURCE_TYPE, sourceId, later)) : null;
+      const [home, snap, laterSnap] = await Promise.all([tx.get(house),
+        tx.get(note.ref), laterRef ? tx.get(laterRef) : Promise.resolve(null)]);
       if (!home.exists || home.get("deletingAt") || !snap.exists) {
         return false;
       }
+      // An overdue reminder for the same dose took over: drop this push.
+      const superseded = Boolean(laterSnap?.exists);
       const expires = millisOf(snap.get("expiresAt"));
       const seenBy = new Set([...keysOf(snap.get("readBy")),
         ...keysOf(snap.get("dismissedBy"))]);
       const split = releaseHeld(heldEntries(snap.get("pushHeld")),
         now.getTime(), {
-          closed: Boolean(snap.get("resolvedAt")) ||
+          closed: superseded || Boolean(snap.get("resolvedAt")) ||
             (expires !== null && expires <= now.getTime()),
           seenBy,
         });
