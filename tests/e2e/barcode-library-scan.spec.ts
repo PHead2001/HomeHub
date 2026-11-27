@@ -286,4 +286,29 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
       await library.doc(UNKNOWN).delete();
     }
   });
+
+  test('an Open Food Facts find offers "Save to library", and the saved product then answers without the server (BL-19)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await library.doc(JUICE).delete();
+    try {
+      await open(page, `/shopping?list=${LIST_ID}`, 'Shopping Center');
+      await scanIntoAddItem(page, JUICE);
+      await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E Family Juice').get()).size, { timeout: 15_000 }).toBe(1);
+      // The toast's action is labelled "Save" (its alt text names the product).
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect.poll(async () => (await library.doc(JUICE).get()).data(), { timeout: 10_000 })
+        .toMatchObject({ name: 'E2E Family Juice', imageUrl: '', createdByUid: ownerUid });
+
+      // The lookup server action can no longer be reached: the saved product still fills in.
+      await page.route((url) => url.pathname === '/shopping', async (route) => {
+        if (route.request().method() === 'POST') await route.abort('failed');
+        else await route.continue();
+      });
+      await scanIntoAddItem(page, JUICE);
+      await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E Family Juice').get()).docs
+        .map((document) => document.data().quantity), { timeout: 15_000 }).toEqual([2]);
+    } finally {
+      await library.doc(JUICE).delete();
+    }
+  });
 });

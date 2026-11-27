@@ -70,6 +70,8 @@ import { BarcodeScanner } from './barcode-scanner';
 import { useLookupFeedback } from './barcode/use-lookup-feedback';
 import { LookupMissNotice, useScanMiss } from './barcode/lookup-miss-notice';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
+import { libraryOfferFor, localLibraryLookup, type LocalLibraryEntry } from '@/lib/barcode/library-fill';
+import { LibrarySaveOffer, useLibrarySaveOffer } from './barcode/library-save-offer';
 import { lookupMiss } from '@/lib/barcode/lookup-outcome';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './ui/accordion';
@@ -141,12 +143,15 @@ function PantryItemDialog({
   onSave,
   itemToEdit,
   timeZone,
+  library = null,
 }: {
   isOpen: boolean,
   onOpenChange: (open: boolean) => void,
   onSave: (data: PantryItemFormValues, id?: string) => Promise<boolean>,
   itemToEdit: PantryBatch | null,
   timeZone?: string | null,
+  /** The household library on this device (BL-19): a saved product answers without the server. */
+  library?: ReadonlyMap<string, LocalLibraryEntry> | null,
 }) {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   // The scanner is a sibling portaled dialog, not inside the item dialog: it closes
@@ -161,6 +166,7 @@ function PantryItemDialog({
   const lookupFeedback = useLookupFeedback();
   // A miss is shown inside this modal dialog (a toast's action would be unreachable).
   const scanMiss = useScanMiss();
+  const librarySave = useLibrarySaveOffer(currentUser?.householdId ?? null, currentUser?.uid ?? null);
   const scanOptions = { fallback: 'type the name instead', canSave: Boolean(permissions['shopping.edit']) };
   const scanSessionRef = useRef(0);
 
@@ -182,6 +188,7 @@ function PantryItemDialog({
     // A lookup still running belongs to the previous opening: its answer is dropped.
     scanSessionRef.current += 1;
     scanMiss.clear();
+    librarySave.clear();
     if (itemToEdit) {
       // A batch that needs repair starts at 1 package with a suggested size, never 0 (stock kept).
       const start = itemToEdit.needsRepair ? repairEditPrefill(itemToEdit) : itemToEdit;
@@ -232,13 +239,14 @@ function PantryItemDialog({
   const handleBarcodeScan = async (barcode: string) => {
     const session = scanSessionRef.current;
     scanMiss.clear();
+    librarySave.clear();
     setIsScannerOpen(false);
     toast({ title: "Barcode Scanned!", description: "Looking up product..." });
     try {
         if (!currentUser?.householdId) {
             throw new Error('No household found for barcode lookup.');
         }
-        const result = unwrapAiActionResult(await lookupBarcode(
+        const result = localLibraryLookup(library, barcode) ?? unwrapAiActionResult(await lookupBarcode(
           { barcode },
           await getAiActionContext(currentUser.householdId)
         ));
@@ -261,6 +269,9 @@ function PantryItemDialog({
               pendingScannedUnit.current = amount.unit;
               setUnitCategory(getCategoryFromUnit(amount.unit));
             }
+            // BL-19: offered inside this dialog, which stays open.
+            const offer = scanOptions.canSave ? libraryOfferFor(result, barcode, currentUser.householdId) : null;
+            if (offer) librarySave.setOffer(offer);
             toast({
               title: "Product Found!",
               description: amount
@@ -483,6 +494,7 @@ function PantryItemDialog({
               </Button>
             </DialogFooter>
             <LookupMissNotice scanMiss={scanMiss.scanMiss} fallback="type the name instead" canSave={scanOptions.canSave} />
+            <LibrarySaveOffer offer={librarySave.offer} saving={librarySave.saving} onSave={(offer) => void librarySave.save(offer)} />
           </form>
         </Form>
       </DialogContent>
@@ -1275,6 +1287,7 @@ export function PantryInventoryClient({
           onSave={handleSaveItem}
           itemToEdit={itemToEdit}
           timeZone={timeZone}
+          library={libraryPhotos}
         />
       )}
       <RecipeGeneratorDialog

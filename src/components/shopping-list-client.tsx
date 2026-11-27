@@ -50,6 +50,8 @@ import { useTripMode } from './shopping/use-trip-mode';
 import { neededFocusOrder, scopeToList, withSectionOpen, type ListScoped } from '@/lib/shopping/trip-mode';
 import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
+import { libraryOfferFor, localLibraryLookup } from '@/lib/barcode/library-fill';
+import { LibrarySaveOffer, useLibrarySaveOffer } from './barcode/library-save-offer';
 import { rowPhoto } from '@/lib/shopping/row-photo';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
@@ -174,6 +176,8 @@ export function ShoppingListClient({
   // A miss from the scanner inside Add Item is shown in that dialog (a toast's
   // action would be unreachable behind the modal).
   const addScanMiss = useScanMiss();
+  // BL-19: an Open Food Facts find offers "Save to library".
+  const librarySave = useLibrarySaveOffer(currentUser?.householdId ?? null, currentUser?.uid ?? null);
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
   const online = useOnline();
@@ -343,6 +347,7 @@ export function ShoppingListClient({
   // (otherwise reopening Add Item would bring the camera back).
   if (!isAddItemDialogOpen && isScannerOpen) setIsScannerOpen(false);
   if (!isAddItemDialogOpen && addScanMiss.scanMiss) addScanMiss.clear();
+  if (!isAddItemDialogOpen && librarySave.offer) librarySave.clear();
   if (!isAddItemDialogOpen && scanStatus) setScanStatus(null);
 
   const offlineNoticeShownRef = useRef(false);
@@ -797,6 +802,7 @@ export function ShoppingListClient({
     const category = getValues('category');
     const key = scanAddKey(started.listId, barcode);
     addScanMiss.clear();
+    librarySave.clear();
     setIsScannerOpen(false);
     const inSameDialog = () => addDialogOpenRef.current && addDialogSessionRef.current === started.session;
     // Inline in the same opening of Add Item when it is still open, else a toast.
@@ -812,7 +818,8 @@ export function ShoppingListClient({
     await withScanGuard(scanGuardRef.current, key, async (notePending) => {
       toast({ title: 'Barcode scanned', description: 'Looking up the product…' });
       try {
-        const result = unwrapAiActionResult(await lookupBarcode(
+        // A product saved in the household library answers from this device (BL-19: instant, offline).
+        const result = localLibraryLookup(libraryPhotos, barcode) ?? unwrapAiActionResult(await lookupBarcode(
           { barcode },
           await getAiActionContext(householdForLookup)
         ));
@@ -826,8 +833,12 @@ export function ShoppingListClient({
               showStatus(status);
             },
           });
-          if (final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close) {
-            setIsAddItemDialogOpen(false);
+          const closing = final === 'saved' && dialogAfterScan(started, { ...currentDialogDraft(), open: addDialogOpenRef.current }).close;
+          if (closing) setIsAddItemDialogOpen(false);
+          const offer = canEdit ? libraryOfferFor(result, barcode, householdForLookup) : null;
+          if (offer) {
+            if (!closing && inSameDialog()) librarySave.setOffer(offer);
+            else librarySave.offerToast(offer);
           }
         } else {
           // BL-9: "not found" keeps the code for "Save to library"; an outage says so.
@@ -1644,6 +1655,7 @@ export function ShoppingListClient({
                                 {dialogStatus && <p role="status" className="text-sm text-muted-foreground">{dialogStatus}</p>}
                                 {scanStatus && <p role="status" className="text-sm text-muted-foreground">{scanStatus.text}</p>}
                                 <LookupMissNotice scanMiss={addScanMiss.scanMiss} fallback="type the name instead" canSave={canEdit} />
+                                <LibrarySaveOffer offer={librarySave.offer} saving={librarySave.saving} onSave={(offer) => void librarySave.save(offer)} />
                                 </form>
                             </Form>
                         </DialogContent>
@@ -1678,6 +1690,7 @@ export function ShoppingListClient({
                     items={listItems}
                     onTick={toggleItemStatus}
                     onAdd={addScannedEntry}
+                    library={libraryPhotos}
                     showTrigger={false}
                     open={listDialogOpen === 'scan'}
                     onOpenChange={(open) => setListDialogOpen(open ? 'scan' : null)}
