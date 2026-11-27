@@ -3,8 +3,9 @@
 // The ambient screen and night dimming (design 14.3, 14.4; D-T6, D-T1, WT-14f/g).
 //
 // Ambient: after the tablet's ambient time without input, a basic clock screen: the time,
-// the date and the weather when the record turns it on. Nothing personal (no names,
-// chores or pets; the richer ambient is SL-23). It drifts slowly against burn-in: with
+// the date, the weather when the record turns it on, and only what needs doing as
+// household counts (HP-16: "2 chores overdue", `ambient-alerts.ts`). Nothing personal
+// (no names, chores or pets; the richer ambient is SL-23). It drifts slowly against burn-in: with
 // reduced motion it moves once a minute without animation. A tap wakes it and never acts
 // (the tap lands on this screen, not on what is under it).
 //
@@ -15,6 +16,7 @@ import { useEffect, useState } from 'react';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
 import { temperatureLabel } from '@/lib/dashboard/weather';
+import { ambientAlerts } from '@/lib/devices/ambient-alerts';
 import { cn } from '@/lib/utils';
 import { useTablet } from './tablet-context';
 import { clockLabel, dateLabel } from './tablet-top-bar';
@@ -23,7 +25,8 @@ import { clockLabel, dateLabel } from './tablet-top-bar';
 const DRIFT = [[0, 0], [6, -4], [-5, 5], [4, 6], [-6, -3], [3, -6], [-3, 3]] as const;
 
 export function AmbientScreen({ now, onWake }: { now: Date; onWake: () => void }) {
-  const { household, settings } = useTablet();
+  const { household, settings, data, notices } = useTablet();
+  const alerts = ambientAlerts(data.facts, settings.sections, notices.length);
   const reduced = useReducedMotion();
   const weather = useLiveWeather();
   const [step, setStep] = useState(0);
@@ -53,6 +56,11 @@ export function AmbientScreen({ now, onWake }: { now: Date; onWake: () => void }
         <p className="mt-4 text-3xl text-white/80">{dateLabel(now, zone)}</p>
         {settings.display.weather && weather && (
           <p className="mt-3 text-2xl text-white/70" data-testid="tablet-ambient-weather">{temperatureLabel(weather)} · {weather.label}</p>
+        )}
+        {alerts.length > 0 && (
+          <ul className="mt-8 space-y-2 text-2xl font-semibold text-amber-200" data-testid="tablet-ambient-alerts">
+            {alerts.map((alert) => <li key={alert}>{alert}</li>)}
+          </ul>
         )}
       </div>
     </div>

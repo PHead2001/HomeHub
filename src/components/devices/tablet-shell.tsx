@@ -765,7 +765,15 @@ function TabletFrame(props: {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 30_000);
-    return () => window.clearInterval(id);
+    // HP-17: a screen that wakes shows the right time at once, not up to 30 s later.
+    const wake = () => { if (document.visibilityState === 'visible') setNow(new Date()); };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('pageshow', wake);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', wake);
+      window.removeEventListener('pageshow', wake);
+    };
   }, []);
   const quiet = isQuietAt(household.quietHours, household.timeZone, now);
 
