@@ -182,6 +182,9 @@ export type DeviceNotice = {
   message: string;
   createdAt: Date | null;
   deepLink: string | null;
+  /** For the pinned house message (NO-25). */
+  sourceType: string | null;
+  expiresAt: Date | null;
 };
 
 /** Household-wide notices never show an email on a tablet (WT-10e): anything email-shaped is replaced. */
@@ -208,6 +211,8 @@ export function parseDeviceNotice(id: string, data: Record<string, unknown>, now
     message: typeof data.message === 'string' ? redactEmails(data.message).slice(0, 400) : '',
     createdAt: created === null ? null : new Date(created),
     deepLink: typeof data.deepLink === 'string' ? data.deepLink : null,
+    sourceType: typeof data.sourceType === 'string' ? data.sourceType : null,
+    expiresAt: expires === null ? null : new Date(expires),
   };
 }
 
