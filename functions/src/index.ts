@@ -34,6 +34,7 @@ import {
   type MemberRecord,
 } from "./push-policy";
 import {filterRecipientsByCategory} from "./shared/push-audience";
+import {pushActionsFor} from "./shared/push-actions";
 import {
   pushHoldUntil, pushTtlSeconds, readLocalWindow,
 } from "./shared/push-hold";
@@ -202,6 +203,7 @@ const deliverPush = async (
   const body = clampText(
     notificationData.message, "You have a new notification.", 500);
   const tag = notificationId;
+  const actions = pushActionsFor(notificationData);
   const ttl = pushTtlSeconds(notificationData.holdUntilMorning === true,
     new Date(), timeZone);
   const groups = [true, false]
@@ -219,8 +221,12 @@ const deliverPush = async (
         fcmOptions: {link: safeDeepLink(notificationData.deepLink)},
         notification: options,
         // The service worker's own display reads these (the SDK does not
-        // pass badge or tag through to onBackgroundMessage).
-        data: {tag: options.tag, badge: options.badge},
+        // pass badge or tag through to onBackgroundMessage). NO-23: action
+        // buttons that open in-app links; the worker re-checks them.
+        data: {
+          tag: options.tag, badge: options.badge,
+          ...(actions.length > 0 ? {actions: JSON.stringify(actions)} : {}),
+        },
       },
       tokens: group.map((entry) => entry.token),
     };

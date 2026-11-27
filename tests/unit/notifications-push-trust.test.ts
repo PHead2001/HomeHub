@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import { describe, test } from 'node:test';
 import { GET } from '../../src/app/api/sw/route';
 import { pushOpenLink, safePushLink } from '../../functions/src/shared/push-link';
+import { pushActionsFor } from '../../functions/src/shared/push-actions';
 import { openedNotificationId, withoutOpenedNotification } from '../../src/lib/push-open';
 import { isIOSDevice, pushCardState, pushSupport, pushTokenMissing } from '../../src/lib/push-status';
 import { PUSH_OFF_KEY, pushSignInAction, readPushOff, readPushOffPending, writePushOff, writePushOffPending } from '../../src/lib/push-tokens';
@@ -49,7 +50,12 @@ async function loadWorker(clientsList: Client[] = [], trayCount = 0) {
     listeners.notificationclose({ notification: {}, waitUntil: (p: Promise<unknown>) => { done = p; } });
     await done;
   };
-  return { shown, opened, badges, click, close, background: (payload: unknown) => background!(payload) };
+  const clickAction = async (data: unknown, action: string) => {
+    let done: Promise<unknown> = Promise.resolve();
+    listeners.notificationclick({ action, notification: { data, close: () => undefined }, waitUntil: (p: Promise<unknown>) => { done = p; } });
+    await done;
+  };
+  return { shown, opened, badges, click, clickAction, close, background: (payload: unknown) => background!(payload) };
 }
 
 describe('NO-9: the opened notification is marked read', () => {
@@ -213,5 +219,53 @@ describe('NO-5: a real status, and the token checked on every load', () => {
     writePushOffPending(storage, 'sam@example.test', false);
     assert.equal(pushSignInAction({ ...base, permission: 'granted', cleanupPending: readPushOffPending(storage, 'sam@example.test') }), 'none');
     assert.equal(readPushOffPending(storage, 'alex@example.test'), false);
+  });
+});
+
+describe('NO-23: action buttons open in-app links only', () => {
+  test('which notifications get which button', () => {
+    assert.deepEqual(pushActionsFor({ sourceType: 'pet_medication', deepLink: '/pets/maple?tab=medication&dose=c1' }),
+      [{ action: 'dose', title: 'Give dose', link: '/pets/maple?tab=medication&dose=c1' }]);
+    assert.deepEqual(pushActionsFor({ sourceType: 'pet_medication', deepLink: '/pets/maple?tab=medication' }), [], 'a legacy medication has no dose dialog to open');
+    assert.equal(pushActionsFor({ sourceType: 'maintenance_asset_schedule', deepLink: '/maintenance?asset=a&schedule=s' })[0].title, 'Done or snooze');
+    assert.equal(pushActionsFor({ sourceType: 'chore-reminder', sourceId: 'overdue', deepLink: '/chores?due=overdue' })[0].action, 'overdue');
+    assert.deepEqual(pushActionsFor({ sourceType: 'chore-reminder', sourceId: 'reminder-2026-11-11', deepLink: '/chores' }), []);
+    assert.deepEqual(pushActionsFor({ sourceType: 'maintenance_asset_schedule', deepLink: '//evil.example' }), [], 'no safe link, no button');
+  });
+
+  test('the worker shows the buttons and opens the chosen link with the notification ID', async () => {
+    const worker = await loadWorker();
+    await worker.background({
+      notification: { title: "Maple's dose" }, data: { tag: 'pet-1', actions: JSON.stringify([{ action: 'dose', title: 'Give dose', link: '/pets/maple?tab=medication&dose=c1' }]) },
+      fcmOptions: { link: '/pets/maple?tab=medication&dose=c1' },
+    });
+    const { options } = worker.shown[0];
+    // Arrays from the worker's own realm: compare by value.
+    assert.deepEqual(JSON.parse(JSON.stringify(options.actions)), [{ action: 'dose', title: 'Give dose' }]);
+    await worker.clickAction(options.data, 'dose');
+    assert.deepEqual(worker.opened, ['/pets/maple?tab=medication&dose=c1&n=pet-1']);
+  });
+
+  test('hostile actions are dropped or reduced to the home page', async () => {
+    const worker = await loadWorker();
+    await worker.background({
+      notification: { title: 'x' },
+      data: { tag: 't', actions: JSON.stringify([
+        { action: 'BAD ID', title: 'x', link: '/' },
+        { action: 'go', title: 'y'.repeat(40), link: '/' },
+        { action: 'open', title: 'Open', link: 'https://evil.example' },
+        { action: 'more', title: 'More', link: '/chores' },
+        { action: 'third', title: 'Third', link: '/pets' },
+      ]) },
+      fcmOptions: { link: '/' },
+    });
+    const { options } = worker.shown[0];
+    assert.deepEqual(JSON.parse(JSON.stringify((options.actions as Array<{ action: string }>).map((a) => a.action))), ['open', 'more']);
+    await worker.clickAction(options.data, 'open');
+    await worker.clickAction(options.data, 'unknown');
+    assert.deepEqual(worker.opened, ['/?n=t', '/?n=t']);
+    const broken = await loadWorker();
+    await broken.background({ notification: { title: 'x' }, data: { tag: 't', actions: '{not json' }, fcmOptions: { link: '/' } });
+    assert.equal('actions' in broken.shown[0].options, false);
   });
 });
