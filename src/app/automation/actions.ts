@@ -7,9 +7,10 @@ import {
   fetchHomeAssistantSnapshot,
   normalizeHomeAssistantUrl,
 } from '@/lib/server/home-assistant';
-import { credentialsRef, persistCredentials, readConnectedUrl } from '@/lib/server/home-assistant-store';
+import { deleteCredentials, persistConfig, persistCredentials, readConfig, readConnectedUrl, syncConnectedFlag } from '@/lib/server/home-assistant-store';
 import { forgetSnapshot, householdSnapshot } from '@/lib/server/home-assistant-snapshot';
-import type { HomeAssistantEntitySummary } from '@/lib/automation/entities';
+import { maySeeSensitive, visibleEntities, type HomeAssistantEntitySummary } from '@/lib/automation/entities';
+import { configForViewer, validateAutomationConfig, type AutomationConfig } from '@/lib/automation/config';
 import type { HouseholdPermission } from '@/lib/types';
 
 // Every call derives identity from a verified ID token and authorizes against the
@@ -38,21 +39,32 @@ const run = async <T>(context: Context, permission: HouseholdPermission, task: (
   }
 };
 
+/** AU-11: whether this caller may see people, trackers, cameras and locks. */
+const sensitiveFor = (user: AuthorizedHouseholdUser, config: AutomationConfig) => maySeeSensitive(user.role, config.showSensitiveToMembers);
+
+const configFor = (user: AuthorizedHouseholdUser, config: AutomationConfig) =>
+  configForViewer(config, { role: user.role, canManage: Boolean(user.permissions['automation.manage']) });
+
 export type HomeAssistantStatus = {
   configured: boolean;
   host: string | null;
+  config: AutomationConfig;
+  canSeeSensitive: boolean;
 };
 
 export async function getHomeAssistantStatus(context: Context): Promise<Result<HomeAssistantStatus>> {
   return run(context, 'automation.view', async (user) => {
-    const url = await readConnectedUrl(user.householdId);
+    // A token that can't be read still counts as connected (managers can replace it).
+    const [url, config] = await Promise.all([readConnectedUrl(user.householdId), readConfig(user.householdId)]);
+    // AU-6: households connected before the flag existed get it now (never fails the read).
+    await syncConnectedFlag(user.householdId, url !== null).catch((error) => console.error('Home Assistant flag sync failed', error));
     let host: string | null = null;
     try {
       host = url ? new URL(url).host : null;
     } catch {
       host = null;
     }
-    return { configured: url !== null, host };
+    return { configured: url !== null, host, config: configFor(user, config), canSeeSensitive: sensitiveFor(user, config) };
   });
 }
 
@@ -62,12 +74,21 @@ export type HomeAssistantEntities = {
   fetchedAt: number;
   total: number;
   truncated: boolean;
+  /** AU-11: how many entities were withheld from this caller. */
+  hiddenSensitive: number;
 };
 
 export async function getHomeAssistantEntities(context: Context): Promise<Result<HomeAssistantEntities>> {
   return run(context, 'automation.view', async (user) => {
-    const snapshot = await householdSnapshot(user.householdId);
-    return { entities: snapshot.entities, fetchedAt: snapshot.fetchedAt, total: snapshot.total, truncated: snapshot.truncated };
+    const [snapshot, config] = await Promise.all([householdSnapshot(user.householdId), readConfig(user.householdId)]);
+    const visible = visibleEntities(snapshot.entities, user.role, config.showSensitiveToMembers);
+    return {
+      entities: visible.entities,
+      fetchedAt: snapshot.fetchedAt,
+      total: snapshot.total,
+      truncated: snapshot.truncated,
+      hiddenSensitive: visible.hidden,
+    };
   });
 }
 
@@ -86,7 +107,21 @@ export async function saveHomeAssistantConnection(
     const url = await normalizeHomeAssistantUrl(typeof input?.url === 'string' ? input.url : '');
     // Only store credentials that actually work.
     const snapshot = await fetchHomeAssistantSnapshot(url, token);
-    await persistCredentials(user.householdId, user.uid, { url, accessToken: token, updatedAt: new Date().toISOString(), updatedByUid: user.uid });
+    await persistCredentials(user.householdId, user.uid, { url, accessToken: token });
+    forgetSnapshot(user.householdId);
+    return { host: new URL(url).host, entityCount: snapshot.total };
+  });
+}
+
+/** AU-9: a new token for the connected address, tested before it replaces the old one. */
+export async function replaceHomeAssistantToken(context: Context, input: { accessToken: string }): Promise<Result<{ host: string; entityCount: number }>> {
+  return run(context, 'automation.manage', async (user) => {
+    const token = readToken(input?.accessToken);
+    // The stored address, even when the old token can no longer be read.
+    const url = await readConnectedUrl(user.householdId);
+    if (!url) throw new HomeAssistantError('Home Assistant is not connected. Connect it first.');
+    const snapshot = await fetchHomeAssistantSnapshot(url, token);
+    await persistCredentials(user.householdId, user.uid, { url, accessToken: token }, { mode: 'replace' });
     forgetSnapshot(user.householdId);
     return { host: new URL(url).host, entityCount: snapshot.total };
   });
@@ -94,9 +129,19 @@ export async function saveHomeAssistantConnection(
 
 export async function disconnectHomeAssistant(context: Context): Promise<Result<null>> {
   return run(context, 'automation.manage', async (user) => {
-    await credentialsRef(user.householdId).delete();
+    await deleteCredentials(user.householdId, user.uid);
     forgetSnapshot(user.householdId);
     return null;
+  });
+}
+
+/** AU-8, AU-11: favourites and the privacy choice. */
+export async function saveAutomationSettings(context: Context, input: AutomationConfig): Promise<Result<AutomationConfig>> {
+  return run(context, 'automation.manage', async (user) => {
+    const checked = validateAutomationConfig(input);
+    if (!checked.ok) throw new HomeAssistantError(checked.message);
+    await persistConfig(user.householdId, user.uid, checked.value);
+    return checked.value;
   });
 }
 

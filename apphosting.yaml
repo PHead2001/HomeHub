@@ -83,6 +83,15 @@ env:
       - BUILD
       - RUNTIME
 
+  # Home Assistant token encryption at rest (docs/modules/home-automation/README.md,
+  # AU-12). Optional: without it tokens are stored as before. To turn it on, create the
+  # secret (32 random bytes, base64: `openssl rand -base64 32`) and add:
+  #   - variable: HOMEHUB_HA_TOKEN_KEY
+  #     secret: homehubHaTokenKey
+  #     availability:
+  #       - RUNTIME
+  # Never rotate it without re-entering the token (Update token on /automation).
+
   # Measured on this backend 2026-11-23 (devices README, "Redemption guards"): with no
   # client-sent header, X-Forwarded-For arrives with 3 entries, so the client is two
   # left of the rightmost. HOMEHUB_LOG_FORWARDED_SHAPE=true logs the count again.

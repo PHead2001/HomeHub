@@ -1,5 +1,6 @@
 'use client';
 
+import { Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { describeEntityState, entityName, formatEntityTime, sinceLabel, type HomeAssistantEntitySummary } from '@/lib/automation/entities';
@@ -13,17 +14,24 @@ const STATE_TONE_CLASSES = {
 } as const;
 
 /**
- * One device (AU-3): its name and its state in plain words with how long it has been
- * that way. The entity id and last change sit in a details section.
+ * One device (AU-3, AU-8): its name and its state in plain words with how long it has
+ * been that way. The entity id, last change, favourite pin and room link sit in a
+ * details section (rooms come with AU-13).
  */
 export function EntityTile({
   entity,
   timeZone,
   now,
+  favorite,
+  canManage,
+  onToggleFavorite,
 }: {
   entity: HomeAssistantEntitySummary;
   timeZone: string;
   now: Date;
+  favorite: boolean;
+  canManage: boolean;
+  onToggleFavorite: () => void;
 }) {
   const name = entityName(entity);
   const view = describeEntityState(entity, timeZone);
@@ -39,12 +47,18 @@ export function EntityTile({
             {since && <span>for {since}</span>}
           </p>
         </div>
+        {favorite && <Star aria-label="Favourite" className="h-4 w-4 shrink-0 fill-warning text-warning" />}
       </div>
       <details className="text-sm">
         <summary className="flex min-h-[var(--target-min)] cursor-pointer items-center text-muted-foreground">Details</summary>
         <div className="space-y-2 pb-1">
           <p className="break-all font-code text-xs text-muted-foreground">{entity.entity_id}</p>
           {changedAt && <p className="text-xs text-muted-foreground">Last changed {changedAt}</p>}
+          {canManage && (
+            <Button variant="outline" size="sm" onClick={onToggleFavorite} aria-pressed={favorite}>
+              <Star className={cn('h-4 w-4', favorite && 'fill-warning text-warning')} /> {favorite ? 'Unpin from top' : 'Pin to top'}
+            </Button>
+          )}
         </div>
       </details>
     </li>
