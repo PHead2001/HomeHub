@@ -9,7 +9,8 @@
 //   public/icons/icon-192.png   manifest icon, purpose "any"
 //   public/icons/icon-512.png   manifest icon, purpose "any"
 //   public/icons/maskable-512.png  manifest icon, purpose "maskable" (mark inside the 80% safe zone)
-//   public/icons/shortcut-*.png 96 px manifest shortcut icons
+//   public/icons/shortcut-*.png 96 px manifest shortcut icons (shortcut-96 is the mark;
+//                               shortcut-shopping/feeding/chores carry their own glyph, SL-19)
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,3 +112,24 @@ write('public/icons/maskable-512.png', await png(iconSvg({ size: 512, markScale:
 
 // Shortcut icons reuse the mark on the brand tile (96 px, Lighthouse's recommended size).
 write('public/icons/shortcut-96.png', await png(iconSvg({ size: 96, markScale: 0.7, radius: 96 * 0.22 })));
+
+// SL-19: each manifest shortcut gets its own glyph (stroke paths from lucide's 24-unit
+// ShoppingCart, PawPrint and ListChecks, ISC licence) on the brand tile, so the
+// long-press menu tells them apart.
+const SHORTCUT_GLYPHS = {
+  shopping: '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>',
+  feeding: '<circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/>',
+  chores: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+};
+const glyphSvg = (glyph, size = 96) => {
+  const glyphSize = size * 0.58;
+  const scale = glyphSize / 24;
+  const offset = (size - glyphSize) / 2;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`
+    + `<rect width="${size}" height="${size}" rx="${round(size * 0.22)}" fill="${BRAND_BACKGROUND_HEX}"/>`
+    + `<g transform="translate(${round(offset)} ${round(offset)}) scale(${round(scale)})" fill="none" stroke="${BRAND_ACCENT_HEX}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${glyph}</g>`
+    + '</svg>';
+};
+for (const [name, glyph] of Object.entries(SHORTCUT_GLYPHS)) {
+  write(`public/icons/shortcut-${name}-96.png`, await png(glyphSvg(glyph)));
+}

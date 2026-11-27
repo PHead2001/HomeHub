@@ -104,6 +104,8 @@ import { TabletUpdateWatcher } from './tablet-update-watcher';
 const TabletSettingsDialog = dynamic(() => import('./tablet-settings').then((mod) => mod.TabletSettingsDialog), { ssr: false });
 const TabletQuickAdd = dynamic(() => import('./tablet-quick-add').then((mod) => mod.TabletQuickAdd), { ssr: false });
 const Toaster = dynamic(() => import('@/components/ui/toaster').then((mod) => mod.Toaster), { ssr: false });
+// SL-24: a one-line "HomeHub updated" after the tablet reloaded itself for a new build.
+const UpdatedMoment = dynamic(() => import('@/components/shell/updated-moment').then((mod) => mod.UpdatedMoment), { ssr: false });
 
 type TabletPrincipal = Exclude<Principal, { kind: 'personal' }>;
 
@@ -413,6 +415,7 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
         </Suspense>
       </DashboardScopeProvider>
       <Toaster tablet />
+      <UpdatedMoment tablet />
     </AppearanceProvider>
   );
 }

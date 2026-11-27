@@ -13,6 +13,17 @@ import { isThemeMode } from '../../src/lib/theme/tokens';
 
 import { shouldMoveRouteFocus } from '../../src/lib/shell/route-focus';
 
+import { installPromptSnapshot, installState, promptInstall, captureInstallPrompt, resetInstallPromptForTests } from '../../src/lib/shell/install-prompt';
+import manifest from '../../src/app/manifest';
+import { THEME_COLORS as PAGE_COLORS } from '../../src/lib/theme/appearance';
+import { existsSync } from 'node:fs';
+
+import { AMBIENT_PET_MAX, ambientNextUp, ambientPetPosition, ambientPets } from '../../src/lib/devices/ambient-scene';
+import type { DashboardFacts } from '../../src/lib/dashboard/facts';
+import type { DeviceSections } from '../../src/lib/devices/types';
+
+import { WHATS_NEW, buildDay, decideUpdatedMoment } from '../../src/lib/shell/whats-new';
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('SL-1: section error boundaries', () => {
@@ -231,5 +242,131 @@ describe('SL-18: skip link and focus after navigation', () => {
     const rule = source('src/lib/shell/route-focus.ts');
     assert.match(rule, /closest\('\[aria-hidden="true"\]'\)/);
     assert.match(rule, /data-state'\) === 'closed'/);
+  });
+});
+
+describe('SL-19: manifest polish and the install offer', () => {
+  it('matches the page colour and gives each shortcut its own icon', () => {
+    const m = manifest();
+    assert.equal(m.theme_color, PAGE_COLORS.midnight);
+    assert.equal(m.background_color, PAGE_COLORS.midnight);
+    const icons = (m.shortcuts ?? []).map((shortcut) => shortcut.icons?.[0]?.src);
+    assert.equal(new Set(icons).size, 3);
+    for (const src of icons) assert.ok(existsSync(resolve(process.cwd(), 'public' + src)), `${src} exists`);
+  });
+
+  it('shows Install only while the browser offers it and the app is not installed', () => {
+    assert.equal(installState({ hasPrompt: true, standalone: false, installed: false }), 'available');
+    assert.equal(installState({ hasPrompt: false, standalone: false, installed: false }), 'unavailable');
+    assert.equal(installState({ hasPrompt: true, standalone: true, installed: false }), 'installed');
+    assert.equal(installState({ hasPrompt: false, standalone: false, installed: true }), 'installed');
+  });
+
+  it('keeps the browser event, replays it once and forgets it', async () => {
+    resetInstallPromptForTests();
+    const target = new EventTarget() as unknown as Window;
+    captureInstallPrompt(target);
+    let prompted = 0;
+    const event = Object.assign(new Event('beforeinstallprompt', { cancelable: true }), {
+      prompt: async () => { prompted += 1; },
+      userChoice: Promise.resolve({ outcome: 'accepted' as const }),
+    });
+    target.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true, "Chrome's own mini-infobar is held back");
+    assert.equal(installPromptSnapshot().hasPrompt, true);
+    assert.equal(await promptInstall(), 'accepted');
+    assert.equal(prompted, 1);
+    assert.equal(installPromptSnapshot().hasPrompt, false);
+    assert.equal(await promptInstall(), 'unavailable');
+    target.dispatchEvent(new Event('appinstalled'));
+    assert.equal(installPromptSnapshot().installed, true);
+    resetInstallPromptForTests();
+  });
+});
+
+describe('SL-23: the richer ambient screen on registered tablets', () => {
+  const allOn = { chores: true, pets: true, shopping: true, maintenance: true, calendar: true } as unknown as DeviceSections;
+  const pet = (id: string, type: string, fed: boolean | null, needsMeal = false) =>
+    ({ id, name: `Pet ${id}`, type, fed, needsMeal, lastFedAt: null, lastFedBy: null, countLabel: '', headline: '' });
+  const facts = {
+    pets: { pets: [pet('a', 'Dog', true), pet('b', 'cat', false, true), pet('c', 'Rabbit', null), pet('d', 'dog', true), pet('e', 'cat', true)], hungry: 1, unknown: 1 },
+    chores: {
+      nextUp: [{ id: 'c1', task: ' Water the plants ', dueLabel: 'Today', overdue: false, mine: false, assignee: 'Sam Member' }],
+    },
+  } as unknown as DashboardFacts;
+
+  it('draws pets without names: at the bowl when due, resting when unknown, at most four', () => {
+    const pets = ambientPets(facts, allOn);
+    assert.equal(pets.length, AMBIENT_PET_MAX);
+    assert.deepEqual(pets.map((p) => [p.kind, p.spot]), [['dog', 'wander'], ['cat', 'bowl'], ['other', 'rest'], ['dog', 'wander']]);
+    assert.equal(JSON.stringify(pets).includes('Pet a'), false);
+    assert.deepEqual(ambientPets(facts, { ...allOn, pets: false }), []);
+    assert.deepEqual(ambientPets({}, allOn), []);
+  });
+
+  it('wandering pets move each step and never share a spot; the others stay put', () => {
+    const pets = ambientPets(facts, allOn);
+    assert.notDeepEqual(ambientPetPosition(pets[0], 0, 0), ambientPetPosition(pets[0], 0, 1));
+    assert.notDeepEqual(ambientPetPosition(pets[0], 0, 3), ambientPetPosition(pets[3], 3, 3));
+    assert.deepEqual(ambientPetPosition(pets[1], 1, 0), ambientPetPosition(pets[1], 1, 5));
+    assert.deepEqual(ambientPetPosition(pets[2], 2, 0), ambientPetPosition(pets[2], 2, 5));
+  });
+
+  it('the next-up line names the chore, never the person, and says nothing when unknown', () => {
+    assert.equal(ambientNextUp(facts, allOn), 'Next up: Water the plants · Today');
+    assert.equal(ambientNextUp(facts, { ...allOn, chores: false }), null);
+    assert.equal(ambientNextUp({}, allOn), null);
+    assert.equal(ambientNextUp({ chores: { nextUp: [] } } as unknown as DashboardFacts, allOn), null);
+  });
+
+  it('the house is decoration and the kiosk CSS blocks selection and double-tap zoom', () => {
+    const overlays = source('src/components/devices/tablet-overlays.tsx');
+    assert.match(overlays, /aria-hidden className="pointer-events-none relative/);
+    assert.doesNotMatch(overlays.slice(overlays.indexOf('function AmbientHouse')), /<Link|href=/);
+    const css = source('src/app/globals.css');
+    assert.match(css, /:root\[data-kiosk\] body \{[^}]*user-select: none;[^}]*touch-action: manipulation;/);
+  });
+});
+
+describe('SL-24: the "HomeHub updated" moment', () => {
+  const entries = [
+    { date: '2026-11-27', items: ['Newest'] },
+    { date: '2026-11-25', items: ['Middle'] },
+    { date: '2026-11-20', items: ['Older'] },
+  ];
+
+  it('shows once a newer build replaced the last one this browser ran', () => {
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: null, currentBuild: '20261127T100000000Z', entries }), { show: false }, 'first visit');
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: '20261127T100000000Z', currentBuild: '20261127T100000000Z', entries }), { show: false }, 'same build');
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: '20261128T100000000Z', currentBuild: '20261127T100000000Z', entries }), { show: false }, 'older page');
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: 'garbage', currentBuild: '20261127T100000000Z', entries }), { show: false });
+  });
+
+  it('lists the releases after the last build, else the newest one', () => {
+    const moment = decideUpdatedMoment({ previousBuild: '20261121T080000000Z', currentBuild: '20261127T100000000Z', entries });
+    assert.equal(moment.show, true);
+    if (moment.show) {
+      assert.deepEqual(moment.entries.map((e) => e.date), ['2026-11-27', '2026-11-25']);
+      assert.equal(moment.headline, 'Newest');
+    }
+    const sameDay = decideUpdatedMoment({ previousBuild: '20261127T080000000Z', currentBuild: '20261127T100000000Z', entries });
+    assert.equal(sameDay.show && sameDay.entries[0].date, '2026-11-27');
+    assert.equal(buildDay('20261127T080000000Z'), '2026-11-27');
+  });
+
+  it('the changelog is newest first with dated, non-empty entries', () => {
+    for (let i = 1; i < WHATS_NEW.length; i += 1) assert.ok(WHATS_NEW[i - 1].date > WHATS_NEW[i].date);
+    for (const entry of WHATS_NEW) {
+      assert.match(entry.date, /^\d{4}-\d{2}-\d{2}$/);
+      assert.ok(entry.items.length > 0);
+    }
+  });
+
+  it('its toast never holds the shell busy, and tablets get no button or route', () => {
+    const moment = source('src/components/shell/updated-moment.tsx');
+    assert.match(moment, /holdsAction: false/);
+    assert.match(moment, /action: tablet \? undefined/);
+    assert.doesNotMatch(moment, /href=|router\.push/);
+    assert.match(source('src/components/devices/tablet-shell.tsx'), /<UpdatedMoment tablet \/>/);
   });
 });
