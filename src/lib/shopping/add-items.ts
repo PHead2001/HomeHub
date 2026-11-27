@@ -40,6 +40,8 @@ export type EntryOutcome = {
   /** Display name (the merged item's own name when merged). */
   name: string;
   merged: boolean;
+  /** The created item, or the still-needed item it merged into (for quick add's Undo, QA-9). */
+  itemId?: string;
   state: SaveState;
   category: string;
   categorySource?: CategorySource;
@@ -159,7 +161,7 @@ export async function addItemsToList({
       return result.state;
     });
     if (categorySource === 'pending' && tracked.state !== 'failed') toCategorize.push({ itemId, name: entry.name, settled });
-    return { entry, name: entry.name, merged: false, state: tracked.state, category, categorySource, error: tracked.error, settled };
+    return { entry, name: entry.name, merged: false, itemId, state: tracked.state, category, categorySource, error: tracked.error, settled };
   };
 
   const saveEntry = async (entry: AddEntry): Promise<EntryOutcome> => {
@@ -167,7 +169,7 @@ export async function addItemsToList({
     if (!target) return create(entry, !offline);
     const tracked = await trackWrite(mergeIntoNeededItem(itemsRef(target.id), entry.quantity), trackDeps('transaction'));
     if (tracked.state === 'saved' && tracked.value) {
-      return { entry, name: target.name, merged: true, state: 'saved', category: target.category, settled: Promise.resolve('saved') };
+      return { entry, name: target.name, merged: true, itemId: target.id, state: 'saved', category: target.category, settled: Promise.resolve('saved') };
     }
     if (tracked.state === 'saved') return create(entry, !offline); // bought or deleted meanwhile
     if (tracked.state === 'failed') {

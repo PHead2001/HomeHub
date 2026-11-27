@@ -67,7 +67,8 @@ import { householdWallClock } from '@/lib/household-zone';
 import { useCommandIndex } from './use-command-index';
 import { groupContiguous, resultsAnnouncement, recentItemsKey, recentPicksKey, recentUse, searchScore } from '@/lib/dashboard/command-search';
 import { highlightRowWhenShown } from './search-hit';
-import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance } from './quick-add-actions';
+import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance, undoOneTimeChore, undoQuickMaintenance, undoShoppingAdd } from './quick-add-actions';
+import { QUICK_ADD_UNDO_MS } from '@/lib/dashboard/quick-add-undo';
 import { useVoiceInput } from './use-voice-input';
 import { VOICE_DISCLOSURE, voiceAutoPreview } from '@/lib/dashboard/voice';
 import { ChoreMode, FeedingMode, ItemMode } from './palette-modes';
@@ -514,10 +515,37 @@ export function CommandPalette({
         if (outcome.saved.length > 0) {
           recentItems.record(outcome.saved.map((item) => item.name));
           notifyDataChanged({ module: 'shopping', householdId, listId: list.id });
-          // Only a durable local copy may say "saved on this device".
-          toast({ title: outcome.queued ? 'Saved, will sync' : 'Added to the list', description: outcome.queued
-            ? `${outcome.saved.map((item) => item.name).join(', ')} saved on this device for ${list.name}; syncs when the connection is back.`
-            : `${outcome.saved.map((item) => item.name).join(', ')} on ${list.name}.` });
+          // Only a durable local copy may say "saved on this device". Entries merged into
+          // an item still needed say so ("already on the list", QA-9), and what the server
+          // confirmed can be undone for 10 seconds.
+          const already = outcome.mergedNames.length > 0 ? ` Already on the list: ${outcome.mergedNames.join(', ')} (count raised).` : '';
+          const undoItems = outcome.queued ? [] : outcome.undo;
+          const { dismiss } = toast({
+            title: outcome.queued ? 'Saved, will sync' : 'Added to the list',
+            description: outcome.queued
+              ? `${outcome.saved.map((item) => item.name).join(', ')} saved on this device for ${list.name}; syncs when the connection is back.`
+              : `${outcome.saved.map((item) => item.name).join(', ')} on ${list.name}.${already}`,
+            ...(undoItems.length > 0 ? {
+              duration: QUICK_ADD_UNDO_MS,
+              action: (
+                <ToastAction
+                  altText={`Undo adding ${outcome.saved.map((item) => item.name).join(', ')}`}
+                  onClick={async () => {
+                    dismiss();
+                    try {
+                      const undone = await undoShoppingAdd(householdId, list.id, undoItems);
+                      notifyDataChanged({ module: 'shopping', householdId, listId: list.id });
+                      if (undone.kept > 0) toast({ title: 'Partly undone', description: 'Someone bought or changed some of them, so those stay.' });
+                    } catch (error) {
+                      toastError(error, "Couldn't undo");
+                    }
+                  }}
+                >
+                  Undo
+                </ToastAction>
+              ),
+            } : {}),
+          });
           playFeedback('add');
         }
         if (outcome.unconfirmed.length > 0) {
@@ -623,7 +651,32 @@ export function CommandPalette({
         } else {
           const { choreId, status } = await createOneTimeChore({ householdId, viewer: currentUser, task: current.task, dueDate: current.dueDate, assignee, room, onLateError: lateError });
           notifyDataChanged({ module: 'chores', householdId, choreId });
-          toast({ title: status === 'queued' ? 'Saved offline' : 'Chore added', description: status === 'queued' ? `${current.task} will sync when you're back online.` : `${current.task} for ${assignee.name}.` });
+          const task = current.task;
+          // Undo for 10 seconds once the server has it (QA-9); a queued chore has none.
+          const { dismiss } = toast({
+            title: status === 'queued' ? 'Saved offline' : 'Chore added',
+            description: status === 'queued' ? `${task} will sync when you're back online.` : `${task} for ${assignee.name}.`,
+            ...(status === 'saved' ? {
+              duration: QUICK_ADD_UNDO_MS,
+              action: (
+                <ToastAction
+                  altText={`Undo adding ${task}`}
+                  onClick={async () => {
+                    dismiss();
+                    try {
+                      const undone = await undoOneTimeChore(householdId, choreId);
+                      notifyDataChanged({ module: 'chores', householdId, choreId });
+                      if (undone.kept > 0) toast({ title: 'Kept', description: `${task} was already completed or changed, so it stays.` });
+                    } catch (error) {
+                      toastError(error, "Couldn't undo");
+                    }
+                  }}
+                >
+                  Undo
+                </ToastAction>
+              ),
+            } : {}),
+          });
         }
       } else if (current.kind === 'maintenance') {
         const held = maintenanceOp.current?.intent === current ? maintenanceOp.current.request : null;
@@ -648,7 +701,31 @@ export function CommandPalette({
         // Named only when it is the record the log was saved for (a resent request keeps its first target).
         const chosenId = choices.target?.kind === 'vehicle' ? choices.target.vehicle.id : choices.target?.kind === 'asset' ? choices.target.asset.id : undefined;
         const where = (values.vehicleId ?? values.assetId) === chosenId ? targetName(choices.target) : null;
-        toast({ title: status === 'queued' ? 'Saved offline' : 'Maintenance logged', description: `${current.title}${where ? ` for ${where}` : ''}${current.mileage ? ` at ${current.mileage.toLocaleString()} miles` : ''}.` });
+        const opId = result.status === 'saved' ? result.opId : undefined;
+        // Maintenance's own log Undo (by op id) for 10 seconds when the server saved it (QA-9).
+        const { dismiss } = toast({
+          title: status === 'queued' ? 'Saved offline' : 'Maintenance logged',
+          description: `${current.title}${where ? ` for ${where}` : ''}${current.mileage ? ` at ${current.mileage.toLocaleString()} miles` : ''}.`,
+          ...(opId ? {
+            duration: QUICK_ADD_UNDO_MS,
+            action: (
+              <ToastAction
+                altText={`Undo logging ${current.title}`}
+                onClick={async () => {
+                  dismiss();
+                  try {
+                    await undoQuickMaintenance(householdId, opId);
+                    notifyDataChanged({ module: 'maintenance', householdId });
+                  } catch (error) {
+                    toastError(error, "Couldn't undo");
+                  }
+                }}
+              >
+                Undo
+              </ToastAction>
+            ),
+          } : {}),
+        });
       }
       playFeedback('add');
       close();
