@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { openAiModels } from '@/ai/model-config';
 import { generateStructured, parseTaskInput, parseTaskOutput } from '@/ai/structured-generation';
+import { redactPersonal } from '@/ai/redact';
+import { mileageInText, portionInText } from '@/lib/dashboard/quick-add-numbers';
+import { findDate } from '@/lib/dashboard/quick-add';
+import { dayKey } from '@/lib/dashboard/dates';
 
 /**
  * AI reader for the command palette's quick add (H13). Used only as a fallback,
@@ -83,10 +87,29 @@ const validDay = (value: string | undefined): string | undefined => {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? value : undefined;
 };
 
-/** True when `value` appears in the sentence as digits (thousands separators ignored). */
-const numberInText = (value: number, text: string) => {
-  const digits = text.replace(/(\d),(?=\d{3}\b)/g, '$1');
-  return new RegExp(`(?<![\\d.])${value}(?![\\d])`).test(digits);
+/**
+ * The model's numbers and days are kept only when the member's own sentence states
+ * them (QA-7): a mileage as digits or "48k" (`mileageInText`), a portion as the Pets
+ * parser reads it or as written (`portionInText`), a due date that the deterministic
+ * date reader derives from the sentence, and a repeat whose day the sentence names.
+ */
+const todayAt = (today: string) => {
+  const [year, month, day] = today.split('-').map(Number);
+  return new Date(year, month - 1, day, 12);
+};
+const dueDateInText = (dueDate: string, text: string, today: string) => {
+  const found = findDate(text, todayAt(today));
+  if (found) return dayKey(found.date) === dueDate;
+  return dueDate === today && /\b(?:today|tonight)\b/i.test(text);
+};
+const WEEKDAY_WORDS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const repeatInText = (repeat: { frequency: string; dayOfWeek?: number; dayOfMonth?: number }, text: string) => {
+  const lower = text.toLowerCase();
+  if (repeat.frequency === 'daily') return /\b(?:day|daily|days|nightly|night|morning|evening)\b/.test(lower);
+  if (repeat.frequency === 'monthly') return repeat.dayOfMonth !== undefined && new RegExp(`(?<!\\d)${repeat.dayOfMonth}(?!\\d)`).test(lower);
+  if (repeat.dayOfWeek === undefined) return false;
+  if (repeat.dayOfWeek === 6 && /\bweekends?\b/.test(lower)) return true;
+  return new RegExp(`\\b${WEEKDAY_WORDS[repeat.dayOfWeek]}`).test(lower);
 };
 
 /**
@@ -110,12 +133,13 @@ export function sanitizeParseCommandOutput(
       repeat.frequency === 'daily'
       || ((repeat.frequency === 'weekly' || repeat.frequency === 'biweekly') && repeat.dayOfWeek !== undefined)
       || (repeat.frequency === 'monthly' && repeat.dayOfMonth !== undefined)
-    ) ? {
+    ) && repeatInText(repeat, input.text) ? {
         frequency: repeat.frequency,
         ...(repeat.frequency === 'weekly' || repeat.frequency === 'biweekly' ? { dayOfWeek: repeat.dayOfWeek } : {}),
         ...(repeat.frequency === 'monthly' ? { dayOfMonth: repeat.dayOfMonth } : {}),
       } : undefined;
-    const dueDate = validDay(output.chore.dueDate);
+    const asked = validDay(output.chore.dueDate);
+    const dueDate = asked && dueDateInText(asked, input.text, input.today) ? asked : undefined;
     const assigneeRef = has(input.members, output.chore.assigneeRef);
     const roomRef = has(input.rooms, output.chore.roomRef);
     return {
@@ -136,7 +160,7 @@ export function sanitizeParseCommandOutput(
       kind: 'maintenance',
       maintenance: {
         title: output.maintenance.title,
-        ...(mileage !== undefined && numberInText(mileage, input.text) ? { mileage } : {}),
+        ...(mileage !== undefined && mileageInText(mileage, input.text) ? { mileage } : {}),
         ...(vehicleRef ? { vehicleRef } : {}),
       },
     };
@@ -149,7 +173,9 @@ export function sanitizeParseCommandOutput(
     const petRef = has(input.pets, output.feeding.petRef);
     if (!petRef) return NONE;
     const { amount, unit } = output.feeding;
-    return { kind: 'feeding', feeding: { petRef, ...(amount !== undefined ? { amount } : {}), ...(unit ? { unit } : {}) } };
+    // A portion the sentence does not state is dropped with its unit: the pet's usual portion is used.
+    const stated = amount !== undefined && portionInText(amount, input.text);
+    return { kind: 'feeding', feeding: { petRef, ...(stated ? { amount } : {}), ...(stated && unit ? { unit } : {}) } };
   }
   return NONE;
 }
@@ -158,7 +184,10 @@ export async function parseCommandFlow(
   candidateInput: ParseCommandInput,
   allowed: readonly ParseCommandKind[],
 ): Promise<ParseCommandOutput> {
-  const input = parseTaskInput(ParseCommandInputSchema, candidateInput);
+  const parsed = parseTaskInput(ParseCommandInputSchema, candidateInput);
+  // Emails, phone numbers and street addresses never reach the model (QA-7), even
+  // from a client that skipped its own redaction.
+  const input = { ...parsed, text: redactPersonal(parsed.text) };
   if (allowed.length === 0) return NONE;
   const result = await generateStructured({
     flowName: 'command-parse',

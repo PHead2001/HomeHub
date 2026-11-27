@@ -94,3 +94,37 @@ describe('parse-command AI task (deterministic provider)', () => {
   });
 
 });
+
+describe('QA-7: AI answers must be stated by the sentence', () => {
+  const input = (text: string) => ({ ...baseInput, text });
+  test('drops a made-up portion, keeps a stated one', () => {
+    assert.deepEqual(
+      task.sanitizeParseCommandOutput({ kind: 'feeding', feeding: { petRef: 'p1', amount: 2, unit: 'Cups' } }, input('gave maple her dinner'), ALL),
+      { kind: 'feeding', feeding: { petRef: 'p1' } },
+    );
+    assert.deepEqual(
+      task.sanitizeParseCommandOutput({ kind: 'feeding', feeding: { petRef: 'p1', amount: 0.5, unit: 'Cups' } }, input('gave maple half of 1/2 cup'), ALL),
+      { kind: 'feeding', feeding: { petRef: 'p1', amount: 0.5, unit: 'Cups' } },
+    );
+  });
+  test('keeps a due date only when the sentence gives it', () => {
+    const made = task.sanitizeParseCommandOutput({ kind: 'chore', chore: { task: 'Call the vet', dueDate: '2026-08-09' } }, input('could someone call the vet'), ALL);
+    assert.equal(made.chore?.dueDate, undefined);
+    const stated = task.sanitizeParseCommandOutput({ kind: 'chore', chore: { task: 'Call the vet', dueDate: '2026-08-02' } }, input('could someone call the vet tomorrow'), ALL);
+    assert.equal(stated.chore?.dueDate, '2026-08-02');
+    const wrong = task.sanitizeParseCommandOutput({ kind: 'chore', chore: { task: 'Call the vet', dueDate: '2026-08-05' } }, input('could someone call the vet tomorrow'), ALL);
+    assert.equal(wrong.chore?.dueDate, undefined);
+  });
+  test('keeps a repeat only when the sentence names its day', () => {
+    const kept = task.sanitizeParseCommandOutput({ kind: 'chore', chore: { task: 'Recycling', repeat: { frequency: 'weekly', dayOfWeek: 2 } } }, input('could sam deal with the recycling on tuesdays'), ALL);
+    assert.equal(kept.chore?.repeat?.dayOfWeek, 2);
+    const made = task.sanitizeParseCommandOutput({ kind: 'chore', chore: { task: 'Recycling', repeat: { frequency: 'weekly', dayOfWeek: 4 } } }, input('could sam deal with the recycling on tuesdays'), ALL);
+    assert.equal(made.chore?.repeat, undefined);
+  });
+  test('reads "48k" mileage and refuses 120 for "120k"', () => {
+    const k = task.sanitizeParseCommandOutput({ kind: 'maintenance', maintenance: { title: 'Oil', mileage: 48_000 } }, input('had the oil done around 48k'), ALL);
+    assert.equal(k.maintenance?.mileage, 48_000);
+    const wrong = task.sanitizeParseCommandOutput({ kind: 'maintenance', maintenance: { title: 'Oil', mileage: 120 } }, input('had the oil done at 120k'), ALL);
+    assert.equal(wrong.maintenance?.mileage, undefined);
+  });
+});
