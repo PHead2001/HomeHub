@@ -156,8 +156,12 @@ test.describe('temporary chores and maintenance UI regressions', () => {
 
     await dialog.getByLabel('Chore', { exact: true }).fill(taskName);
     await dialog.getByLabel(/Notes/).fill('Use the spare MERV 11 filter from the hall closet.');
-    await dialog.getByLabel(/^Room/).click();
-    await page.getByRole('option', { name: 'Living Room' }).click();
+    // CH-25: rooms are toggle chips (one or more; none is Around the house).
+    const rooms = dialog.getByRole('group', { name: /^Rooms/ });
+    await expect(rooms.getByRole('button', { name: 'Around the house' })).toHaveAttribute('aria-pressed', 'true');
+    await rooms.getByRole('button', { name: 'Living Room' }).click();
+    await expect(rooms.getByRole('button', { name: 'Living Room' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(rooms.getByRole('button', { name: 'Around the house' })).toHaveAttribute('aria-pressed', 'false');
     await dialog.getByLabel('Who').click();
     await page.getByRole('option', { name: 'Sam Member' }).click();
     await dialog.getByLabel('Due date').fill('2026-08-04');
@@ -221,6 +225,42 @@ test.describe('temporary chores and maintenance UI regressions', () => {
     await expect.poll(async () => (await chore.ref.get()).exists).toBe(false);
   });
 
+
+  test('Add Chore in two rooms creates one chore per room and one notification (CH-25)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const taskName = 'Wipe the windowsills E2E';
+    const existing = await household.collection('chores').where('task', '==', taskName).get();
+    await Promise.all(existing.docs.map((item) => item.ref.delete()));
+
+    await openAuthenticated(page, '/chores', 'Chore Chart');
+    await page.getByRole('button', { name: 'Add Chore' }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Add chore' });
+    await dialog.getByLabel('Chore', { exact: true }).fill(taskName);
+    const rooms = dialog.getByRole('group', { name: /^Rooms/ });
+    await rooms.getByRole('button', { name: 'Kitchen' }).click();
+    await rooms.getByRole('button', { name: 'Living Room' }).click();
+    // Picking Around the house again clears the rooms; pick them once more.
+    await rooms.getByRole('button', { name: 'Around the house' }).click();
+    await expect(rooms.getByRole('button', { name: 'Kitchen' })).toHaveAttribute('aria-pressed', 'false');
+    await rooms.getByRole('button', { name: 'Kitchen' }).click();
+    await rooms.getByRole('button', { name: 'Living Room' }).click();
+    await dialog.getByLabel('Who').click();
+    await page.getByRole('option', { name: 'Sam Member' }).click();
+    await dialog.getByLabel('Due date').fill('2026-08-04');
+    await dialog.getByRole('button', { name: 'Add Chore' }).click();
+    await expect(dialog).toHaveCount(0);
+
+    await expect.poll(async () => (await household.collection('chores').where('task', '==', taskName).get()).size).toBe(2);
+    const created = await household.collection('chores').where('task', '==', taskName).get();
+    expect(created.docs.map((doc) => doc.data().roomIds).sort()).toEqual([['kitchen'], ['living-room']]);
+    for (const doc of created.docs) expect(doc.data()).toMatchObject({ sourceType: 'temporary', originalDueDate: '2026-08-04', assignedToUid: 'e2e-member-uid' });
+    // One assignment notification for the whole add, not one per room.
+    const notifications = await household.collection('notifications')
+      .where('sourceId', 'in', created.docs.map((doc) => doc.id)).get();
+    expect(notifications.size).toBe(1);
+    await Promise.all(created.docs.map((doc) => doc.ref.delete()));
+    await Promise.all(notifications.docs.map((doc) => doc.ref.delete()));
+  });
   test('home asset deletion preserves logs, resolves reminders, and requires attachment cleanup', async ({ page }, testInfo) => {
     desktopOnly(testInfo);
     test.setTimeout(90_000);
