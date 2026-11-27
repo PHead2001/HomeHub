@@ -22,6 +22,8 @@ import { AMBIENT_PET_MAX, ambientNextUp, ambientPetPosition, ambientPets } from 
 import type { DashboardFacts } from '../../src/lib/dashboard/facts';
 import type { DeviceSections } from '../../src/lib/devices/types';
 
+import { WHATS_NEW, buildDay, decideUpdatedMoment } from '../../src/lib/shell/whats-new';
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('SL-1: section error boundaries', () => {
@@ -322,6 +324,49 @@ describe('SL-23: the richer ambient screen on registered tablets', () => {
     assert.match(overlays, /aria-hidden className="pointer-events-none relative/);
     assert.doesNotMatch(overlays.slice(overlays.indexOf('function AmbientHouse')), /<Link|href=/);
     const css = source('src/app/globals.css');
-    assert.match(css, /:root\[data-kiosk\] body \{[^}]*user-select: none;[^}]*touch-action: manipulation;/s);
+    assert.match(css, /:root\[data-kiosk\] body \{[^}]*user-select: none;[^}]*touch-action: manipulation;/);
+  });
+});
+
+describe('SL-24: the "HomeHub updated" moment', () => {
+  const entries = [
+    { date: '2026-11-27', items: ['Newest'] },
+    { date: '2026-11-25', items: ['Middle'] },
+    { date: '2026-11-20', items: ['Older'] },
+  ];
+
+  it('shows once a newer build replaced the last one this browser ran', () => {
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: null, currentBuild: '20261127T100000000Z', entries }), { show: false }, 'first visit');
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: '20261127T100000000Z', currentBuild: '20261127T100000000Z', entries }), { show: false }, 'same build');
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: '20261128T100000000Z', currentBuild: '20261127T100000000Z', entries }), { show: false }, 'older page');
+    assert.deepEqual(decideUpdatedMoment({ previousBuild: 'garbage', currentBuild: '20261127T100000000Z', entries }), { show: false });
+  });
+
+  it('lists the releases after the last build, else the newest one', () => {
+    const moment = decideUpdatedMoment({ previousBuild: '20261121T080000000Z', currentBuild: '20261127T100000000Z', entries });
+    assert.equal(moment.show, true);
+    if (moment.show) {
+      assert.deepEqual(moment.entries.map((e) => e.date), ['2026-11-27', '2026-11-25']);
+      assert.equal(moment.headline, 'Newest');
+    }
+    const sameDay = decideUpdatedMoment({ previousBuild: '20261127T080000000Z', currentBuild: '20261127T100000000Z', entries });
+    assert.equal(sameDay.show && sameDay.entries[0].date, '2026-11-27');
+    assert.equal(buildDay('20261127T080000000Z'), '2026-11-27');
+  });
+
+  it('the changelog is newest first with dated, non-empty entries', () => {
+    for (let i = 1; i < WHATS_NEW.length; i += 1) assert.ok(WHATS_NEW[i - 1].date > WHATS_NEW[i].date);
+    for (const entry of WHATS_NEW) {
+      assert.match(entry.date, /^\d{4}-\d{2}-\d{2}$/);
+      assert.ok(entry.items.length > 0);
+    }
+  });
+
+  it('its toast never holds the shell busy, and tablets get no button or route', () => {
+    const moment = source('src/components/shell/updated-moment.tsx');
+    assert.match(moment, /holdsAction: false/);
+    assert.match(moment, /action: tablet \? undefined/);
+    assert.doesNotMatch(moment, /href=|router\.push/);
+    assert.match(source('src/components/devices/tablet-shell.tsx'), /<UpdatedMoment tablet \/>/);
   });
 });

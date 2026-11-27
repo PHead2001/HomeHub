@@ -37,7 +37,7 @@ With both flags on:
   - **Night:** during household quiet hours a dark layer dims the screen (touches pass through).
   - **Tablet settings** (replaces Profile): comfort for anyone (theme, text size, motion, sounds; saved on the record); **Room, name, sections and start page** (the Devices-list form) behind a fresh owner or admin PIN; **Sign in with a personal account**, **Use a different code** (both: the tablet is signed out, its record kept as needing a re-pair) and **Remove this tablet**, each confirmed and behind a fresh owner or admin PIN. "Clearing this browser's data or uninstalling the app also signs the tablet out" is stated (WT-16g).
   - **Removal observed:** the tablet clears everything and shows the setup screen with "This tablet was removed." (or "This tablet was set up again on another screen.", "This household was deleted, so this tablet was signed out.", "This tablet was signed out. Enter a new code to set it up again."). After **Sign in with a personal account** it lands on the signed-out home page.
-  - Keeps the screen on while shown; reloads itself for a new build only while idle.
+  - Keeps the screen on while shown; reloads itself for a new build only while idle, then says "HomeHub updated" with the newest change in one line (SL-24, no button).
 - **Join a household** with a device code: "That's a wall-tablet code. Use Set up a wall tablet." The code is not redeemed.
 - **Household > Devices** (owners and admins by role; members never see it):
   - every tablet with name, room, sections, app version and **Online** (last heartbeat within 15 minutes of the server's time) or **Last seen …**; an unpaired tablet shows **Needs re-pairing**; removed tablets are listed under **Removed tablets (n)**;

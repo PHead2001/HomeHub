@@ -18,6 +18,8 @@ import { useAuth } from '@/hooks/use-auth';
 
 const PushNotificationManager = dynamic(() => import('./PushNotificationManager').then((mod) => mod.PushNotificationManager), { ssr: false });
 const UpdateWatcher = dynamic(() => import('./shell/update-watcher').then((mod) => mod.UpdateWatcher), { ssr: false });
+// SL-24: "HomeHub updated" once after a new build, for signed-in people.
+const UpdatedMoment = dynamic(() => import('./shell/updated-moment').then((mod) => mod.UpdatedMoment), { ssr: false });
 const PushForegroundListener = dynamic(() => import('./push-foreground-listener').then((mod) => mod.PushForegroundListener), { ssr: false });
 const Toaster = dynamic(() => import('./ui/toaster').then((mod) => mod.Toaster), { ssr: false });
 
@@ -54,6 +56,7 @@ export function DeferredPushNotificationManager() {
       <PushNotificationManager />
       <UpdateWatcher />
       {currentUser ? <PushForegroundListener /> : null}
+      {currentUser ? <UpdatedMoment /> : null}
     </>
   );
 }
