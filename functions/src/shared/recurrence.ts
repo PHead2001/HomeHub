@@ -11,6 +11,8 @@ export type RecurrenceInput = {
   interval?: number;
   assignedToEmail?: string;
   startDate?: string;
+  /** Last day it repeats (inclusive); none repeats for good (CH-10). */
+  endDate?: string;
   dailyOptions?: {excludeWeekends?: boolean};
   weeklyOptions?: {daysOfWeek?: number[]};
   monthlyOptions?: {
@@ -25,6 +27,23 @@ export type NormalizedRecurrence = RecurrenceInput & {
 };
 
 const FREQUENCIES = ["daily", "weekly", "biweekly", "monthly"];
+
+/** Longest step offered: every 30 days or every 30 weeks. */
+export const MAX_INTERVAL = 30;
+
+const validInterval = (value: unknown): number =>
+  Number.isInteger(value) && (value as number) >= 1 &&
+    (value as number) <= MAX_INTERVAL ? value as number : 1;
+
+/**
+ * The Monday that starts the week of `day`: a stepped weekly schedule (every 2
+ * weeks, every N weeks) starts on the week, not the picked day, so a Mon and
+ * Fri pair always lands in the same week (CH-10).
+ * @param {string} day Day string.
+ * @return {string} Monday of that week.
+ */
+export const weekStartOf = (day: string): string =>
+  addDays(day, -((dayOfWeek(day) + 6) % 7));
 
 const weekdays = (r: RecurrenceInput, today: string): number[] => {
   const days = (r.weeklyOptions?.daysOfWeek || [])
@@ -49,7 +68,7 @@ export const normalizeRecurrence = (
   const normalized: NormalizedRecurrence = {
     ...r,
     frequency,
-    interval: frequency === "biweekly" ? 2 : (r.interval || 1),
+    interval: frequency === "biweekly" ? 2 : validInterval(r.interval),
   };
   if (frequency === "daily") {
     normalized.dailyOptions = {
@@ -59,9 +78,13 @@ export const normalizeRecurrence = (
   if (frequency === "weekly" || frequency === "biweekly") {
     normalized.weeklyOptions = {daysOfWeek: weekdays(r, today)};
   }
-  if (frequency === "biweekly") {
+  // Every 2 weeks, every N weeks or every N days count from a start day.
+  const stepped = frequency === "biweekly" ||
+    (frequency !== "monthly" && (normalized.interval ?? 1) > 1);
+  if (stepped || isDayString(r.startDate)) {
     normalized.startDate = isDayString(r.startDate) ? r.startDate : today;
   }
+  if (!isDayString(r.endDate)) delete normalized.endDate;
   if (frequency === "monthly") {
     const nth = r.monthlyOptions?.nthWeekday;
     normalized.monthlyOptions = r.monthlyOptions?.mode === "nthWeekday" && nth ?
@@ -72,17 +95,24 @@ export const normalizeRecurrence = (
 };
 
 export const occursOn = (day: string, r: NormalizedRecurrence): boolean => {
+  // A start day (when set) and an end day (inclusive) bound every rule.
+  if (isDayString(r.startDate) && day < r.startDate) return false;
+  if (isDayString(r.endDate) && day > r.endDate) return false;
+  const interval = r.interval ?? 1;
   if (r.frequency === "daily") {
     const weekday = dayOfWeek(day);
+    if (interval > 1) {
+      return diffDays(day, r.startDate as string) % interval === 0;
+    }
     return !r.dailyOptions?.excludeWeekends || (weekday > 0 && weekday < 6);
   }
   if (r.frequency === "weekly" || r.frequency === "biweekly") {
     if (!(r.weeklyOptions?.daysOfWeek || []).includes(dayOfWeek(day))) {
       return false;
     }
-    if (r.frequency === "weekly") return true;
+    if (r.frequency === "weekly" && interval <= 1) return true;
     const since = diffDays(day, r.startDate as string);
-    return since >= 0 && Math.floor(since / 7) % 2 === 0;
+    return since >= 0 && Math.floor(since / 7) % interval === 0;
   }
   const monthly = r.monthlyOptions;
   if (!monthly) return false;

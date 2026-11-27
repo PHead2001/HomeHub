@@ -18,13 +18,13 @@ export function houseCleanStorageKey(householdId: string, day: string): string {
 /**
  * The household's rooms for the moment: rooms worked in today first (they sparkle
  * first), then the rest by name, capped at `HOUSE_CLEAN_MAX_ROOMS`. With no rooms
- * set up, a single "Home" room stands for the house.
+ * set up, a single "Around the house" room stands for the house (CH-23).
  */
 export function cleanHouseRooms(
   rooms: ReadonlyArray<{ id: string; name: string; icon?: string }>,
   workedIn: ReadonlySet<string>,
 ): CleanRoom[] {
-  if (rooms.length === 0) return [{ id: 'home', name: 'Home', icon: 'Home', workedToday: true }];
+  if (rooms.length === 0) return [{ id: 'home', name: 'Around the house', icon: 'Home', workedToday: true }];
   return [...rooms]
     .map(room => ({ id: room.id, name: room.name, icon: room.icon || 'Home', workedToday: workedIn.has(room.id) }))
     .sort((a, b) => Number(b.workedToday) - Number(a.workedToday) || a.name.localeCompare(b.name))

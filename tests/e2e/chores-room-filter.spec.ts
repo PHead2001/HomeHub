@@ -43,7 +43,7 @@ async function open(page: Page, path: string) {
   await expect(page.getByRole('heading', { name: 'Chore Chart', exact: true })).toBeVisible();
 }
 
-const filterButton = (page: Page) => page.getByRole('main').getByRole('button', { name: /^(All Rooms|General|Kitchen|Living Room|Garage|Filter)$/ });
+const filterButton = (page: Page) => page.getByRole('main').getByRole('button', { name: /^(All Rooms|Around the house|Kitchen|Living Room|Garage|Filter)$/ });
 
 test.describe('chores: ?room= filter', () => {
   test.beforeEach(async ({}, testInfo) => { if (testInfo.project.name === 'desktop-chromium') await seed(); });

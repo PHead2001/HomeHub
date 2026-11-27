@@ -595,7 +595,7 @@ export function ChoreLibraryDialog({
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" className="h-8">
                     <Filter className="mr-2 h-3 w-3" />
-                    {filterRoomId === 'all' ? 'All Rooms' : (filterRoomId === 'none' ? 'No Room' : roomsById.get(filterRoomId)?.name || 'Filter')}
+                    {filterRoomId === 'all' ? 'All Rooms' : (filterRoomId === 'none' ? 'Around the house' : roomsById.get(filterRoomId)?.name || 'Filter')}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
@@ -603,7 +603,7 @@ export function ChoreLibraryDialog({
                   <DropdownMenuSeparator />
                   <DropdownMenuRadioGroup value={filterRoomId} onValueChange={setFilterRoomId}>
                     <DropdownMenuRadioItem value="all">All Rooms</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="none">No Room</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="none">Around the house</DropdownMenuRadioItem>
                     {rooms.map(room => (
                       <DropdownMenuRadioItem key={room.id} value={room.id}>
                         <span className="flex items-center gap-2"><RoomIcon name={room.icon} className="h-3 w-3" />{room.name}</span>
@@ -935,7 +935,7 @@ export function AddChoreDialog({
       setIsSubmitting(false);
     }
   }
-  // A room that no longer exists falls back to "No room".
+  // A room that no longer exists falls back to "Around the house".
   const effectiveRoomId = roomId !== 'general' && !rooms.some(room => room.id === roomId) ? 'general' : roomId;
 
   const clear = (key: keyof typeof errors) => setErrors(previous => ({ ...previous, [key]: undefined }));
@@ -1009,7 +1009,7 @@ export function AddChoreDialog({
                 <Select value={effectiveRoomId} onValueChange={setRoomId}>
                   <SelectTrigger id="add-chore-room"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="general">No room</SelectItem>
+                    <SelectItem value="general">Around the house</SelectItem>
                     {rooms.map(room => <SelectItem key={room.id} value={room.id}>{room.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
