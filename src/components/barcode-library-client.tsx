@@ -361,7 +361,13 @@ export function BarcodeLibraryClient() {
     return onSnapshot(
       query(collectionRef, orderBy('createdAt', 'desc')),
       (snapshot) => {
-        setItems(snapshot.docs.map(document => ({ id: document.id, ...document.data() } as BarcodeLibraryItem)));
+        setItems(snapshot.docs.map(document => {
+          const data = document.data();
+          // BL-23: the last scan's server timestamp as an ISO string for sorting.
+          const at = data.lastScannedAt as { toDate?: () => Date } | undefined;
+          const lastScannedAt = typeof at?.toDate === 'function' ? at.toDate().toISOString() : undefined;
+          return { ...data, id: document.id, lastScannedAt } as BarcodeLibraryItem;
+        }));
         setLoading(false);
       },
       (error) => {

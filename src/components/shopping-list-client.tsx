@@ -50,8 +50,9 @@ import { useTripMode } from './shopping/use-trip-mode';
 import { neededFocusOrder, scopeToList, withSectionOpen, type ListScoped } from '@/lib/shopping/trip-mode';
 import tripStyles from './shopping/trip-mode.module.css';
 import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
-import { libraryOfferFor, localLibraryLookup } from '@/lib/barcode/library-fill';
+import { libraryOfferFor, localLibraryLookup, scannedLibraryId } from '@/lib/barcode/library-fill';
 import { LibrarySaveOffer, useLibrarySaveOffer } from './barcode/library-save-offer';
+import { countLibraryScan } from '@/lib/barcode/library-save';
 import { rowPhoto } from '@/lib/shopping/row-photo';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { normalizeItemName, pluralize, restoreItemData, type QuickAddEntry } from '@/lib/shopping/items';
@@ -826,6 +827,10 @@ export function ShoppingListClient({
         const entry = scanToShoppingEntry(result);
         const miss = result.libraryItem ? null : lookupMiss(result);
         if (entry && !miss) {
+          // BL-23: counted before the add is awaited, so the increment is queued offline too
+          // (an offline add waits for the server; a reload meanwhile would lose a later count).
+          const savedId = canEdit ? scannedLibraryId(libraryPhotos, barcode, result) : null;
+          if (savedId) countLibraryScan(householdForLookup, savedId);
           const final = await addScannedProduct(entry, { libraryItem: result.libraryItem, barcode, selectedCategory: category }, {
             ...scanAddDeps,
             pending: (status) => {

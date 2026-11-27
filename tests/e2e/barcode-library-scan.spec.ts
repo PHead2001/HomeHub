@@ -24,6 +24,7 @@ const UNKNOWN = '000000000404';
 const TIMEOUT = '000000000408';
 const JUICE = '008500001280';
 const YOGURT = '009900045000';
+const PEANUT_BAR = '005500000551';
 
 async function open(page: Page, path: string, heading: string) {
   await page.clock.setFixedTime(fixedNow);
@@ -307,8 +308,31 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
       await scanIntoAddItem(page, JUICE);
       await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E Family Juice').get()).docs
         .map((document) => document.data().quantity), { timeout: 15_000 }).toEqual([2]);
+      // BL-23: that scan found the saved product, so it counts.
+      await expect.poll(async () => (await library.doc(JUICE).get()).data()?.scanCount, { timeout: 10_000 }).toBe(1);
+      await page.unroute((url) => url.pathname === '/shopping');
+      await open(page, '/library', 'Barcode Library');
+      await expect(page.getByRole('article', { name: 'E2E Family Juice' }).getByText('Scanned once')).toBeVisible();
     } finally {
       await library.doc(JUICE).delete();
+    }
+  });
+
+  test('allergens and Nutri-Score come with a saved product and show on its row and card (BL-22)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await library.doc(PEANUT_BAR).delete();
+    try {
+      await open(page, `/shopping?list=${LIST_ID}`, 'Shopping Center');
+      await scanIntoAddItem(page, PEANUT_BAR);
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect.poll(async () => (await library.doc(PEANUT_BAR).get()).data(), { timeout: 10_000 })
+        .toMatchObject({ name: 'E2E Peanut Bar', allergens: ['peanuts', 'milk'], nutriScore: 'd' });
+      const row = page.getByTestId('open-list').getByText('Contains: peanuts, milk');
+      await expect(row).toBeVisible({ timeout: 10_000 });
+      await open(page, '/library', 'Barcode Library');
+      await expect(page.getByRole('article', { name: 'E2E Peanut Bar' }).getByText('Nutri-Score D')).toBeVisible();
+    } finally {
+      await library.doc(PEANUT_BAR).delete();
     }
   });
 });

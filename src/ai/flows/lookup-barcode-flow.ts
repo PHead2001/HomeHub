@@ -17,6 +17,7 @@ import {
   type UnavailableReason,
 } from '@/lib/barcode/lookup-outcome';
 import { lookupIds } from '@/lib/barcode/gtin';
+import { parseAllergens, parseNutriScore, storedNutrition, type NutriScore } from '@/lib/barcode/nutrition';
 
 const LookupBarcodeInputSchema = z.object({
   barcode: z.string().trim().regex(/^\d{6,32}$/),
@@ -33,6 +34,9 @@ export type LookupBarcodeOutput = {
   unit?: PantryItemUnit;
   rawQuantity?: string;
   imageUrl?: string;
+  /** BL-22: Open Food Facts allergens (English tag words) and Nutri-Score, when it knows them. */
+  allergens?: string[];
+  nutriScore?: NutriScore;
 };
 
 type OpenFoodFactsProduct = {
@@ -41,12 +45,15 @@ type OpenFoodFactsProduct = {
   product_quantity?: unknown;
   product_quantity_unit?: unknown;
   image_front_url?: unknown;
+  allergens_tags?: unknown;
+  nutriscore_grade?: unknown;
 };
 
 const deterministicFixtures: Record<string, OpenFoodFactsProduct | null | 'timeout' | 'rate-limit' | 'malformed'> = {
   '008500001280': { product_name: 'E2E Family Juice', quantity: '128 fl oz' },
   '009900045000': { product_name: 'E2E Yogurt Multipack', quantity: '3 x 150 g', product_quantity: 450, product_quantity_unit: 'g' },
   '007700000006': { product_name: 'E2E Odd Measure', quantity: '1 bushel' },
+  '005500000551': { product_name: 'E2E Peanut Bar', quantity: '50 g', product_quantity: 50, product_quantity_unit: 'g', allergens_tags: ['en:peanuts', 'en:milk'], nutriscore_grade: 'd' },
   '000000000404': null,
   '000000000408': 'timeout',
   '000000000429': 'rate-limit',
@@ -64,7 +71,14 @@ const sanitizeLibraryItem = (id: string, data: Record<string, unknown>): Barcode
   imageUrl: typeof data.imageUrl === 'string' ? data.imageUrl : '',
   ...(typeof data.imagePath === 'string' ? { imagePath: data.imagePath } : {}),
   createdAt: typeof data.createdAt === 'string' ? data.createdAt : new Date(0).toISOString(),
+  ...nutritionOf(data),
 });
+
+/** Stored allergens and Nutri-Score, only when present (BL-22). */
+const nutritionOf = (data: Record<string, unknown>) => {
+  const { allergens, nutriScore } = storedNutrition(data);
+  return { ...(allergens.length > 0 ? { allergens } : {}), ...(nutriScore ? { nutriScore } : {}) };
+};
 
 const fetchOpenFoodFacts = async (barcode: string): Promise<OpenFoodFactsOutcome<OpenFoodFactsProduct>> => {
   if (isSafeDeterministicMode()) {
@@ -78,7 +92,7 @@ const fetchOpenFoodFacts = async (barcode: string): Promise<OpenFoodFactsOutcome
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
   try {
-    const fields = 'product_name,quantity,product_quantity,product_quantity_unit,image_front_url';
+    const fields = 'product_name,quantity,product_quantity,product_quantity_unit,image_front_url,allergens_tags,nutriscore_grade';
     const response = await fetch(`https://world.openfoodfacts.org/api/v3/product/${barcode}.json?fields=${fields}`, {
       headers: { 'User-Agent': 'HomeHub/1.0 (private household inventory application)' },
       redirect: 'follow',
@@ -134,6 +148,7 @@ export const lookupBarcodeForAuthorizedUser = async (
     ...(parsed || {}),
     ...(rawQuantity ? { rawQuantity } : {}),
     ...(typeof productData.image_front_url === 'string' ? { imageUrl: productData.image_front_url } : {}),
+    ...nutritionOf({ allergens: parseAllergens(productData.allergens_tags), nutriScore: parseNutriScore(productData.nutriscore_grade) }),
   };
 };
 

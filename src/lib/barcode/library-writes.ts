@@ -10,6 +10,7 @@
  *   `createdAt` or `createdByUid`.
  * - The photo is optional: a product can be just a barcode and a name.
  */
+import { storedNutrition, type NutriScore } from './nutrition';
 
 export type ProductPhoto = { imageUrl: string; imagePath?: string };
 
@@ -19,6 +20,12 @@ export type NewProductData = {
   imagePath?: string;
   createdAt: string;
   createdByUid: string;
+  /** BL-22, kept by an Undo restore. */
+  allergens?: string[];
+  nutriScore?: NutriScore;
+  /** BL-23, kept by an Undo restore (the stored timestamp, as read). */
+  scanCount?: number;
+  lastScannedAt?: unknown;
 };
 
 /** Library name limit (the rules allow 200; the form keeps 120). */
@@ -78,7 +85,7 @@ const MAX_STORED_NAME_LENGTH = 200;
  * on edits), so the caller can say the photo was not restored.
  */
 export function restoredProductData(
-  item: { name: string; imageUrl?: string; imagePath?: string; createdAt?: string },
+  item: { name: string; imageUrl?: string; imagePath?: string; createdAt?: string; allergens?: string[]; nutriScore?: NutriScore; scanCount?: number; lastScannedAt?: unknown },
   { householdId, uid, now, photoGone = false }: { householdId: string; uid: string; now: Date; photoGone?: boolean },
 ): { data: NewProductData; photo: RestoredPhoto } {
   const createdAt = typeof item.createdAt === 'string' && item.createdAt && item.createdAt.length <= 40 ? item.createdAt : now.toISOString();
@@ -95,6 +102,8 @@ export function restoredProductData(
       ...(keepPath ? { imagePath: item.imagePath } : {}),
       createdAt,
       createdByUid: uid,
+      ...nutritionFields(item),
+      ...scanFields(item),
     },
     photo,
   };
@@ -106,11 +115,32 @@ export function restoredProductData(
  * cleanup targets what was actually deleted. Null when the product was already
  * gone (nothing to undo).
  */
+/** Allergens and Nutri-Score as stored, only when present (BL-22). */
+function nutritionFields(data: { allergens?: unknown; nutriScore?: unknown }): { allergens?: string[]; nutriScore?: NutriScore } {
+  const { allergens, nutriScore } = storedNutrition(data);
+  return { ...(allergens.length > 0 ? { allergens } : {}), ...(nutriScore ? { nutriScore } : {}) };
+}
+
+/**
+ * Scan counts as stored (BL-23): a whole count 0 to 1,000,000 and the last scan's
+ * timestamp (anything with `toDate`, a Firestore Timestamp), only when present.
+ */
+function scanFields(data: { scanCount?: unknown; lastScannedAt?: unknown }): { scanCount?: number; lastScannedAt?: unknown } {
+  const count = data.scanCount;
+  const okCount = typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 1_000_000;
+  const at = data.lastScannedAt;
+  const okAt = Boolean(at && typeof at === 'object' && typeof (at as { toDate?: unknown }).toDate === 'function');
+  return { ...(okCount ? { scanCount: count } : {}), ...(okAt ? { lastScannedAt: at } : {}) };
+}
+
 export function capturedProduct(id: string, data: Record<string, unknown> | null | undefined): {
-  id: string; name: string; imageUrl: string; imagePath?: string; createdAt?: string;
+  id: string; name: string; imageUrl: string; imagePath?: string; createdAt?: string; allergens?: string[]; nutriScore?: NutriScore;
+  scanCount?: number; lastScannedAt?: unknown;
 } | null {
   if (!data) return null;
   return {
+    ...nutritionFields(data),
+    ...scanFields(data),
     id,
     name: typeof data.name === 'string' && data.name ? data.name : 'Saved product',
     imageUrl: typeof data.imageUrl === 'string' ? data.imageUrl : '',

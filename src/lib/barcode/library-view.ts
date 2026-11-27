@@ -9,6 +9,7 @@ export type LibrarySort = 'newest' | 'name' | 'most-scanned';
 export const LIBRARY_SORTS: readonly { id: LibrarySort; label: string }[] = [
   { id: 'newest', label: 'Newest' },
   { id: 'name', label: 'Name' },
+  { id: 'most-scanned', label: 'Most scanned' },
 ];
 
 const words = (value: string) => value.toLowerCase().split(/\s+/).filter(Boolean);

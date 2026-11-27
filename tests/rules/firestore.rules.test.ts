@@ -3001,6 +3001,32 @@ describe('content shapes: barcode library', () => {
     await assertFails(setDoc(item(users.member, '208'), saved({ name: 7 })));
     await assertFails(setDoc(item(users.member, 'x'.repeat(129)), saved()));
   });
+
+  test('allergens and Nutri-Score from Open Food Facts are bounded (BL-22)', async () => {
+    await assertSucceeds(setDoc(item(users.member, '301'), saved({ allergens: ['peanuts', 'milk'], nutriScore: 'd' })));
+    await assertSucceeds(updateDoc(item(users.member, '012345678905'), { nutriScore: 'a' }));
+    await assertFails(setDoc(item(users.member, '302'), saved({ nutriScore: 'f' })));
+    await assertFails(setDoc(item(users.member, '303'), saved({ allergens: 'peanuts' })));
+    await assertFails(setDoc(item(users.member, '304'), saved({ allergens: Array.from({ length: 21 }, (_, i) => `a${i}`) })));
+  });
+
+  test('a scan adds exactly 1 at the server time; a restore may carry the count (BL-23)', async () => {
+    // library-save.ts countLibraryScan
+    await assertSucceeds(updateDoc(item(users.member, '012345678905'), { scanCount: increment(1), lastScannedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(item(users.member, '012345678905'), { scanCount: increment(1), lastScannedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, '012345678905'), { scanCount: increment(2), lastScannedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, '012345678905'), { scanCount: 500, lastScannedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, '012345678905'), { scanCount: increment(1) }));
+    await assertFails(updateDoc(item(users.member, '012345678905'), { lastScannedAt: serverTimestamp() }));
+    await assertFails(updateDoc(item(users.member, '012345678905'), { scanCount: increment(1), lastScannedAt: Timestamp.fromMillis(0) }));
+    // Viewers cannot count (no shopping.edit).
+    await assertFails(updateDoc(item(users.guest, '012345678905'), { scanCount: increment(1), lastScannedAt: serverTimestamp() }));
+    // An Undo restore (a create) keeps the count and the last scan.
+    await assertSucceeds(setDoc(item(users.member, '401'), saved({ scanCount: 7, lastScannedAt: Timestamp.fromMillis(1_700_000_000_000) })));
+    await assertFails(setDoc(item(users.member, '402'), saved({ scanCount: 1.5 })));
+    await assertFails(setDoc(item(users.member, '403'), saved({ scanCount: -1 })));
+    await assertFails(setDoc(item(users.member, '404'), saved({ lastScannedAt: 'yesterday' })));
+  });
 });
 
 // Member privacy release D: profiles and household documents are read only by

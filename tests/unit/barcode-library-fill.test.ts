@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { libraryOfferFor, localLibraryLookup } from '../../src/lib/barcode/library-fill';
+import { readFileSync } from 'node:fs';
+import { libraryOfferFor, localLibraryLookup, scannedLibraryId } from '../../src/lib/barcode/library-fill';
 
 describe('library that fills itself (BL-19)', () => {
   const off = { source: 'open_food_facts', productName: '  Oat   drink ', imageUrl: 'https://images.openfoodfacts.org/images/products/1/front.jpg' };
@@ -8,6 +9,12 @@ describe('library that fills itself (BL-19)', () => {
   test('an Open Food Facts find is offered under its normalised ID, with its photo', () => {
     assert.deepEqual(libraryOfferFor(off, '012345678905', 'h'), {
       barcode: '0012345678905', name: 'Oat drink', imageUrl: 'https://images.openfoodfacts.org/images/products/1/front.jpg',
+    });
+  });
+
+  test('allergens and Nutri-Score travel with the offer (BL-22)', () => {
+    assert.deepEqual(libraryOfferFor({ ...off, allergens: ['peanuts'], nutriScore: 'd' }, '4006381333931', 'h'), {
+      barcode: '4006381333931', name: 'Oat drink', imageUrl: off.imageUrl, allergens: ['peanuts'], nutriScore: 'd',
     });
   });
 
@@ -30,5 +37,31 @@ describe('library that fills itself (BL-19)', () => {
     assert.equal(localLibraryLookup(library, '000000000404')?.productName, 'Mystery tin');
     assert.equal(localLibraryLookup(library, '4006381333931'), null);
     assert.equal(localLibraryLookup(null, '012345678905'), null);
+  });
+});
+
+describe('which saved product a scan counts toward (BL-23)', () => {
+  const library = new Map([['0012345678905', { name: 'Oat drink' }]]);
+
+  test('a household answer counts its product; Open Food Facts and misses count nothing', () => {
+    assert.equal(scannedLibraryId(library, '012345678905', { source: 'household', libraryItem: { id: '0012345678905' } }), '0012345678905');
+    assert.equal(scannedLibraryId(library, '012345678905', { source: 'open_food_facts', libraryItem: null }), null);
+    assert.equal(scannedLibraryId(library, '012345678905', { source: 'none', libraryItem: null }), null);
+  });
+
+  test('without a lookup (Scan to tick matched the list by barcode) the on-device library decides, in either form', () => {
+    assert.equal(scannedLibraryId(library, '012345678905'), '0012345678905');
+    assert.equal(scannedLibraryId(library, '4006381333931'), null);
+    assert.equal(scannedLibraryId(null, '012345678905'), null);
+  });
+
+  test('Scan to tick counts on its barcode fast path; Add Item counts before awaiting the add (queued offline)', () => {
+    const tick = readFileSync('src/components/shopping/scan-to-tick.tsx', 'utf8');
+    const fast = tick.slice(tick.indexOf('const local = matchByBarcode'), tick.indexOf('act(local, barcode);'));
+    assert.match(fast, /countLibraryScan\(householdId, savedId\)/);
+    const list = readFileSync('src/components/shopping-list-client.tsx', 'utf8');
+    const count = list.indexOf('if (savedId) countLibraryScan(householdForLookup, savedId);');
+    const add = list.indexOf('const final = await addScannedProduct(');
+    assert.ok(count > 0 && add > count, 'the count is queued before the add is awaited');
   });
 });

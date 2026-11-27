@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { storedNutrition, type NutriScore } from './nutrition';
 
-export type LibraryPhoto = { name: string; imageUrl?: string };
+export type LibraryPhoto = { name: string; imageUrl?: string; allergens?: string[]; nutriScore?: NutriScore | null };
 type PhotoState = { householdId: string; photos: ReadonlyMap<string, LibraryPhoto> } | null;
 
 /**
@@ -24,7 +25,9 @@ export function useLibraryPhotos(householdId: string | null): ReadonlyMap<string
         snapshot.docs.forEach((document) => {
           const imageUrl = document.get('imageUrl');
           const name = document.get('name');
-          photos.set(document.id, { name: typeof name === 'string' ? name : '', imageUrl: typeof imageUrl === 'string' ? imageUrl : '' });
+          // BL-22: allergens and Nutri-Score for the rows' chips.
+          const { allergens, nutriScore } = storedNutrition({ allergens: document.get('allergens'), nutriScore: document.get('nutriScore') });
+          photos.set(document.id, { name: typeof name === 'string' ? name : '', imageUrl: typeof imageUrl === 'string' ? imageUrl : '', allergens, nutriScore });
         });
         setState({ householdId, photos });
       },

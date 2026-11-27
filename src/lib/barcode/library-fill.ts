@@ -12,10 +12,11 @@
 import type { BarcodeLibraryItem } from '@/lib/types';
 import { lookupIds, normalizeGtin } from './gtin';
 import { MAX_PRODUCT_NAME_LENGTH, photoUrlAcceptedOnCreate, productName } from './library-writes';
+import { storedNutrition, type NutriScore } from './nutrition';
 
-export type LibraryOffer = { barcode: string; name: string; imageUrl: string };
+export type LibraryOffer = { barcode: string; name: string; imageUrl: string; allergens?: string[]; nutriScore?: NutriScore };
 
-type LookupLike = { source?: string; productName?: string | null; imageUrl?: string | null; libraryItem?: unknown };
+type LookupLike = { source?: string; productName?: string | null; imageUrl?: string | null; libraryItem?: unknown; allergens?: unknown; nutriScore?: unknown };
 
 /** What "Save to library" would save after a lookup, or null (not an Open Food Facts find). */
 export function libraryOfferFor(result: LookupLike, scanned: string, householdId: string): LibraryOffer | null {
@@ -25,10 +26,12 @@ export function libraryOfferFor(result: LookupLike, scanned: string, householdId
   const normalized = normalizeGtin(scanned);
   if (!normalized.ok) return null;
   const imageUrl = typeof result.imageUrl === 'string' && photoUrlAcceptedOnCreate(householdId, result.imageUrl) ? result.imageUrl : '';
-  return { barcode: normalized.id, name, imageUrl };
+  // BL-22: allergens and Nutri-Score travel with the saved product.
+  const { allergens, nutriScore } = storedNutrition(result);
+  return { barcode: normalized.id, name, imageUrl, ...(allergens.length > 0 ? { allergens } : {}), ...(nutriScore ? { nutriScore } : {}) };
 }
 
-export type LocalLibraryEntry = { name: string; imageUrl?: string };
+export type LocalLibraryEntry = { name: string; imageUrl?: string; allergens?: string[]; nutriScore?: NutriScore | null };
 
 export type LocalLookup = {
   productName: string;
@@ -48,10 +51,27 @@ export function localLibraryLookup(library: ReadonlyMap<string, LocalLibraryEntr
     if (entry && entry.name.trim()) {
       return {
         productName: entry.name,
-        libraryItem: { id, name: entry.name, imageUrl: entry.imageUrl ?? '', createdAt: '' },
+        libraryItem: {
+          id, name: entry.name, imageUrl: entry.imageUrl ?? '', createdAt: '',
+          ...(entry.allergens?.length ? { allergens: entry.allergens } : {}), ...(entry.nutriScore ? { nutriScore: entry.nutriScore } : {}),
+        },
         source: 'household',
       };
     }
   }
   return null;
+}
+
+/**
+ * The saved product a scan counts toward (BL-23), or null: the household product a lookup
+ * answered with, else (no lookup made, as Scan to tick's fast path for an item already on
+ * the list) the product the on-device library holds for this code in either barcode form.
+ */
+export function scannedLibraryId(
+  library: ReadonlyMap<string, LocalLibraryEntry> | null,
+  scanned: string,
+  result?: { source?: string; libraryItem?: { id: string } | null } | null,
+): string | null {
+  if (result) return result.source === 'household' && result.libraryItem ? result.libraryItem.id : null;
+  return localLibraryLookup(library, scanned)?.libraryItem.id ?? null;
 }
