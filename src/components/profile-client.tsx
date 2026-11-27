@@ -13,7 +13,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { FieldError } from '@/components/field-error';
 import { MemberAvatar } from '@/components/member-avatar';
 import { roleLabel } from '@/components/household/household-model';
@@ -23,6 +22,7 @@ import { AVATAR_MAX_EDGE, PROFILE_PHOTO_ACCEPT, avatarExtensionFor, ownAvatarPat
 import { NotificationSettings } from '@/components/profile/notification-settings';
 import { AppearanceSettings } from './appearance-settings';
 import { TabletPinCard } from '@/components/profile/tablet-pin-card';
+import { AccountCard } from '@/components/profile/account-card';
 
 const profileSchema = z.object({
   displayName: z.string().trim().min(2, 'Use at least 2 characters.').max(60, 'Keep it under 60 characters.'),
@@ -47,6 +47,17 @@ export function ProfileClient() {
   });
   // An edited name, a chosen photo or a save in progress keeps the shell from reloading on its own.
   useUnsavedInput(form.formState.isDirty || Boolean(photoFile) || removePhoto || isSubmitting);
+  // PR-15: leaving the page (reload, close, typed URL) with an unsaved name or photo asks first.
+  const unsavedChanges = form.formState.isDirty || Boolean(photoFile) || removePhoto;
+  useEffect(() => {
+    if (!unsavedChanges) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [unsavedChanges]);
 
   // Object URLs for the local preview are released when replaced or unmounted.
   useEffect(() => () => {
@@ -167,13 +178,15 @@ export function ProfileClient() {
   const photoChanged = Boolean(photoFile) || removePhoto;
 
   return (
-    // Two columns only when both fit at their rem-based minimum widths (32rem and
-    // 20rem): px breakpoints ignore the text size, so 130% text at 768-1023 px stacks.
+    // PR-18: two equal columns only when both fit at their rem-based minimum width
+    // (24rem each): px breakpoints ignore the text size, so 130% text, or a 768-800 px
+    // tablet, stacks them instead of squeezing one column. Personal information and
+    // notifications on the left, appearance beside them.
     <div className="mx-auto flex max-w-6xl flex-wrap gap-8">
-      <div className="min-w-0 flex-[2_1_32rem] space-y-8">
+      <div className="min-w-0 flex-[1_1_24rem] space-y-8">
         <Card>
           <CardHeader>
-            <CardTitle className="font-headline">Personal Information</CardTitle>
+            <CardTitle as="h2" className="font-headline">Personal Information</CardTitle>
             <CardDescription>How you appear to the rest of your household.</CardDescription>
           </CardHeader>
           <CardContent>
@@ -258,12 +271,9 @@ export function ProfileClient() {
                     </FormItem>
                   )}
                 />
-                <div className="space-y-2">
-                  <Label htmlFor="profile-email">Email</Label>
-                  <Input id="profile-email" disabled value={currentUser.email || ''} />
-                </div>
 
-                <Button type="submit" disabled={isSubmitting || preparingPhoto}>
+                {/* PR-15: enabled only when something changed. */}
+                <Button type="submit" disabled={isSubmitting || preparingPhoto || !(form.formState.isDirty || photoChanged)}>
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Changes
                 </Button>
@@ -271,10 +281,11 @@ export function ProfileClient() {
             </Form>
           </CardContent>
         </Card>
-      </div>
-      <div className="min-w-0 flex-[1_1_20rem] space-y-8">
-        <AppearanceSettings />
         <NotificationSettings />
+        <AccountCard />
+      </div>
+      <div className="min-w-0 flex-[1_1_24rem] space-y-8">
+        <AppearanceSettings />
         <TabletPinCard />
       </div>
     </div>

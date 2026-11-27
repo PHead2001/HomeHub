@@ -114,8 +114,8 @@ export function AppearanceSettings() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-headline flex items-center gap-2">
-          <Palette /> Appearance
+        <CardTitle as="h2" className="font-headline flex items-center gap-2">
+          <Palette aria-hidden /> Appearance
         </CardTitle>
         <CardDescription>
           Theme, text size, motion and feedback. Theme and motion follow you to other devices; text size stays on this one.
