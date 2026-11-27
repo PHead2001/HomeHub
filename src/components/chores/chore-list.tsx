@@ -44,6 +44,8 @@ type ChoreListProps = ChoreListHandlers & {
   selectedIds: ReadonlySet<string>;
   openIds: ReadonlySet<string>;
   onToggleOpen: (id: string) => void;
+  /** CH-13: the room view's large cards (bigger name, the assignee's avatar and name always shown). */
+  large?: boolean;
 };
 
 function dueLabel(day: string, today: string): string {
@@ -83,9 +85,12 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
     return completer ? memberName(completer) : undefined;
   }) : null;
 
+  const large = props.large === true;
   const avatar = (
-    <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size="sm" decorative />
+    <MemberAvatar uid={uid} name={name} photoUrl={user?.avatarUrl} color={props.colors.get(uid)} size={large ? 'md' : 'sm'} decorative />
   );
+  const nameSize = large ? 'text-lg md:text-xl' : 'text-sm md:text-base';
+  const assigneeName = large ? 'max-w-[10rem] truncate text-sm font-medium text-foreground md:text-base' : 'hidden max-w-[8rem] truncate sm:inline';
 
   return (
     <StaggerItem
@@ -97,6 +102,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         'rounded-lg border bg-card',
         // The calendar's "Open Chores" marks its chore for a moment (CA-17, `?chore=`).
         'transition-shadow data-[highlight=true]:ring-2 data-[highlight=true]:ring-primary',
+        large && 'shadow-raised',
         isOverdue && 'border-l-4 border-l-destructive',
         props.selectedIds.has(chore.id) && 'border-primary',
         leaving && 'pointer-events-none',
@@ -135,14 +141,14 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
               aria-controls={detailsId}
               onClick={() => props.onToggleOpen(chore.id)}
             >
-              <span className={cn('line-clamp-2 min-w-0 flex-1 break-words text-sm font-medium md:text-base', isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
+              <span className={cn('line-clamp-2 min-w-0 flex-1 break-words font-medium', nameSize, isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
                 {chore.task}
               </span>
               <ChevronDown aria-hidden className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-150', isOpen && 'rotate-180')} />
               <span className="sr-only">{isOpen ? 'Hide details' : 'Show details'}</span>
             </button>
           ) : (
-            <span className={cn('line-clamp-2 break-words text-sm font-medium md:text-base', isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
+            <span className={cn('line-clamp-2 break-words font-medium', nameSize, isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
               {chore.task}
             </span>
           )}
@@ -167,7 +173,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
                 )}
               </span>
             )}
-            <span className="sm:hidden">· {name}</span>
+            {!large && <span className="sm:hidden">· {name}</span>}
           </span>
         </div>
 
@@ -180,7 +186,7 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
                 aria-label={`Assigned to ${name}. Reassign ${chore.task}`}
               >
                 {avatar}
-                <span className="hidden max-w-[8rem] truncate sm:inline">{name}</span>
+                <span className={assigneeName}>{name}</span>
                 <ChevronDown aria-hidden className="hidden h-3 w-3 sm:block" />
               </button>
             </DropdownMenuTrigger>
@@ -201,8 +207,8 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
         ) : (
           <span className="flex h-[var(--target-min)] shrink-0 items-center gap-1.5 px-1.5 text-xs text-muted-foreground sm:px-2 coarse:text-sm">
             {avatar}
-            <span className="hidden max-w-[8rem] truncate sm:inline">{name}</span>
-            <span className="sr-only sm:hidden">Assigned to {name}</span>
+            <span className={assigneeName}>{name}</span>
+            {!large && <span className="sr-only sm:hidden">Assigned to {name}</span>}
           </span>
         )}
 

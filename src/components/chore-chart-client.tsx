@@ -56,12 +56,16 @@ import { useChoreLiveData } from '@/components/chores/use-chore-live-data';
 import { mergeLiveRows } from '@/lib/chores/live';
 import { MissedRecently } from '@/components/chores/missed-recently';
 import { useMissedEntries } from '@/components/chores/use-missed-entries';
+import { LeaderboardRibbon } from '@/components/chores/leaderboard-ribbon';
+import { RoomHero } from '@/components/chores/room-hero';
+import { doneTodayEntries, isRoomView } from '@/lib/chores/room-view';
 import { useHouseholdToday } from '@/components/chores/use-today';
 import { rotationFieldsFor } from '@/lib/chores/rotation';
 import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { morphStyle } from '@/lib/motion';
+import { cn } from '@/lib/utils';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
@@ -132,6 +136,9 @@ export function ChoreChartClient() {
   const [houseClean, setHouseClean] = useState<CleanRoom[] | null>(null);
   const [personDone, setPersonDone] = useState<string | null>(null);
   const [isAllowanceOpen, setIsAllowanceOpen] = useState(false);
+  // CH-13, CH-18: below the wide layout (and in the room view) the leaderboard is a
+  // ribbon at the top; its full card opens under it on request.
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -1074,6 +1081,17 @@ export function ChoreChartClient() {
   const recurringChores = choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence));
   const isEmptyHousehold = assignedChores.length === 0 && choreTemplates.length === 0;
 
+  // CH-13: one room chosen shows the room layout (big title, large cards, done today).
+  const roomView = isRoomView(filterRoomId);
+  const chosenRoom = roomsById.get(filterRoomId);
+  const roomName = filterRoomId === 'general' ? AROUND_THE_HOUSE : chosenRoom?.name ?? REMOVED_ROOM;
+  const roomIcon = chosenRoom?.icon ?? 'Home';
+  const doneToday = roomView ? doneTodayEntries(completedChores, today, householdDayOf, uid => {
+    const user = usersByUid.get(uid);
+    return user ? memberName(user) : undefined;
+  }).map(entry => ({ ...entry, photoUrl: entry.byUid ? usersByUid.get(entry.byUid)?.avatarUrl : null })) : [];
+  const compactHeader = 'px-3 sm:px-4';
+
   const groupByRoom = (entries: ToDoEntry[]) => {
     // Keyed by room id, never by name: a room someone named "General" or "Around the house"
     // stays its own group (CH-10). Chores of removed rooms share one group.
@@ -1111,6 +1129,8 @@ export function ChoreChartClient() {
     onReassign: (chore: ChoreRecord, uid: string) => void handleReassign(chore, uid),
     onDelete: (chore: ChoreRecord) => setChoreToDelete(chore),
     onClearMissed: (entry: ToDoEntry) => void deleteChores(entry.missed.map(c => c.id), `Cleared ${entry.missed.length} missed`),
+    // CH-13: large cards in the room view.
+    large: roomView,
   };
 
   const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
@@ -1278,24 +1298,32 @@ export function ChoreChartClient() {
         onDelete={handleDeleteRecurringTask}
       />
 
-      {/* Header: left-aligned with actions in the header row, like the other modules. */}
-      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="font-headline text-3xl font-bold tracking-tight">Chore Chart</h1>
-          <p className="text-muted-foreground">Who does what, and what&apos;s due today.</p>
+      {/* Header: left-aligned with actions in the header row, like the other modules. On
+          phones (CH-18) and in the room view (CH-13) it stays one row: Calendar and the
+          Chore Manager are icon buttons there, named for assistive tech. */}
+      <div className={cn('flex items-center justify-between gap-2', roomView ? 'mb-3' : 'mb-4 sm:mb-6')}>
+        <div className="min-w-0">
+          <h1 className={cn('font-headline font-bold tracking-tight', roomView ? 'text-xl sm:text-2xl' : 'text-2xl sm:text-3xl')}>Chore Chart</h1>
+          <p className={cn('text-muted-foreground', roomView ? 'sr-only' : 'hidden sm:block')}>Who does what, and what&apos;s due today.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {capabilities.canCreate && (
             <ShortcutHint shortcut="new-chore" label="New chore from anywhere">
-              <Button onClick={openAdd}><Plus className="mr-2 h-4 w-4" /> Add Chore</Button>
+              <Button onClick={openAdd} aria-label="Add Chore" className={compactHeader}>
+                <Plus className="mr-1 h-4 w-4 sm:mr-2" /><span aria-hidden className="sm:hidden">Add</span><span aria-hidden className="hidden sm:inline">Add Chore</span>
+              </Button>
             </ShortcutHint>
           )}
           <Button variant="outline" asChild>
-            <Link href="/calendar"><CalendarDays className="mr-2 h-4 w-4" /> Calendar</Link>
+            <Link href="/calendar" aria-label="Calendar" className={compactHeader}>
+              <CalendarDays className="h-4 w-4 sm:mr-2" /><span className="hidden sm:inline" aria-hidden>Calendar</span>
+            </Link>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline"><MoreVertical className="mr-2 h-4 w-4" /> Chore Manager</Button>
+              <Button variant="outline" aria-label="Chore Manager" className={compactHeader}>
+                <MoreVertical className="h-4 w-4 sm:mr-2" /><span className="hidden sm:inline" aria-hidden>Chore Manager</span>
+              </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-60">
               <DropdownMenuItem onSelect={() => setIsLibraryOpen(true)}>
@@ -1350,8 +1378,35 @@ export function ChoreChartClient() {
           />
         </div>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className={cn('grid gap-6', !roomView && 'lg:grid-cols-[minmax(0,1fr)_20rem]')}>
           <div className="min-w-0 space-y-3 md:space-y-4">
+            {showLeaderboard && (
+              <>
+                <LeaderboardRibbon
+                  stats={stats}
+                  colors={memberColors}
+                  photos={photos}
+                  expanded={leaderboardOpen}
+                  onToggle={() => setLeaderboardOpen(open => !open)}
+                  controls="chores-leaderboard-full"
+                  className={roomView ? undefined : 'lg:hidden'}
+                />
+                {leaderboardOpen && (
+                  <div id="chores-leaderboard-full" className={roomView ? undefined : 'lg:hidden'}>
+                    <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} podium={podium} />
+                  </div>
+                )}
+              </>
+            )}
+            {roomView && (
+              <RoomHero
+                name={roomName}
+                icon={roomIcon}
+                openCount={todoEntries.length}
+                doneToday={doneToday}
+                colors={memberColors}
+              />
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -1484,8 +1539,9 @@ export function ChoreChartClient() {
             </Accordion>
           </div>
 
-          {showLeaderboard && (
-            <aside className="min-w-0 lg:sticky lg:top-20 lg:self-start">
+          {showLeaderboard && !roomView && (
+            // Wide screens keep the full card beside the list; narrower ones use the ribbon above.
+            <aside className="hidden min-w-0 lg:sticky lg:top-20 lg:block lg:self-start">
               <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} podium={podium} />
             </aside>
           )}
