@@ -7,6 +7,7 @@
 // plain image path on the app's own origin. Anything else is dropped.
 
 import {memberCanView, type ViewPermission} from "./push-audience";
+import {barcodeLibraryIds} from "./barcode-ids";
 
 // Re-exported for callers that check who may see a picture.
 export {memberCanView};
@@ -21,6 +22,8 @@ export const PUSH_BADGE = "/icons/badge-96.png";
 export type ImageSource = {
   /** Path segments under `households/{householdId}`. */
   path: string[];
+  /** Where the same document may live instead (an older ID), in order. */
+  orPaths?: string[][];
   /** Field holding the image URL. */
   field: string;
   /** Storage folders (under the household) the image may live in. */
@@ -114,13 +117,21 @@ export const safePushImageUrl = (
   return inFolder ? url.toString() : null;
 };
 
-const barcodeSource = (barcode: unknown): ImageSource | null =>
-  isDocId(barcode) ? {
-    path: ["barcode-library", barcode],
+// A product saved since BL-12 lives under its 13-digit ID, an older one under
+// the code as typed: both are tried (an item may hold either form).
+const barcodeSource = (barcode: unknown): ImageSource | null => {
+  if (typeof barcode !== "string") return null;
+  const ids = barcodeLibraryIds(barcode).filter(isDocId);
+  if (ids.length === 0) return null;
+  const [first, ...rest] = ids.map((id) => ["barcode-library", id]);
+  return {
+    path: first,
+    ...(rest.length > 0 ? {orPaths: rest} : {}),
     field: "imageUrl",
     folders: ["barcode-library/"],
     permission: "shopping.view",
-  } : null;
+  };
+};
 
 const firstSegment = (sourceId: string): string => sourceId.split(/[:|]/)[0];
 
@@ -201,10 +212,14 @@ export const resolvePushImage = async (
   // At most one fallback hop (shopping item -> barcode library).
   for (let hop = 0; source && hop < 2; hop++) {
     let data: Record<string, unknown> | undefined;
-    try {
-      data = await read(["households", householdId, ...source.path].join("/"));
-    } catch {
-      return null;
+    // The first of the source's places that holds the document.
+    for (const path of [source.path, ...(source.orPaths ?? [])]) {
+      try {
+        data = await read(["households", householdId, ...path].join("/"));
+      } catch {
+        return null;
+      }
+      if (data) break;
     }
     if (!data) return null;
     const url = safePushImageUrl(data[source.field], {

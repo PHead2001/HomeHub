@@ -17,6 +17,7 @@ describe('what the tablet sends', () => {
       'maintenance.complete', 'maintenance.complete.undo', 'maintenance.log', 'maintenance.log.undo', 'maintenance.snooze', 'maintenance.snooze.undo',
       'maintenance.editSchedules', 'maintenance.log.delete', 'maintenance.record.delete',
       'shopping.add', 'shopping.add.undo', 'shopping.tick', 'shopping.tick.undo',
+      'pantry.useUp', 'pantry.useUp.undo', 'pantry.restock', 'pantry.restock.undo',
     ].sort();
     // Attachments are not on tablets: their delete is classified but never sent.
     assert.equal(SENDABLE_CAPABILITIES.has('maintenance.attachment.delete'), false);

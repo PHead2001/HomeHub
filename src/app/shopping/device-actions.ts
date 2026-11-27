@@ -7,6 +7,12 @@ import {
   undoShoppingAddFromTablet,
   undoShoppingTickFromTablet,
 } from '@/lib/server/device-shopping';
+import {
+  restockPantryItemFromTablet,
+  undoPantryRestockFromTablet,
+  undoPantryTakeFromTablet,
+  takePantryItemFromTablet,
+} from '@/lib/server/device-pantry';
 import { clientAddress, trustedProxyHopsFromEnv, UNKNOWN_CLIENT } from '@/lib/devices/client-address';
 import type { DeviceRefusal } from '@/lib/devices/action-policy';
 
@@ -55,4 +61,23 @@ export async function tickShoppingItemFromTabletAction(input: Request & { listId
 
 export async function undoShoppingTickFromTabletAction(input: Request) {
   return run('Tablet shopping tick Undo', (address) => undoShoppingTickFromTablet(input, { clientAddress: address }));
+}
+
+// The pantry from the kitchen tablet's scan (BL-20): Used up and Restock with their Undo.
+// Logic: src/lib/server/device-pantry.ts.
+
+export async function takePantryItemFromTabletAction(input: Request & { barcode: string; name: string }) {
+  return run('Tablet pantry used up', (address) => takePantryItemFromTablet(input, { clientAddress: address }));
+}
+
+export async function undoPantryTakeFromTabletAction(input: Request) {
+  return run('Tablet pantry used up Undo', (address) => undoPantryTakeFromTablet(input, { clientAddress: address }));
+}
+
+export async function restockPantryItemFromTabletAction(input: Request & { barcode: string; name: string }) {
+  return run('Tablet pantry restock', (address) => restockPantryItemFromTablet(input, { clientAddress: address }));
+}
+
+export async function undoPantryRestockFromTabletAction(input: Request) {
+  return run('Tablet pantry restock Undo', (address) => undoPantryRestockFromTablet(input, { clientAddress: address }));
 }

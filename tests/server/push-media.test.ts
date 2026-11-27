@@ -20,6 +20,9 @@ before(async () => {
   await house(HOUSE).collection('pets').doc('placeholder').set({ name: 'Pip', photoUrl: 'https://placehold.co/300x300.png' });
   await house(HOUSE).collection('shopping-lists').doc('weekly').collection('items').doc('oats').set({ name: 'Oats', barcode: '0123' });
   await house(HOUSE).collection('barcode-library').doc('0123').set({ name: 'Oats', imageUrl: url(`households/${HOUSE}/barcode-library/oats.jpg`) });
+  // BL-12: a 12-digit scan on the item, the product saved under its 13-digit ID.
+  await house(HOUSE).collection('shopping-lists').doc('weekly').collection('items').doc('beans').set({ name: 'Beans', barcode: '036000291452' });
+  await house(HOUSE).collection('barcode-library').doc('0036000291452').set({ name: 'Beans', imageUrl: url(`households/${HOUSE}/barcode-library/beans.jpg`) });
   await house(OTHER).collection('pets').doc('rex').set({ name: 'Rex', photoUrl: url(`households/${OTHER}/pets/rex.jpg`) });
 });
 
@@ -35,6 +38,13 @@ describe('push image lookup', () => {
       url: url(`households/${HOUSE}/pets/maple.jpg`),
       permission: 'pets.view',
     });
+  });
+
+  test('a 12-digit scan finds the product saved under its 13-digit ID (BL-12)', async () => {
+    const image = await resolvePushImage(readDoc, HOUSE, {
+      householdId: HOUSE, category: 'shopping', sourceType: 'shopping_item', sourceId: 'weekly:beans',
+    }, BUCKET);
+    assert.equal(image?.url, url(`households/${HOUSE}/barcode-library/beans.jpg`));
   });
 
   test('a shopping item falls back to its barcode library image', async () => {

@@ -172,6 +172,12 @@ export const DEVICE_ACTION_POLICY = {
   'shopping.remove': notOnTablets('shopping'),
   'shopping.putAway': notOnTablets('shopping'),
   'shopping.usedUp': notOnTablets('shopping'),
+  // The pantry from the kitchen tablet's scan (BL-20, BL-21): Used up and Restock with their
+  // Undo, face once proven, with the permission the pantry rules ask of a phone.
+  'pantry.useUp': faceStar('shopping', SHOP_EDIT),
+  'pantry.useUp.undo': faceStar('shopping', SHOP_EDIT, { actorRule: 'original-actor' }),
+  'pantry.restock': faceStar('shopping', SHOP_EDIT),
+  'pantry.restock.undo': faceStar('shopping', SHOP_EDIT, { actorRule: 'original-actor' }),
   'shopping.scan': notOnTablets('shopping'),
 
   // --- Maintenance (M8a; supersedes D-T8, which kept maintenance off tablets) -----
@@ -270,6 +276,12 @@ export const UNDO_PROVEN: ReadonlySet<DeviceCapability> = new Set<DeviceCapabili
   'shopping.add.undo',
   'shopping.tick',
   'shopping.tick.undo',
+  // The pantry on tablets (BL-20): tests/server/device-pantry-undo.test.ts, the seven cases of
+  // 10.4 for pantry.useUp and pantry.restock (an added package and a created batch).
+  'pantry.useUp',
+  'pantry.useUp.undo',
+  'pantry.restock',
+  'pantry.restock.undo',
 ]);
 
 export const isDeviceCapability = (value: unknown): value is DeviceCapability =>
@@ -309,6 +321,8 @@ export const UNDO_OF = {
   'maintenance.snooze.undo': ['maintenance.snooze'],
   'shopping.add.undo': ['shopping.add'],
   'shopping.tick.undo': ['shopping.tick'],
+  'pantry.useUp.undo': ['pantry.useUp'],
+  'pantry.restock.undo': ['pantry.restock'],
   'notifications.dismiss.undo': ['notifications.dismiss'],
 } as const satisfies Partial<Record<DeviceCapability, readonly DeviceCapability[]>>;
 

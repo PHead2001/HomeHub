@@ -139,7 +139,8 @@ describe('policy table', () => {
       'pets.care.add', 'pets.care.undo', 'pets.dose.give', 'pets.dose.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
       'pets.note.add', 'pets.note.undo', 'pets.weight.add', 'pets.weight.undo',
       'shopping.add', 'shopping.add.undo', 'shopping.tick', 'shopping.tick.undo',
-    ]);
+      'pantry.restock', 'pantry.restock.undo', 'pantry.useUp', 'pantry.useUp.undo',
+    ].sort());
   });
 
   it('opIds are required for face and PIN capabilities only', () => {
@@ -187,6 +188,8 @@ describe('Undo targets (Codex P2: explicit map, no prefix matching)', () => {
     'maintenance.snooze.undo': ['maintenance.snooze'],
     'shopping.add.undo': ['shopping.add'],
     'shopping.tick.undo': ['shopping.tick'],
+    'pantry.useUp.undo': ['pantry.useUp'],
+    'pantry.restock.undo': ['pantry.restock'],
   };
 
   it('every Undo capability has an explicit list of the actions it reverses, and nothing else is a key', () => {
