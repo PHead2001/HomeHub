@@ -54,6 +54,7 @@ import { mergeLiveRows } from '@/lib/chores/live';
 import { MissedRecently } from '@/components/chores/missed-recently';
 import { useMissedEntries } from '@/components/chores/use-missed-entries';
 import { useHouseholdToday } from '@/components/chores/use-today';
+import { rotationFieldsFor } from '@/lib/chores/rotation';
 import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
@@ -77,6 +78,9 @@ async function stillOpen(transaction: Transaction, refs: DocumentReference[]) {
   const snaps = await Promise.all(refs.map(ref => transaction.get(ref)));
   return snaps.filter(snap => snap.exists() && snap.get('isCompleted') !== true);
 }
+
+/** Template fields that remove a rotation (CH-28). */
+const NO_ROTATION = () => ({ rotation: deleteField(), rotationStart: deleteField() });
 
 /** How long after a change to repeats upkeep waits, so several edits share one run. */
 const UPKEEP_DEBOUNCE_MS = 1500;
@@ -463,6 +467,8 @@ export function ChoreChartClient() {
               },
               ...fields,
               assignedToEmail: deleteField(),
+              // One assignee replaces any rotation (CH-28).
+              ...NO_ROTATION(),
               // The rooms chosen in the dialog; none chosen keeps the chore's own rooms.
               ...(assignment.roomIds.length > 0 ? { roomIds: assignment.roomIds.filter(roomId => roomId !== 'general') } : {}),
             }, { merge: true });
@@ -611,18 +617,21 @@ export function ChoreChartClient() {
     }
   };
 
-  const handleUpdateRecurringTask = async (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>) => {
+  const handleUpdateRecurringTask = async (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>, rotation: string[] = []) => {
     const user = householdUsers.find(u => u.uid === assigneeUid);
     if (!user) {
       toastError({ code: 'not-found' }, "Couldn't update the schedule");
       return false;
     }
+    // Rotation (CH-28): upkeep gives each day to whoever's turn it is; open days are
+    // replaced below, so the new order shows at once.
+    const turns = rotationFieldsFor(choreTemplates.find(template => template.id === choreId), rotation, householdDay);
     // The recurrence map is replaced as a whole; the top-level legacy email is removed.
-    return replaceRecurrence(choreId, { ...assigneeFields(user), assignedToEmail: deleteField(), recurrence: { ...recurrence } }, 'Repeating chore updated', "Couldn't update the schedule");
+    return replaceRecurrence(choreId, { ...assigneeFields(user), assignedToEmail: deleteField(), recurrence: { ...recurrence }, ...(turns ?? NO_ROTATION()) }, 'Repeating chore updated', "Couldn't update the schedule");
   };
 
   const handleDeleteRecurringTask = async (choreId: string) => {
-    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: deleteField(), assignedToUid: null }, 'Stopped repeating', "Couldn't stop the schedule");
+    await replaceRecurrence(choreId, { recurrence: null, assignedToEmail: deleteField(), assignedToUid: null, ...NO_ROTATION() }, 'Stopped repeating', "Couldn't stop the schedule");
   };
 
   /* ---------------------------------------------------------------------- */

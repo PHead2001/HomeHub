@@ -67,6 +67,8 @@ async function loadMembers(householdId: string, viewer: { uid: string; email: st
     name: person.displayName,
     avatarUrl: person.avatarUrl,
     joinedAt: person.joinedAt,
+    // Kid profiles take no rotation turns yet (CH-28, HO-15d), as on the server.
+    ...(person.kind === 'identity' ? { kind: 'identity' } : {}),
   }));
 }
 

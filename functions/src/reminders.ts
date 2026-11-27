@@ -36,6 +36,9 @@ import {
   withMissedEntries, type MissedEntry,
 } from "./shared/missed";
 import {
+  occurrenceNumber, rotationAnchor, rotationOf, rotationTurn,
+} from "./shared/rotation";
+import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
 } from "./shared/maintenance-reminders";
@@ -465,19 +468,32 @@ export const runHouseholdReminders = async (
     // (an older build reassigned it by email only), and a day once written
     // is never generated again. Without that match (the contact read failed,
     // or the email names nobody) it waits for a later run.
+    // A rotation (CH-28) gives each occurrence to the person whose turn it
+    // is (functions/src/shared/rotation.ts); kid profiles are not assignable
+    // yet (HO-15d), and someone who left passes their turn on.
+    const rotation = rotationOf(template);
     const templateEmail = assigneeEmailOf(template);
-    const assigneeUid = templateEmail ?
+    const assigneeUid = rotation.length > 0 ? null : templateEmail ?
       members.find((m) => typeof m.email === "string" &&
         m.email.trim().toLowerCase() === templateEmail)?.uid ?? null :
       resolveAssigneeUid(template, members);
     const person = assigneeUid ? memberByUid.get(assigneeUid) : undefined;
-    if (!person) continue;
+    if (!person && rotation.length === 0) continue;
     const rooms: string[] = Array.isArray(template.roomIds) &&
       template.roomIds.length > 0 ? template.roomIds : ["general"];
     // Days someone deleted on purpose ("we're away Saturday") stay deleted.
     const skipped = skippedOccurrenceKeys(template);
-    for (const day of upcomingOccurrences(recurrence, today,
-      RECURRING_LOOKAHEAD)) {
+    const days = upcomingOccurrences(recurrence, today, RECURRING_LOOKAHEAD);
+    // Occurrence numbers count from the rotation's fixed start day, so each
+    // day keeps its person whenever upkeep runs.
+    const firstNumber = rotation.length > 0 && days.length > 0 ?
+      occurrenceNumber(recurrence, rotationAnchor(template), days[0]) : 0;
+    for (const [index, day] of days.entries()) {
+      const turn = rotation.length > 0 ?
+        rotationTurn(rotation, firstNumber + index, (uid) =>
+          memberByUid.has(uid) && !identityUids.has(uid)) : null;
+      const assignee = turn ? memberByUid.get(turn) : person;
+      if (!assignee) continue;
       for (const roomId of rooms) {
         const id = occurrenceChoreId(templateDoc.id, roomId, day);
         const occurrenceKey = choreOccurrenceKey(templateDoc.id, roomId, day);
@@ -488,8 +504,8 @@ export const runHouseholdReminders = async (
         const choreRef = house.collection("chores").doc(id);
         const chore = {
           task: template.task,
-          ...assigneeFields(person),
-          assignedToDisplayName: person.displayName || "Member",
+          ...assigneeFields(assignee),
+          assignedToDisplayName: assignee.displayName || "Member",
           dueDate: zonedMidnightIso(day, timeZone),
           isCompleted: false,
           notes: template.notes || "",

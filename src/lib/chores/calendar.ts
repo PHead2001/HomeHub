@@ -7,6 +7,7 @@ import { addDays, safeTimeZone, toDay } from '../../../functions/src/shared/cale
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 import { choreOccurrenceKey, occurrenceChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
 import { skippedOccurrenceKeys } from '../../../functions/src/shared/skips';
+import { occurrenceNumber, rotationAnchor, rotationOf, rotationTurn } from '../../../functions/src/shared/rotation';
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { publicDisplayName } from '../member-directory';
 import { currentMedicationsOn, petDay, toDate, type MedicationDue as MedicationCountdown } from '../pets/care';
@@ -50,7 +51,8 @@ export type CalendarEvent = {
 };
 
 /** `email` only matches chores written before `assignedToUid` existed; it is never shown. */
-export type CalendarMember = { uid: string; name: string; email?: string };
+/** `kind: 'identity'` marks a kid profile, which takes no rotation turns yet (HO-15d). */
+export type CalendarMember = { uid: string; name: string; email?: string; kind?: string };
 
 export function choreEvents(chores: readonly ChoreRecord[], members: readonly CalendarMember[], today: string): CalendarEvent[] {
   const byUid = new Map(members.map(member => [member.uid, member]));
@@ -328,6 +330,9 @@ export type RecurringTemplate = {
   recurrence?: (RecurrenceInput & { assignedToEmail?: string }) | null;
   /** Occurrence keys of days deleted on purpose (CH-3): never planned. */
   skippedOccurrences?: string[];
+  /** Rotation (CH-28): each day goes to whoever's turn it is, as upkeep assigns it. */
+  rotation?: string[];
+  rotationStart?: string;
 };
 
 /**
@@ -382,22 +387,30 @@ export function plannedRecurringEvents(
   const events: CalendarEvent[] = [];
   for (const template of templates) {
     const recurrence = normalizeRecurrence(template.recurrence, today);
-    // Same assignee rules as the server (functions/src/shared/assignee.ts).
-    const assigneeUid = resolveAssigneeUid(template, members);
+    // Same assignee rules as the server (functions/src/shared/assignee.ts); a
+    // rotation gives each day to whoever's turn it is (functions/src/shared/rotation.ts).
+    const rotation = rotationOf(template);
+    const assigneeUid = rotation.length > 0 ? null : resolveAssigneeUid(template, members);
     const member = assigneeUid ? byUid.get(assigneeUid) : undefined;
-    if (!recurrence || !member) continue;
+    if (!recurrence || (!member && rotation.length === 0)) continue;
     const skipped = skippedOccurrenceKeys(template);
+    let number = rotation.length > 0 ? occurrenceNumber(recurrence, rotationAnchor(template), start) : 0;
     for (let day = start; day <= rangeEnd; day = addDaysToKey(day, 1)) {
       if (!occursOn(day, recurrence)) continue;
+      const turn = rotation.length > 0
+        ? rotationTurn(rotation, number++, uid => byUid.has(uid) && byUid.get(uid)?.kind !== 'identity')
+        : null;
+      const person = turn ? byUid.get(turn) : member;
+      if (!person) continue;
       for (const { id, key } of occurrences(template, day)) {
         if (existing.has(id) || existingKeys.has(key) || skipped.has(key)) continue;
         events.push({
           id: `planned:${id}`,
           kind: 'chore',
           title: template.task,
-          subtitle: member.name,
+          subtitle: person.name,
           day,
-          memberUid: member.uid,
+          memberUid: person.uid,
           overdue: false,
           completed: false,
           href: '/chores',

@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from 'react';
 import { format, getDay } from 'date-fns';
 import { Edit, Filter, Loader2, PlusCircle, Trash2, X } from 'lucide-react';
 import type { ChoreTemplate, Recurrence, Room } from '@/lib/types';
-import type { HouseholdPerson } from '@/lib/member-directory';
+import { assignablePeople, type HouseholdPerson } from '@/lib/member-directory';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -25,6 +25,8 @@ import { cn } from '@/lib/utils';
 import { AssigneeSelect, memberName } from './assignee-select';
 import { RecurrenceFields, buildRecurrence, defaultRecurrenceState, recurrenceStateFrom, scheduleText, useRecurrenceState, type RecurrenceErrors } from './recurrence-fields';
 import { RoomIcon, roomIcons } from './room-icons';
+import { RotationFields } from './rotation-fields';
+import { rotationOf, rotationText } from '@/lib/chores/rotation';
 
 const MAX_NAME = 120;
 
@@ -713,13 +715,19 @@ function EditRecurringTaskDialog({
   users: HouseholdPerson[];
   currentUserUid: string;
   capabilities: ChoreCapabilities;
-  onSave: (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>) => Promise<boolean>;
+  onSave: (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>, rotation: string[]) => Promise<boolean>;
 }) {
   const [assigneeUid, setAssigneeUid] = useState('');
-  const [errors, setErrors] = useState<{ assignee?: string } & RecurrenceErrors>({});
+  // Rotation (CH-28): people taking turns, in order. Setting one assigns other
+  // people, so it needs chores.assign (the rules require it too).
+  const [takesTurns, setTakesTurns] = useState(false);
+  const [rotation, setRotation] = useState<string[]>([]);
+  const [errors, setErrors] = useState<{ assignee?: string; rotation?: string } & RecurrenceErrors>({});
   const [saving, setSaving] = useState(false);
   const { state, setState, update } = useRecurrenceState();
   const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.uid === currentUserUid || u.uid === chore?.assignedToUid);
+  // Kid profiles are not assignable yet (HO-15d), so they never take turns either.
+  const rotationUsers = useMemo(() => assignablePeople(users), [users]);
 
   const [loadedChore, setLoadedChore] = useState<ChoreTemplate | null>(null);
   if (chore !== loadedChore) {
@@ -727,6 +735,9 @@ function EditRecurringTaskDialog({
     if (chore) {
       // `assignedToUid` was resolved on load (uid, or the email of older templates).
       setAssigneeUid(chore.assignedToUid || '');
+      const stored = rotationOf(chore);
+      setTakesTurns(stored.length > 0);
+      setRotation(stored);
       setState(recurrenceStateFrom(chore.recurrence));
       setErrors({});
       setSaving(false);
@@ -737,13 +748,16 @@ function EditRecurringTaskDialog({
     event.preventDefault();
     if (!chore || saving) return;
     const nextErrors: typeof errors = {};
-    if (!assigneeUid) nextErrors.assignee = 'Choose who does it.';
+    // Without chores.assign the stored rotation is sent back unchanged (the rules refuse any change).
+    const turns = !takesTurns ? [] : capabilities.canAssign ? rotation.filter(uid => rotationUsers.some(user => user.uid === uid)) : rotation;
+    if (takesTurns && turns.length < 2) nextErrors.rotation = 'Choose at least two people to take turns.';
+    if (!takesTurns && !assigneeUid) nextErrors.assignee = 'Choose who does it.';
     const built = buildRecurrence(state);
     if ('errors' in built) Object.assign(nextErrors, built.errors);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0 || 'errors' in built) return;
     setSaving(true);
-    const ok = await onSave(chore.id, assigneeUid, built.recurrence);
+    const ok = await onSave(chore.id, takesTurns ? turns[0] : assigneeUid, built.recurrence, turns);
     setSaving(false);
     if (ok) onOpenChange(false);
   };
@@ -757,11 +771,32 @@ function EditRecurringTaskDialog({
         </DialogHeader>
         <form onSubmit={handleSave} noValidate>
           <div className="grid max-h-[65vh] gap-4 overflow-y-auto py-2 pr-2">
-            <div className="space-y-2">
-              <Label htmlFor="recurring-assignee">Assign to</Label>
-              <AssigneeSelect id="recurring-assignee" users={assignableUsers} value={assigneeUid} onChange={(uid) => { setAssigneeUid(uid); setErrors(p => ({ ...p, assignee: undefined })); }} invalid={Boolean(errors.assignee)} describedBy={errors.assignee ? 'recurring-assignee-error' : undefined} />
-              <FieldError id="recurring-assignee">{errors.assignee}</FieldError>
-            </div>
+            {capabilities.canAssign && rotationUsers.length >= 2 && (
+              <div className="flex min-h-[var(--target-min)] items-center gap-2">
+                <Checkbox id="recurring-takes-turns" checked={takesTurns} onCheckedChange={(checked) => { setTakesTurns(checked === true); setErrors(p => ({ ...p, rotation: undefined, assignee: undefined })); }} />
+                <Label htmlFor="recurring-takes-turns" className="font-normal">Take turns</Label>
+              </div>
+            )}
+            {takesTurns ? (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">Each time it comes up, the next person in the list does it. The first person does the next one.</p>
+                {capabilities.canAssign ? (
+                  <RotationFields idPrefix="recurring" users={rotationUsers} value={rotation} onChange={(next) => { setRotation(next); setErrors(p => ({ ...p, rotation: undefined })); }} invalid={Boolean(errors.rotation)} describedBy={errors.rotation ? 'recurring-rotation-error' : undefined} />
+                ) : (
+                  // Changing who takes turns needs chores.assign (the rules say so too); the order is kept as it is.
+                  <p className="text-sm text-foreground" data-testid="recurring-rotation-readonly">
+                    {rotationText(rotation, uid => { const person = rotationUsers.find(user => user.uid === uid); return person ? memberName(person) : 'Someone who left'; })}. Ask someone who can assign chores to change the turns.
+                  </p>
+                )}
+                <FieldError id="recurring-rotation">{errors.rotation}</FieldError>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="recurring-assignee">Assign to</Label>
+                <AssigneeSelect id="recurring-assignee" users={assignableUsers} value={assigneeUid} onChange={(uid) => { setAssigneeUid(uid); setErrors(p => ({ ...p, assignee: undefined })); }} invalid={Boolean(errors.assignee)} describedBy={errors.assignee ? 'recurring-assignee-error' : undefined} />
+                <FieldError id="recurring-assignee">{errors.assignee}</FieldError>
+              </div>
+            )}
             <div className="rounded-lg border p-4">
               <RecurrenceFields idPrefix="edit" state={state} update={(k, v) => { update(k, v); setErrors(p => ({ ...p, daysOfWeek: undefined, biweeklyStartDate: undefined })); }} errors={errors} />
             </div>
@@ -792,7 +827,7 @@ export function RecurringChoresDialog({
   users: HouseholdPerson[];
   currentUserUid: string;
   capabilities: ChoreCapabilities;
-  onUpdate: (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>) => Promise<boolean>;
+  onUpdate: (choreId: string, assigneeUid: string, recurrence: Omit<Recurrence, 'assignedToEmail'>, rotation: string[]) => Promise<boolean>;
   onDelete: (choreId: string) => Promise<void>;
 }) {
   const [choreToEdit, setChoreToEdit] = useState<ChoreTemplate | null>(null);
@@ -840,14 +875,19 @@ export function RecurringChoresDialog({
                 <TableBody>
                   {recurringChores.map(chore => {
                     const user = usersByUid.get(chore.assignedToUid || '');
+                    const turns = rotationOf(chore);
                     return (
                       <TableRow key={chore.id}>
                         <TableCell className="font-medium">{chore.task}</TableCell>
                         <TableCell>
-                          <span className="flex items-center gap-2">
-                            {user && <MemberAvatar uid={user.uid} name={memberName(user)} photoUrl={user.avatarUrl} size="sm" decorative />}
-                            {user ? memberName(user) : 'Unassigned'}
-                          </span>
+                          {turns.length > 0 ? (
+                            <span data-testid="rotation-summary">{rotationText(turns, uid => { const person = usersByUid.get(uid); return person ? memberName(person) : 'Someone who left'; })}</span>
+                          ) : (
+                            <span className="flex items-center gap-2">
+                              {user && <MemberAvatar uid={user.uid} name={memberName(user)} photoUrl={user.avatarUrl} size="sm" decorative />}
+                              {user ? memberName(user) : 'Unassigned'}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell>{scheduleText(chore.recurrence)}</TableCell>
                         {canManage && (

@@ -427,6 +427,10 @@ export type ChoreTemplate = {
     assignedToEmail?: string | null;
     /** Occurrence keys of days deleted on purpose; upkeep and the calendar skip them (CH-3, functions/src/shared/skips.ts). */
     skippedOccurrences?: string[];
+    /** Rotation (CH-28): member uids taking turns, in order (functions/src/shared/rotation.ts). */
+    rotation?: string[];
+    /** Day the rotation counts its turns from (the first person does that day's occurrence). */
+    rotationStart?: string;
 }
 
 export type Chore = {
