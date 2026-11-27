@@ -148,7 +148,8 @@ export function ProfileClient() {
       const newUrl = avatarUrl || null;
       const saved = await updateUser({
         displayName: values.displayName.trim(),
-        nickname: values.nickname.trim() || null,
+        // Sent only when edited, so saving a name never touches the nickname field.
+        ...(form.formState.dirtyFields.nickname ? { nickname: values.nickname.trim() || null } : {}),
         avatarUrl: newUrl,
       }, {
         // The old photo is deleted only once nothing housemates read can still point at
