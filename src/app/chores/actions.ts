@@ -14,6 +14,8 @@ import { ChorePauseError, pauseChoresAs, type PauseOutcome } from '@/lib/server/
 import { ChoreProofError, reviewChoreProofAs, submitChoreProofAs, type ProofBucket } from '@/lib/server/chore-proof';
 import { adminStorageBucket } from '@/lib/server/firebase-admin';
 import type { ReviewOutcome, SubmitOutcome } from '@/lib/chores/proof';
+import { ChoreSwapError, answerSwapAs, offerSwapAs } from '@/lib/server/chore-swap';
+import type { AnswerOutcome, OfferOutcome } from '@/lib/chores/swap';
 
 // functions/ pins its own firebase-admin version; the Firestore calls used are
 // identical across versions, so the instance is passed through untyped.
@@ -193,5 +195,38 @@ export async function reviewChoreProof(input: ChoreActionContext & { choreId: st
     return { ok: true, data: await reviewChoreProofAs(adminDb, proofBucket(), user.householdId, { uid: user.uid }, input) };
   } catch (error) {
     return proofFailure(error);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Swaps (CH-31)                                                               */
+/* -------------------------------------------------------------------------- */
+
+const swapFailure = (error: unknown): ChoreActionFailure => {
+  if (error instanceof HomeHubAiError) {
+    return { ok: false, code: error.code === 'forbidden' ? 'forbidden' : error.code === 'unauthenticated' ? 'unauthenticated' : 'failed' };
+  }
+  if (error instanceof ChoreSwapError) return { ok: false, code: error.code };
+  console.error('Chore swap failed', error);
+  return { ok: false, code: 'failed' };
+};
+
+/** Offers one of your open chores for a housemate's open chore; they are notified. */
+export async function offerChoreSwap(input: ChoreActionContext & { myChoreId: string; theirChoreId: string }): Promise<ChoreActionResult<OfferOutcome>> {
+  try {
+    const user = await authorizeHouseholdAction({ idToken: input?.idToken, householdId: input?.householdId }, 'chores.complete');
+    return { ok: true, data: await offerSwapAs(adminDb, user.householdId, { uid: user.uid }, input, upkeepNow()) };
+  } catch (error) {
+    return swapFailure(error);
+  }
+}
+
+/** Accepts or declines a swap offered to you, or cancels one you offered. */
+export async function answerChoreSwap(input: ChoreActionContext & { offerId: string; answer: 'accept' | 'decline' | 'cancel' }): Promise<ChoreActionResult<AnswerOutcome>> {
+  try {
+    const user = await authorizeHouseholdAction({ idToken: input?.idToken, householdId: input?.householdId }, 'chores.complete');
+    return { ok: true, data: await answerSwapAs(adminDb, user.householdId, { uid: user.uid }, input, upkeepNow()) };
+  } catch (error) {
+    return swapFailure(error);
   }
 }

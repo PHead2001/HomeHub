@@ -82,7 +82,7 @@ Stored email copies (member privacy release C): `scripts/ops/scrub-shared-emails
 
 `audience` (list of strings) names who a notification is for: `[targetUserUid]` when it targets one member, `['*']` when it is household-wide. It is written at creation by every producer, the web app builder included, each through `notificationAudience` in `functions/src/shared/notification-audience.ts` (shared by the Functions code and the app, like `push-audience.ts`):
 
-- the web app's `buildNotificationDocument` (chore assignment in the Chores page and quick add);
+- the web app's `buildNotificationDocument` (chore assignment in the Chores page and quick add; the chore swap server actions, CH-31: a targeted `chores` notice with `sourceType` `chore-swap`, `sourceId` the offer id, `stateKey` `offered`/`accepted`/`declined` and the deep link `/chores?swap=<offerId>`, no push actions);
 - the upkeep function (`functions/src/reminders.ts`): maintenance and pet medication reminders are `['*']`, chore reminders `[uid]`. A refresh leaves the stored value alone and a reopen writes it again; both add it to a reminder written before the field existed;
 - the household server actions (`src/lib/server/household-membership.ts`): the new-member and member-left notices and the daily pending-member reminder, one per approver, `[approver uid]`; "You're in" and "Your role changed", `[uid]` of the person concerned; the ownership-transfer notice, `['*']`;
 - the e2e seed (`scripts/e2e/seed.mjs`).

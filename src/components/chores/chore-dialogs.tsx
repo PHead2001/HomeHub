@@ -21,6 +21,7 @@ import { MemberAvatar } from '@/components/member-avatar';
 import type { ChoreCapabilities } from '@/lib/chores/list';
 import { cn } from '@/lib/utils';
 import { chosenRoomIds } from '@/lib/chores/add-chore';
+import { ANYONE } from '@/lib/chores/swap';
 import { ASK_AN_ADMIN, templateRights } from '@/lib/chores/rights';
 
 /**
@@ -1029,6 +1030,8 @@ export function AddChoreDialog({
     const nextErrors: typeof errors = {};
     if (!task.trim()) nextErrors.task = 'Give the chore a name.';
     if (!assigneeUid) nextErrors.assignee = 'Choose who does it.';
+    // CH-31: "Anyone" is for one-time chores; upkeep generates repeats only for a person.
+    if (repeat && assigneeUid === ANYONE) nextErrors.assignee = 'A repeating chore needs someone. Choose who does it.';
     let input: AddChoreInput | null = null;
     const base = { task: task.trim(), notes: notes.trim(), roomIds: effectiveRoomIds, assigneeUid };
     if (repeat) {
@@ -1079,6 +1082,7 @@ export function AddChoreDialog({
                 <Label htmlFor="add-chore-assignee">Who</Label>
                 <AssigneeSelect
                   id="add-chore-assignee"
+                  anyoneOption={!repeat}
                   users={assignableUsers}
                   value={assigneeUid}
                   onChange={(uid) => { setAssigneeUid(uid); clear('assignee'); }}

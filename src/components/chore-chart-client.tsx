@@ -48,6 +48,9 @@ import { oneTimeChoreRooms } from '@/lib/chores/add-chore';
 import { mayRemoveChore, templateRights } from '@/lib/chores/rights';
 import { needsPhotoProof, pendingProofs, readProof } from '@/lib/chores/proof';
 import { PhotoProofDialog, ProofReviewList } from '@/components/chores/photo-proof';
+import { OfferSwapDialog, SwapAnswerDialog } from '@/components/chores/swap-dialogs';
+import { ANYONE, swapTargets } from '@/lib/chores/swap';
+import { SWAP_REFUSED, answerSwapOnServer, offerSwapOnServer } from '@/lib/chores/swap-client';
 import { PauseChoresDialog } from '@/components/chores/pause-dialog';
 import { pauseChoresOnServer, pauseMessage, type PauseRequest } from '@/lib/chores/pause-client';
 import { isQuietAt, readQuietHours } from '@/lib/devices/quiet-hours';
@@ -155,6 +158,8 @@ export function ChoreChartClient() {
   const [isPauseOpen, setIsPauseOpen] = useState(false);
   // CH-30: the chore a kid is sending a photo for.
   const [proofChore, setProofChore] = useState<ChoreRecord | null>(null);
+  // CH-31: the chore being offered in a swap.
+  const [swapChore, setSwapChore] = useState<ChoreRecord | null>(null);
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -325,12 +330,14 @@ export function ChoreChartClient() {
     const templatesCollection = getCollectionRef('chore-templates');
     const notificationsCollection = getCollectionRef('notifications');
     if (!choresCollection || !templatesCollection || !notificationsCollection) return false;
-    const assignee = householdUsers.find(user => user.uid === input.assigneeUid);
+    // CH-31: "Anyone" (one-time only) leaves the chore up for grabs: no assignee, no notification.
+    const anyone = input.assigneeUid === ANYONE && !input.repeat;
+    const assignee = anyone ? { uid: '' } : householdUsers.find(user => user.uid === input.assigneeUid);
     if (!assignee) {
       toastError({ code: 'not-found' }, "Couldn't add the chore");
       return false;
     }
-    const assigneeName = memberName(assignee);
+    const assigneeName = anyone ? 'Anyone' : memberName(assignee as HouseholdPerson);
     // CH-25: one or more rooms (none: Around the house).
     const roomIds = input.roomIds.filter(roomId => roomId !== 'general');
 
@@ -358,7 +365,7 @@ export function ChoreChartClient() {
           // may remove it while it is open.
           createdByUid: currentUser.uid,
         }));
-        if (shouldNotify(assignee.uid)) {
+        if (!anyone && shouldNotify(assignee.uid)) {
           const notificationId = getDeterministicNotificationId({ sourceType: 'chore-assignment', sourceId: choreRef.id, stateKey });
           batch.set(doc(notificationsCollection, notificationId), buildNotificationDocument({
             householdId: currentUser.householdId,
@@ -401,7 +408,7 @@ export function ChoreChartClient() {
         }
       }
       playFeedback('add');
-      toast({ title: 'Chore added', description: `${input.task} is on ${assignee.uid === currentUser.uid ? 'your' : `${assigneeName}'s`} list.` });
+      toast({ title: 'Chore added', description: anyone ? `${input.task} is up for grabs: whoever does it gets the points.` : `${input.task} is on ${assignee.uid === currentUser.uid ? 'your' : `${assigneeName}'s`} list.` });
       requestUpkeep();
       return true;
     } catch (error) {
@@ -777,6 +784,46 @@ export function ChoreChartClient() {
     setHouseClean(cleanHouseRooms(rooms, workedIn));
     celebrate('celebrate');
   }, [currentUser, today, rooms, celebrate]);
+
+  // CH-31: swaps. The offer is answered from its notification (`/chores?swap=<offerId>`).
+  const swapOfferId = searchParams.get('swap');
+  const closeSwapOffer = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    params.delete('swap');
+    const search = params.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${search ? `?${search}` : ''}`);
+  }, []);
+  const handleOfferSwap = useCallback(async (mine: ChoreRecord, theirs: ChoreRecord) => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return false;
+    const result = await offerSwapOnServer(householdId, mine.id, theirs.id);
+    if (!result.ok) {
+      toast({ variant: 'destructive', title: result.message });
+      return false;
+    }
+    if (result.data.status === 'refused') {
+      toast({ variant: 'destructive', title: "Couldn't offer the swap", description: SWAP_REFUSED[result.data.refused] });
+      return false;
+    }
+    const person = theirs.assignedToUid ? usersByUid.get(theirs.assignedToUid) : undefined;
+    toast({ title: 'Swap offered', description: `${person ? memberName(person) : 'They'} can say yes or no from their notifications.` });
+    return true;
+  }, [currentUser?.householdId, toast, usersByUid]);
+  const handleAnswerSwap = useCallback(async (offerId: string, answer: 'accept' | 'decline' | 'cancel') => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return false;
+    const result = await answerSwapOnServer(householdId, offerId, answer);
+    if (!result.ok) {
+      toast({ variant: 'destructive', title: result.message });
+      return false;
+    }
+    if (result.data.status === 'refused') {
+      toast({ variant: 'destructive', title: "Couldn't answer the swap", description: SWAP_REFUSED[result.data.refused] });
+      return result.data.refused !== 'missing';
+    }
+    toast({ title: result.data.status === 'accepted' ? 'Swapped' : result.data.status === 'declined' ? 'Swap declined' : 'Offer withdrawn' });
+    return true;
+  }, [currentUser?.householdId, toast]);
 
   const handlePause = useCallback(async (request: PauseRequest) => {
     const householdId = currentUser?.householdId;
@@ -1197,6 +1244,7 @@ export function ChoreChartClient() {
     selectMode,
     selectedIds: new Set(selectedChoreIds),
     onOpenDetails: (chore: ChoreRecord) => setDetailId(chore.id),
+    onOfferSwap: (chore: ChoreRecord) => setSwapChore(chore),
     onToggleDone: handleToggleDone,
     onToggleSelect: toggleSelect,
     onSubTaskToggle: (chore: ChoreRecord, subTask: string) => void handleSubTaskToggle(chore, subTask),
@@ -1359,6 +1407,22 @@ export function ChoreChartClient() {
           uid={currentUser.uid}
           onClose={() => setProofChore(null)}
           onSent={chore => toast({ title: 'Photo sent', description: `A parent will check ${chore.task}. It counts once they approve it.` })}
+        />
+      )}
+      <OfferSwapDialog
+        chore={swapChore}
+        targets={swapChore ? swapTargets(assignedChores, currentUser.uid) : []}
+        usersByUid={usersByUid}
+        onClose={() => setSwapChore(null)}
+        onOffer={handleOfferSwap}
+      />
+      {currentUser.householdId && (
+        <SwapAnswerDialog
+          householdId={currentUser.householdId}
+          offerId={swapOfferId}
+          currentUid={currentUser.uid}
+          onClose={closeSwapOffer}
+          onAnswer={handleAnswerSwap}
         />
       )}
       <PauseChoresDialog

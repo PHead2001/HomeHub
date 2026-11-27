@@ -2,7 +2,8 @@
 
 import { memo, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, useIsPresent } from 'motion/react';
-import { ChevronDown, ChevronRight, MoreHorizontal, Trash2 } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, ChevronRight, MoreHorizontal, Trash2 } from 'lucide-react';
+import { isUpForGrabs, maySwapAway } from '@/lib/chores/swap';
 import { format } from 'date-fns';
 import { assignablePeople, publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -33,6 +34,8 @@ export type ChoreListHandlers = {
   onClearMissed: (entry: ToDoEntry) => void;
   /** CH-15: tapping a chore's name opens its detail sheet. */
   onOpenDetails: (chore: ChoreRecord) => void;
+  /** CH-31: offer this chore (yours, open) in a swap. */
+  onOfferSwap: (chore: ChoreRecord) => void;
 };
 
 type ChoreListProps = ChoreListHandlers & {
@@ -106,7 +109,8 @@ function ChoreRow(props: RowProps) {
   const isFuture = !isCompleted && isDueAfterHouseholdDay(chore, props.householdToday, props.timeZone);
   // `assignedToUid` was resolved when the page loaded (functions/src/shared/assignee.ts).
   const user = chore.assignedToUid ? props.usersByUid.get(chore.assignedToUid) : undefined;
-  const name = user ? memberName(user) : publicDisplayName(chore.assignedToDisplayName, 'Unassigned');
+  // CH-31: a chore nobody is assigned to is up for grabs: whoever does it gets the points.
+  const name = user ? memberName(user) : isUpForGrabs(chore) ? 'Up for grabs' : publicDisplayName(chore.assignedToDisplayName, 'Unassigned');
   const uid = user?.uid || chore.id;
   // CH-24: creators manage their own chores; mirrors the rules.
   const template = chore.templateId ? props.templatesById.get(chore.templateId) : undefined;
@@ -116,6 +120,8 @@ function ChoreRow(props: RowProps) {
   const proof = isCompleted ? null : readProof(chore.proof);
   const waitingForParent = proof?.status === 'pending' && props.isKid;
   const checkHint = isCompleted ? null : waitingForParent ? 'Waiting for a parent to check the photo.' : disabledCheckHint({ canComplete: capabilities.canComplete, isFuture, dueLabel: dueLabel(due, today) });
+  // CH-31: one of your open chores can be offered in a swap.
+  const canSwap = capabilities.canComplete && maySwapAway(chore, props.currentUid);
   const remaining = openSubTasks(chore).length;
   const total = chore.subTasks?.length || 0;
   const completedAt = completionInstant(chore);
@@ -259,7 +265,7 @@ function ChoreRow(props: RowProps) {
           </span>
         )}
 
-        {canRemove && (
+        {(canRemove || canSwap) && (
           // CH-16: delete sits behind a menu (and still confirms), never beside Done.
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -272,9 +278,16 @@ function ChoreRow(props: RowProps) {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem className="min-h-[var(--target-min)] text-destructive focus:text-destructive" onSelect={() => handlers.onDelete(chore)}>
-                <Trash2 aria-hidden className="mr-2 h-4 w-4" /> Delete…
-              </DropdownMenuItem>
+              {canSwap && (
+                <DropdownMenuItem className="min-h-[var(--target-min)]" onSelect={() => handlers.onOfferSwap(chore)}>
+                  <ArrowLeftRight aria-hidden className="mr-2 h-4 w-4" /> Offer a swap…
+                </DropdownMenuItem>
+              )}
+              {canRemove && (
+                <DropdownMenuItem className="min-h-[var(--target-min)] text-destructive focus:text-destructive" onSelect={() => handlers.onDelete(chore)}>
+                  <Trash2 aria-hidden className="mr-2 h-4 w-4" /> Delete…
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
@@ -324,6 +337,7 @@ export function ChoreList(props: ChoreListProps) {
     onDelete: chore => latest.current.onDelete(chore),
     onClearMissed: entry => latest.current.onClearMissed(entry),
     onOpenDetails: chore => latest.current.onOpenDetails(chore),
+    onOfferSwap: chore => latest.current.onOfferSwap(chore),
   }), []);
   const layoutKey = props.entries.map(entry => entry.chore.id).join('|');
   const reduced = useReducedMotion();
