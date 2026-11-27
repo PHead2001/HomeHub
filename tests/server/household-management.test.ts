@@ -733,3 +733,35 @@ describe('membership notices (HO-1, HO-7, HO-28)', () => {
     assert.ok(request.resolvedAt);
   });
 });
+
+describe('removal keeps history and scales (HO-5, HO-22)', () => {
+  test('a long-standing member with 600 completed chores can be removed; only open chores are touched', async () => {
+    const chores = house().collection('chores');
+    for (let start = 0; start < 600; start += 300) {
+      const batch = adminDb.batch();
+      for (let i = start; i < start + 300; i += 1) {
+        batch.set(chores.doc(`done-${i}`), { task: `Done ${i}`, assignedToUid: member.uid, assignedToDisplayName: 'Mel Member', isCompleted: true });
+      }
+      await batch.commit();
+    }
+    await chores.doc('still-open').set({ task: 'Open', assignedToUid: member.uid, assignedToDisplayName: 'Mel Member', isCompleted: false });
+    await house().collection('chore-templates').doc('weekly').set({
+      task: 'Weekly', assignedToUid: member.uid, assignedToEmail: member.email, recurrence: { frequency: 'weekly', assignedToEmail: member.email },
+    });
+
+    await removeMember(owner, HOUSE, member.uid, NOW);
+
+    assert.equal((await memberRef(member).get()).exists, false);
+    const open = (await chores.doc('still-open').get()).data();
+    assert.equal(open?.assignedToUid, '');
+    // History stays credited to them.
+    const sample = (await chores.doc('done-599').get()).data();
+    assert.equal(sample?.assignedToUid, member.uid);
+    assert.equal(sample?.assignedToDisplayName, 'Mel Member');
+    // Both template fields are cleared, so they no longer appear as an assignee.
+    const template = (await house().collection('chore-templates').doc('weekly').get()).data();
+    assert.equal(template?.assignedToUid, undefined);
+    assert.equal(template?.assignedToEmail, undefined);
+    assert.equal(template?.recurrence?.assignedToEmail, undefined);
+  });
+});

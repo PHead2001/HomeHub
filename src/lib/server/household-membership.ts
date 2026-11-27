@@ -468,8 +468,9 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers, statsSnap, opsSnap] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(memberRef),
-      transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email)),
-      transaction.get(householdRef.collection('chores').where('assignedToUid', '==', caller.uid)),
+      // Open chores only (HO-5, HO-22): completed ones keep their history and are never read.
+      transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email).where('isCompleted', '==', false)),
+      transaction.get(householdRef.collection('chores').where('assignedToUid', '==', caller.uid).where('isCompleted', '==', false)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToEmail', '==', caller.email)),
       transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', caller.uid)),
       transaction.get(householdRef.collection('members').where('role', 'in', ['owner', 'admin'])),
@@ -1101,11 +1102,13 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
     }
     enforce(canManageMember(context.actor, target));
     const profileRef = target.email ? adminDb.collection('users').doc(target.email) : null;
-    // Assigned by email (older records) or by uid.
+    // Assigned by email (older records) or by uid. Chores: open ones only (HO-5, HO-22), so a
+    // long-standing member's history is neither read nor touched.
+    const openOnly = (name: string, query: FirebaseFirestore.Query) => name === 'chores' ? query.where('isCompleted', '==', false) : query;
     const byEmail = (name: string) => target.email
-      ? transaction.get(context.householdRef.collection(name).where('assignedToEmail', '==', target.email))
+      ? transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToEmail', '==', target.email)))
       : Promise.resolve(null);
-    const byUid = (name: string) => transaction.get(context.householdRef.collection(name).where('assignedToUid', '==', target.uid));
+    const byUid = (name: string) => transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToUid', '==', target.uid)));
     const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap, statsSnap, opsSnap] = await Promise.all([
       profileRef ? transaction.get(profileRef) : Promise.resolve(null),
       byEmail('chores'),
@@ -1185,7 +1188,7 @@ export const removeIdentityInTransaction = async (
   now: Date,
 ) => {
   const [chores, templates, tabletState] = await Promise.all([
-    transaction.get(householdRef.collection('chores').where('assignedToUid', '==', target.uid)),
+    transaction.get(householdRef.collection('chores').where('assignedToUid', '==', target.uid).where('isCompleted', '==', false)),
     transaction.get(householdRef.collection('chore-templates').where('assignedToUid', '==', target.uid)),
     readMemberTabletState(transaction, householdRef, target.uid),
   ]);
