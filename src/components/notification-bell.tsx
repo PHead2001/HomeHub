@@ -41,11 +41,14 @@ import {
 function NotificationItem({
   notification,
   isRead,
+  canDismiss,
   onDismiss,
   onOpen,
 }: {
   notification: Notification;
   isRead: boolean;
+  /** NO-8: dismissing needs notifications.dismiss (guests only read). */
+  canDismiss: boolean;
   onDismiss: (id: string) => void;
   onOpen: (notification: Notification) => void;
 }) {
@@ -53,7 +56,7 @@ function NotificationItem({
   // The wrapper and the menu item never move (they are the hit targets); only
   // the content layer slides.
   const swipe = useSwipeDismiss({
-    disabled: false,
+    disabled: !canDismiss,
     reducedMotion,
     onDismiss: () => onDismiss(notification.id),
   });
@@ -96,7 +99,7 @@ function NotificationItem({
           </div>
         </Link>
       </DropdownMenuItem>
-      <Button
+      {canDismiss && <Button
         type="button"
         variant="ghost"
         size="icon"
@@ -112,7 +115,7 @@ function NotificationItem({
       >
         <X className="h-4 w-4" />
         <span className="sr-only">Dismiss {notification.title || "HomeHub notification"}</span>
-      </Button>
+      </Button>}
     </div>
   );
 }
@@ -123,6 +126,7 @@ export function NotificationBell() {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const dismissNotifications = useDismissNotifications();
+  const canDismiss = Boolean(permissions['notifications.dismiss']);
   // H11: the bell rings and the badge pops when a new unread notification arrives.
   const [ringKey, setRingKey] = useState(0);
   const previousUnread = useRef<number | null>(null);
@@ -229,7 +233,7 @@ export function NotificationBell() {
         <div className="p-2">
           <DropdownMenuLabel className="flex items-center justify-between gap-2">
             <span className="font-headline">Notifications</span>
-            {activeNotifications.length > 0 && (
+            {canDismiss && activeNotifications.length > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -258,6 +262,7 @@ export function NotificationBell() {
                       key={notification.id}
                       notification={notification}
                       isRead={currentUser?.uid ? isNotificationReadBy(notification, currentUser.uid) : false}
+                      canDismiss={canDismiss}
                       onDismiss={(id) => dismissNotifications([id])}
                       onOpen={handleOpenNotification}
                     />

@@ -6,10 +6,11 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { Timestamp, doc, setDoc, updateDoc, type Firestore } from 'firebase/firestore';
+import { Timestamp, deleteField, doc, setDoc, updateDoc, type Firestore } from 'firebase/firestore';
 
 // Notifications, audit section 7. Server-only push fields (NO-3 held pushes) can be neither
-// created nor changed by clients.
+// created nor changed by clients. NO-8: marking read needs only notifications.view; dismissing
+// still needs notifications.dismiss.
 
 const projectId = 'demo-homehub-e2e';
 const H = 'no7-rules-house';
@@ -42,6 +43,8 @@ before(async () => {
       await setDoc(doc(db, 'households', H, 'members', person.uid), { uid: person.uid, role, status: 'active', displayName: person.uid, permissions: {} });
     }
     await setDoc(doc(db, 'households', H, 'notifications', 'held'), notice({ pushHeld: { [people.member.uid]: later() }, pushHeldNext: later() }));
+    await setDoc(doc(db, 'households', H, 'notifications', 'wide'), notice());
+    await setDoc(doc(db, 'households', H, 'notifications', 'for-member'), notice({ targetUserUid: people.member.uid, audience: [people.member.uid] }));
   });
 });
 
@@ -66,5 +69,34 @@ describe('held push fields are server-only (NO-3)', () => {
     await assertFails(updateDoc(ref, { pushRelease: { at: now(), uids: [people.member.uid] } }));
     await assertFails(updateDoc(ref, { pushHeld: {} }));
     await assertFails(updateDoc(ref, { pushHeldNext: now() }));
+  });
+});
+
+describe('NO-8: read state needs only view; dismissing needs notifications.dismiss', () => {
+  const action = (uid: string) => ({ at: now(), uid, displayName: uid });
+
+  test('a guest marks a household notice read (and can take it back), but cannot dismiss it', async () => {
+    const db = personDb(people.guest);
+    const ref = doc(db, 'households', H, 'notifications', 'wide');
+    await assertSucceeds(updateDoc(ref, { [`readBy.${people.guest.uid}`]: action(people.guest.uid) }));
+    await assertSucceeds(updateDoc(ref, { [`readBy.${people.guest.uid}`]: deleteField() }));
+    await assertFails(updateDoc(ref, { [`dismissedBy.${people.guest.uid}`]: action(people.guest.uid) }));
+    await assertFails(updateDoc(ref, {
+      [`readBy.${people.guest.uid}`]: action(people.guest.uid), [`dismissedBy.${people.guest.uid}`]: action(people.guest.uid),
+    }));
+  });
+
+  test("a guest still cannot write someone else's entry, an email, or a notice not addressed to them", async () => {
+    const db = personDb(people.guest);
+    await assertFails(updateDoc(doc(db, 'households', H, 'notifications', 'wide'), { [`readBy.${people.member.uid}`]: action(people.member.uid) }));
+    await assertFails(updateDoc(doc(db, 'households', H, 'notifications', 'wide'), { [`readBy.${people.guest.uid}`]: { ...action(people.guest.uid), email: people.guest.email } }));
+    await assertFails(updateDoc(doc(db, 'households', H, 'notifications', 'for-member'), { [`readBy.${people.guest.uid}`]: action(people.guest.uid) }));
+  });
+
+  test('a member reads and dismisses as before', async () => {
+    const db = personDb(people.member);
+    const ref = doc(db, 'households', H, 'notifications', 'for-member');
+    await assertSucceeds(updateDoc(ref, { [`readBy.${people.member.uid}`]: action(people.member.uid) }));
+    await assertSucceeds(updateDoc(ref, { [`dismissedBy.${people.member.uid}`]: action(people.member.uid) }));
   });
 });

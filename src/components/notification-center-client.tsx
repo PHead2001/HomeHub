@@ -64,12 +64,15 @@ function NotificationCenterItem({
   notification,
   isRead,
   isDismissed,
+  canDismiss,
   onDismiss,
   onOpen,
 }: {
   notification: Notification;
   isRead: boolean;
   isDismissed: boolean;
+  /** NO-8: dismissing needs notifications.dismiss (guests only read). */
+  canDismiss: boolean;
   onDismiss: (id: string) => void;
   onOpen: (notification: Notification, event: React.MouseEvent<HTMLAnchorElement>) => void;
 }) {
@@ -77,7 +80,7 @@ function NotificationCenterItem({
   // The wrapper and the link never move (they are the hit targets); only the
   // card's visual layer slides, so a tap always lands where it was aimed.
   const swipe = useSwipeDismiss({
-    disabled: isDismissed,
+    disabled: isDismissed || !canDismiss,
     reducedMotion,
     onDismiss: () => onDismiss(notification.id),
   });
@@ -155,7 +158,7 @@ function NotificationCenterItem({
           </div>
         </div>
       </Link>
-      {!isDismissed && (
+      {!isDismissed && canDismiss && (
         // The button alternative to swiping. Hover pointers reveal it on hover
         // or keyboard focus; touch screens always show it.
         <Button
@@ -184,6 +187,7 @@ function NotificationCenterItem({
 export function NotificationCenterClient() {
   const { currentUser, permissions } = useAuth();
   const dismissNotifications = useDismissNotifications();
+  const canDismiss = Boolean(permissions['notifications.dismiss']);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activeFilter, setActiveFilter] = useState<NotificationFilter>("unread");
   const [isLoading, setIsLoading] = useState(true);
@@ -291,7 +295,7 @@ export function NotificationCenterClient() {
           <h1 className="font-headline text-2xl font-bold tracking-tight md:text-3xl">Notification Center</h1>
           <p className="text-sm text-muted-foreground">Last 7 days of household notification history.</p>
         </div>
-        {activeVisibleCount > 0 && (
+        {canDismiss && activeVisibleCount > 0 && (
           <Button onClick={handleDismissVisible} className="sm:self-center">
             <CheckCheck className="mr-2 h-4 w-4" />
             Dismiss visible
@@ -361,6 +365,7 @@ export function NotificationCenterClient() {
                       notification={notification}
                       isRead={currentUser?.uid ? isNotificationReadBy(notification, currentUser.uid) : false}
                       isDismissed={currentUser?.uid ? isNotificationDismissedBy(notification, currentUser.uid) : false}
+                      canDismiss={canDismiss}
                       onDismiss={(id) => dismissNotifications([id])}
                       onOpen={handleOpenNotification}
                     />
