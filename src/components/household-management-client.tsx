@@ -58,6 +58,7 @@ import {
 import { ConfirmActionDialog, type ConfirmRequest } from '@/components/household/confirm-action-dialog';
 import {
   HOUSEHOLD_NAME_MAX,
+  canSeeMemberOverrides,
   changedPermissions,
   INVITE_STATE_LABELS,
   describeAuditAction,
@@ -676,6 +677,7 @@ export function HouseholdManagementClient() {
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
                     showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
+                    showCustom={canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
                     stats={choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}
@@ -706,6 +708,7 @@ export function HouseholdManagementClient() {
                     color={colors.get(member.uid)!}
                     isSelf={member.uid === currentMember?.uid}
                     showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
+                    showCustom={canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
                     stats={member.role === 'newuser' ? undefined : choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}
@@ -729,6 +732,7 @@ export function HouseholdManagementClient() {
               onSelect={setMatrixSelection}
               actor={currentMember}
               onSave={askSavePermissions}
+              canSeeOverrides={(member) => canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
             />
           </TabsContent>
 

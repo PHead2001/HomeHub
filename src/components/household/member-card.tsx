@@ -50,6 +50,7 @@ export function MemberCard({
   color,
   isSelf,
   showEmail = false,
+  showCustom = true,
   stats,
   actions,
   onRoleChange,
@@ -64,6 +65,8 @@ export function MemberCard({
   isSelf: boolean;
   /** Emails are for the person themself and for member managers only. */
   showEmail?: boolean;
+  /** Someone else's custom permissions: for the person and holders of Manage roles only (HO-12). */
+  showCustom?: boolean;
   stats?: MemberChoreStats;
   actions: MemberActions;
   onRoleChange: (member: HouseholdMember, role: HouseholdRole) => void;
@@ -76,7 +79,7 @@ export function MemberCard({
 }) {
   const name = memberName(member);
   const isKid = member.kind === 'identity';
-  const customized = customizedPermissions(member.role, member.permissions).length;
+  const customized = showCustom ? customizedPermissions(member.role, member.permissions).length : 0;
   const joined = relativeTime(member.joinedAt);
   const hasMenu = memberActionCount(actions, tablet) > 0;
   const tabletActions = onTablet ? tablet?.actions ?? [] : [];
