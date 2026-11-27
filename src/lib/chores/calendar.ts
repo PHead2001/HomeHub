@@ -6,6 +6,7 @@ import { buildMaintenanceReminders, type AssetInput, type VehicleInput } from '.
 import { addDays, safeTimeZone, toDay } from '../../../functions/src/shared/calendar';
 import { normalizeRecurrence, occursOn, type RecurrenceInput } from '../../../functions/src/shared/recurrence';
 import { choreOccurrenceKey, occurrenceChoreId, storedOccurrenceKey } from '../../../functions/src/shared/ids';
+import { skippedOccurrenceKeys } from '../../../functions/src/shared/skips';
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
 import { publicDisplayName } from '../member-directory';
 import { currentMedicationsOn, petDay, toDate, type MedicationDue as MedicationCountdown } from '../pets/care';
@@ -325,6 +326,8 @@ export type RecurringTemplate = {
   assignedToUid?: string | null;
   assignedToEmail?: string | null;
   recurrence?: (RecurrenceInput & { assignedToEmail?: string }) | null;
+  /** Occurrence keys of days deleted on purpose (CH-3): never planned. */
+  skippedOccurrences?: string[];
 };
 
 /**
@@ -355,7 +358,8 @@ export function occurrences(template: Pick<RecurringTemplate, 'id' | 'roomIds'>,
  * 30 occurrences, so without these a month far ahead would look empty. Uses the
  * server's recurrence rules and occurrence IDs: an occurrence whose document
  * exists (even if it was moved or completed), or whose occurrence key a chore
- * already holds (it was reassigned), is never planned again. One event
+ * already holds (it was reassigned), is never planned again, and neither is a
+ * day someone deleted (the template's skipped occurrences). One event
  * per missing room instance, as the server would create; none for non-members.
  */
 export function plannedRecurringEvents(
@@ -382,10 +386,11 @@ export function plannedRecurringEvents(
     const assigneeUid = resolveAssigneeUid(template, members);
     const member = assigneeUid ? byUid.get(assigneeUid) : undefined;
     if (!recurrence || !member) continue;
+    const skipped = skippedOccurrenceKeys(template);
     for (let day = start; day <= rangeEnd; day = addDaysToKey(day, 1)) {
       if (!occursOn(day, recurrence)) continue;
       for (const { id, key } of occurrences(template, day)) {
-        if (existing.has(id) || existingKeys.has(key)) continue;
+        if (existing.has(id) || existingKeys.has(key) || skipped.has(key)) continue;
         events.push({
           id: `planned:${id}`,
           kind: 'chore',

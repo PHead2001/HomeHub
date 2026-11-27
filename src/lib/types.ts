@@ -423,6 +423,8 @@ export type ChoreTemplate = {
     assignedToUid?: string | null;
     /** Legacy assignee email on older templates; read as a fallback, never written. */
     assignedToEmail?: string | null;
+    /** Occurrence keys of days deleted on purpose; upkeep and the calendar skip them (CH-3, functions/src/shared/skips.ts). */
+    skippedOccurrences?: string[];
 }
 
 export type Chore = {

@@ -159,6 +159,20 @@ describe('household upkeep', () => {
     assert.equal(new Set(days).size, 30, 'thirty days, each once');
   });
 
+  test('a skipped day is never generated again; other days still are (CH-3)', async () => {
+    const now = new Date('2026-11-05T15:00:00Z'); // Thursday 9am Chicago
+    await run(now);
+    const trash = (day: string) => house().collection('chores').doc(occurrenceChoreId('trash', 'general', day));
+    assert.ok((await trash('2026-11-12').get()).exists);
+    // As the Chores page deletes one day: the chore goes, its key is recorded.
+    await trash('2026-11-12').delete();
+    await house().collection('chore-templates').doc('trash').update({ skippedOccurrences: ['trash|general|2026-11-12'] });
+    await trash('2026-11-19').delete(); // deleted without a skip (an older client): it comes back
+    await run(now);
+    assert.equal((await trash('2026-11-12').get()).exists, false);
+    assert.ok((await trash('2026-11-19').get()).exists);
+  });
+
   test('a template assigned by uid only (email no longer known to its writer) still generates', async () => {
     await house().collection('chore-templates').doc('trash').delete();
     await house().collection('chore-templates').doc('mop').set({

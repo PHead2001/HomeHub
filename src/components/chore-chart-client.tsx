@@ -7,6 +7,8 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, Trophy, User as UserIcon } from 'lucide-react';
 import { type DocumentData, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
+import { withSkippedOccurrences } from '@functions/shared/skips';
+import { isGeneratedInstance, roomDeletionPlan, skipsForDeletion } from '@/lib/chores/recurrence-edits';
 import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
 import { format } from 'date-fns';
 import type { ChoreTemplate, Recurrence, Room } from '@/lib/types';
@@ -305,7 +307,7 @@ export function ChoreChartClient() {
         const removedRoomIds = oldTemplate?.roomIds && choreData.roomIds ? oldTemplate.roomIds.filter(roomId => !choreData.roomIds!.includes(roomId)) : [];
         openChores.forEach(choreDoc => {
           const chore = choreDoc.data() as ChoreRecord;
-          if (removedRoomIds.length > 0 && chore.roomIds?.some(roomId => removedRoomIds.includes(roomId))) {
+          if (removedRoomIds.length > 0 && isGeneratedInstance({ ...chore, id: choreDoc.id }) && chore.roomIds?.some(roomId => removedRoomIds.includes(roomId))) {
             transaction.delete(choreDoc.ref);
           } else {
             transaction.update(choreDoc.ref, { task: choreData.task, notes: choreData.notes, subTasks: choreData.subTasks });
@@ -359,12 +361,19 @@ export function ChoreChartClient() {
     const batch = writeBatch(db);
     if (schedule.type === 'recurring') {
       for (const template of templatesToAssign) {
+        // Open days already generated under the old schedule, assignee or rooms are
+        // replaced: upkeep regenerates them from the new settings. Completed days stay,
+        // and their occurrence keys keep upkeep from generating them again (CH-4).
+        const openChores = await getDocs(query(choresCollection, where('templateId', '==', template.id), where('isCompleted', '==', false)));
+        openChores.docs.filter(choreDoc => isGeneratedInstance({ id: choreDoc.id, ...choreDoc.data() })).forEach(choreDoc => batch.delete(choreDoc.ref));
         // A merge keeps fields it does not name, so an older assignee's email (top level
         // and inside `recurrence`) is removed explicitly: it would otherwise win over the uid.
         batch.set(doc(templatesCollection, template.id), {
           recurrence: { ...schedule.recurrence, assignedToEmail: deleteField() },
           ...fields,
           assignedToEmail: deleteField(),
+          // The rooms chosen in the dialog; none chosen keeps the chore's own rooms.
+          ...(assignment.roomIds.length > 0 ? { roomIds: assignment.roomIds.filter(roomId => roomId !== 'general') } : {}),
         }, { merge: true });
       }
     } else {
@@ -447,11 +456,20 @@ export function ChoreChartClient() {
     const templatesCollection = getCollectionRef('chore-templates');
     if (!roomsCollection || !templatesCollection) return;
     try {
+      const choresCollection = getCollectionRef('chores');
+      if (!choresCollection) return;
+      // Chores in the room, read fresh: its open generated days go (upkeep regenerates
+      // the series under the template's other rooms, or around the house), and every
+      // other chore stays without the room, so nothing is left under a removed room (CH-4).
+      const inRoom = await getDocs(query(choresCollection, where('roomIds', 'array-contains', id)));
+      const plan = roomDeletionPlan(inRoom.docs.map(d => ({ id: d.id, ...d.data() })), id);
       await runTransaction(db, async (transaction) => {
         transaction.delete(doc(roomsCollection, id));
         choreTemplates.filter(t => t.roomIds?.includes(id)).forEach(template => {
           transaction.update(doc(templatesCollection, template.id), { roomIds: template.roomIds?.filter(roomId => roomId !== id) });
         });
+        plan.remove.forEach(choreId => transaction.delete(doc(choresCollection, choreId)));
+        plan.detach.forEach(({ id: choreId, roomIds }) => transaction.update(doc(choresCollection, choreId), { roomIds }));
       });
       toast({ title: 'Room deleted' });
       await fetchAllData();
@@ -468,7 +486,9 @@ export function ChoreChartClient() {
       await runTransaction(db, async (transaction) => {
         const openChores = await getDocs(query(choresCollection, where('templateId', '==', choreId), where('isCompleted', '==', false)));
         transaction.update(doc(templatesCollection, choreId), update);
-        openChores.forEach(choreDoc => transaction.delete(choreDoc.ref));
+        // Only the series' own generated days: a one-time assignment of the same
+        // library chore is its own chore and stays (CH-4).
+        openChores.docs.filter(choreDoc => isGeneratedInstance({ id: choreDoc.id, ...choreDoc.data() })).forEach(choreDoc => transaction.delete(choreDoc.ref));
       });
       toast({ title });
       await fetchAllData();
@@ -693,11 +713,23 @@ export function ChoreChartClient() {
 
   const deleteChores = async (ids: string[], title: string) => {
     const choresCollection = getCollectionRef('chores');
-    if (!choresCollection || ids.length === 0) return;
+    const templatesCollection = getCollectionRef('chore-templates');
+    if (!choresCollection || !templatesCollection || ids.length === 0) return;
     try {
-      const batch = writeBatch(db);
-      ids.forEach(id => batch.delete(doc(choresCollection, id)));
-      await batch.commit();
+      // Deleting a day of a repeating chore skips that day: the template records it,
+      // so upkeep and the calendar never bring it back (CH-3). Other days are unchanged.
+      const idSet = new Set(ids);
+      const skips = skipsForDeletion(choresRef.current.filter(chore => idSet.has(chore.id)), householdDay);
+      await runTransaction(db, async (transaction) => {
+        const templateRefs = [...skips.keys()].map(templateId => doc(templatesCollection, templateId));
+        const templateSnaps = await Promise.all(templateRefs.map(ref => transaction.get(ref)));
+        templateSnaps.forEach((snap, index) => {
+          if (!snap.exists()) return;
+          const keys = skips.get(snap.id) ?? [];
+          transaction.update(templateRefs[index], { skippedOccurrences: withSkippedOccurrences(snap.get('skippedOccurrences'), keys, householdDay) });
+        });
+        ids.forEach(id => transaction.delete(doc(choresCollection, id)));
+      });
       toast({ title });
       setAssignedChores(previous => previous.filter(chore => !ids.includes(chore.id)));
     } catch (error) {
@@ -879,7 +911,9 @@ export function ChoreChartClient() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {choreToDelete?.task}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes this {choreToDelete?.isCompleted ? 'completed' : 'active'} chore. This action cannot be undone.
+              {choreToDelete && !choreToDelete.isCompleted && isGeneratedInstance(choreToDelete)
+                ? 'This removes this day only. The chore still repeats on its other days. This action cannot be undone.'
+                : `This permanently removes this ${choreToDelete?.isCompleted ? 'completed' : 'active'} chore. This action cannot be undone.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1103,7 +1137,7 @@ export function ChoreChartClient() {
 
             <Accordion type="multiple" defaultValue={['todo']} className="w-full space-y-3 md:space-y-4">
               <AccordionItem value="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
-                <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl">To Do (<NumberTicker value={todoEntries.length} animateOnMount={false} />)</AccordionTrigger>
+                <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl"><span>To Do (<NumberTicker value={todoEntries.length} animateOnMount={false} />)</span></AccordionTrigger>
                 <AccordionContent className="pt-1">
                   {todoEntries.length > 0 ? roomGroups('todo', todoEntries, true) : (
                     <EmptyState

@@ -638,8 +638,9 @@ service cloud.firestore {
     }
 
     function validChoreTemplateFields(data, keys) {
-      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid']) &&
+      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid', 'skippedOccurrences']) &&
         (!('task' in keys) || nonEmptyString(data.task, 500)) &&
+        (!('skippedOccurrences' in keys) || boundedList(data.skippedOccurrences, 400)) &&
         (!('notes' in keys) || optionalString(data.notes, 5000)) &&
         (!('roomIds' in keys) || boundedList(data.roomIds, 50)) &&
         (!('subTasks' in keys) || boundedList(data.subTasks, 100)) &&
@@ -2051,7 +2052,11 @@ service cloud.firestore {
           request.resource.data.keys().hasAll(['task']) &&
           validChoreTemplateFields(request.resource.data, writtenKeys()) &&
           templateAssignmentAllowed(householdId);
-        allow update: if hasHouseholdPermission(householdId, 'chores.edit') &&
+        allow update: if (hasHouseholdPermission(householdId, 'chores.edit') ||
+            // Deleting one day of a repeating chore records the skip on its template
+            // (CH-3): a chores.delete holder may change that list and nothing else.
+            (hasHouseholdPermission(householdId, 'chores.delete') &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['skippedOccurrences']))) &&
           validChoreTemplateFields(request.resource.data, writtenKeys()) &&
           templateAssignmentAllowed(householdId);
         allow delete: if hasHouseholdPermission(householdId, 'chores.delete');

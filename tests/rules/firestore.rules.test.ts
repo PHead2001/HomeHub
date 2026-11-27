@@ -1644,6 +1644,41 @@ describe('content shapes: chores and templates', () => {
   });
 });
 
+// CH-3: deleting one day of a repeating chore records the skip on its template.
+describe('chore templates: skipped occurrences', () => {
+  const deleter = { uid: 'deleter-a', email: 'deleter.a@example.test' };
+  const template = (user: Identity) => doc(dbFor(user), 'households', householdA, 'chore-templates', 'skippy');
+
+  beforeEach(async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const db = context.firestore();
+      // May delete chores but not edit them.
+      await setDoc(doc(db, 'households', householdA, 'members', deleter.uid), {
+        uid: deleter.uid, email: deleter.email, role: 'member', status: 'active', permissions: { 'chores.edit': false, 'chores.delete': true },
+      });
+      await setDoc(doc(db, 'households', householdA, 'chore-templates', 'skippy'), {
+        task: 'Skippy', notes: '', roomIds: [], subTasks: [], assignedToUid: users.member.uid,
+        recurrence: { frequency: 'daily', interval: 1 },
+      });
+    });
+  });
+
+  test('a chores.delete holder may change the skip list and nothing else', async () => {
+    await assertSucceeds(updateDoc(template(deleter), { skippedOccurrences: ['skippy|general|2026-08-02'] }));
+    await assertFails(updateDoc(template(deleter), { skippedOccurrences: ['skippy|general|2026-08-03'], task: 'Renamed' }));
+    await assertFails(updateDoc(template(deleter), { roomIds: ['kitchen'] }));
+  });
+
+  test('editors may write it; people who can neither edit nor delete may not; the list is bounded', async () => {
+    await assertSucceeds(updateDoc(template(users.owner), { skippedOccurrences: ['skippy|general|2026-08-02'] }));
+    await assertFails(updateDoc(template(users.child), { skippedOccurrences: [] }));
+    await assertFails(updateDoc(template(users.guest), { skippedOccurrences: [] }));
+    await assertFails(updateDoc(template(users.owner), { skippedOccurrences: 'skippy|general|2026-08-02' }));
+    await assertFails(updateDoc(template(users.owner), { skippedOccurrences: Array.from({ length: 401 }, (_, i) => `skippy|general|${i}`) }));
+  });
+});
+
+
 // The restore document the client writes (items.ts restoreItemData + item-writes.ts restoreDocument).
 const restoreShape = (snapshot: Record<string, unknown>, restorerUid: string, restoreOpId: string) =>
   restoreDocument(restoreItemData(snapshot, restorerUid, restoreOpId));
