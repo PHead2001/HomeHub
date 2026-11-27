@@ -3,6 +3,7 @@
 import { assignablePeople, publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { MemberAvatar } from '@/components/member-avatar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ANYONE } from '@/lib/chores/swap';
 
 /** A member's name as housemates see it: never their email address. */
 export const memberName = (user: Pick<HouseholdPerson, 'displayName'>) => publicDisplayName(user.displayName);
@@ -16,6 +17,7 @@ export function AssigneeSelect({
   disabled,
   invalid,
   describedBy,
+  anyoneOption = false,
 }: {
   id: string;
   users: HouseholdPerson[];
@@ -24,6 +26,8 @@ export function AssigneeSelect({
   disabled?: boolean;
   invalid?: boolean;
   describedBy?: string;
+  /** CH-31: offer "Anyone (up for grabs)" (value `ANYONE`). */
+  anyoneOption?: boolean;
 }) {
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
@@ -31,6 +35,7 @@ export function AssigneeSelect({
         <SelectValue placeholder="Choose a member" />
       </SelectTrigger>
       <SelectContent>
+        {anyoneOption && <SelectItem value={ANYONE}>Anyone (up for grabs)</SelectItem>}
         {/* Kid profiles are not assignees yet (HO-15d); the current value always stays listed. */}
         {assignablePeople(users, value).map(user => (
           <SelectItem key={user.uid} value={user.uid}>
