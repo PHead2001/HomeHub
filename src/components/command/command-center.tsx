@@ -48,12 +48,19 @@ export function CommandCenter() {
   const [paletteVoice, setPaletteVoice] = useState(false);
   const [paletteKey, setPaletteKey] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
+  const paletteOpenRef = useRef(false);
+  useEffect(() => {
+    paletteOpenRef.current = paletteOpen;
+  }, [paletteOpen]);
   const pendingGo = useRef(false);
   const goTimer = useRef<number | null>(null);
 
   const allowed = useCallback((permission?: HouseholdPermission) => !permission || Boolean(permissions[permission]), [permissions]);
 
   const openPalette = useCallback((request: PaletteRequest = {}) => {
+    const active = document.activeElement;
+    setReturnFocus(active instanceof HTMLElement && active !== document.body ? active : null);
     setPaletteMode(request.mode ?? null);
     setPaletteVoice(Boolean(request.voice));
     setHelpOpen(false);
@@ -81,6 +88,12 @@ export function CommandCenter() {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isComposingKey(event) || event.repeat) return;
       const commandKey = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k';
+      // Ctrl/Cmd+K inside the open palette does nothing: reopening would wipe the text,
+      // the preview or a save in flight (QA-5).
+      if (commandKey && paletteOpenRef.current) {
+        event.preventDefault();
+        return;
+      }
       // Letters never fire while typing or while another dialog is open; Ctrl/Cmd+K always works.
       if (!commandKey && (isTypingTarget(event.target) || hasOpenOverlay())) return;
       const result = matchShortcut(event, pendingGo.current, allowed);
@@ -109,7 +122,7 @@ export function CommandCenter() {
 
   return (
     <>
-      <CommandPalette key={paletteKey} open={paletteOpen} onOpenChange={setPaletteOpen} initialMode={paletteMode} startVoice={paletteVoice} />
+      <CommandPalette key={paletteKey} open={paletteOpen} onOpenChange={setPaletteOpen} initialMode={paletteMode} startVoice={paletteVoice} returnFocus={returnFocus} />
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>

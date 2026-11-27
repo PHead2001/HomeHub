@@ -65,7 +65,7 @@ import { undoFeed } from '@/lib/pets/feed-operation';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { householdWallClock } from '@/lib/household-zone';
 import { useCommandIndex } from './use-command-index';
-import { groupContiguous, recentItemsKey, recentPicksKey, recentUse, searchScore } from '@/lib/dashboard/command-search';
+import { groupContiguous, resultsAnnouncement, recentItemsKey, recentPicksKey, recentUse, searchScore } from '@/lib/dashboard/command-search';
 import { highlightRowWhenShown } from './search-hit';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
@@ -135,7 +135,10 @@ export function CommandPalette({
   onOpenChange,
   initialMode,
   startVoice,
+  returnFocus = null,
 }: {
+  /** What had focus when the palette was asked for; it gets focus back on close (QA-5). */
+  returnFocus?: HTMLElement | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Open in Feeding, Item or Chore mode (QA-15); null opens the typing palette. */
@@ -297,9 +300,14 @@ export function CommandPalette({
       const { input, refs } = buildAiParseRequest(text, context);
       const output = unwrapAiActionResult(await parseCommand(input, await getAiActionContext(householdId)));
       if (!aiRequests.isCurrent(revision)) return;
-      const read = permitted(intentFromAiParse(output, refs, context));
+      const raw = intentFromAiParse(output, refs, context, text);
+      const read = permitted(raw);
       if (!read) {
-        setAiState({ status: 'none' });
+        // Honest copy (QA-5): a shopping answer with no list to add to, or a kind the
+        // member may not add, is said as such, never "could not read".
+        if (raw?.kind === 'shopping' && !raw.list) setAiState({ status: 'error', message: 'There is no shopping list to add to yet. Create one in Shopping first.' });
+        else if (raw && !permissions[INTENT_PERMISSION[raw.kind]]) setAiState({ status: 'error', message: 'AI read that as something your role cannot add.' });
+        else setAiState({ status: 'none' });
         return;
       }
       aiRequests.invalidate();
@@ -312,7 +320,7 @@ export function CommandPalette({
     } finally {
       aiRequests.settle(revision);
     }
-  }, [currentUser?.householdId, quickContext, text, permitted, aiRequests, household?.timeZone]);
+  }, [currentUser?.householdId, quickContext, text, permitted, aiRequests, household?.timeZone, permissions]);
 
   const options = useMemo<Option[]>(() => {
     const search = text.trim();
@@ -686,19 +694,14 @@ export function CommandPalette({
     }
   };
 
-  let lastGroup = '';
-  const listItems: ReactNode[] = [];
+  // Options are grouped (`groupContiguous`); each group is a labelled `role="group"`
+  // so its name is heard (QA-20).
+  const grouped: Array<{ group: string; rows: ReactNode[] }> = [];
   options.forEach((option, i) => {
-    if (option.group !== lastGroup) {
-      lastGroup = option.group;
-      listItems.push(
-        <li key={`group-${option.group}`} role="presentation" className="px-3 pb-1 pt-3 text-xs font-medium text-muted-foreground">
-          {option.group}
-        </li>,
-      );
-    }
+    if (grouped[grouped.length - 1]?.group !== option.group) grouped.push({ group: option.group, rows: [] });
+    const rows = grouped[grouped.length - 1].rows;
     const Icon = option.icon;
-    listItems.push(
+    rows.push(
       <li
         key={option.id}
         id={optionId(i)}
@@ -721,6 +724,13 @@ export function CommandPalette({
       </li>,
     );
   });
+  const listItems: ReactNode[] = grouped.map(({ group, rows }, at) => (
+    <li key={`group-${group}`} role="presentation">
+      <div id={`${listId}-group-${at}`} role="presentation" className="px-3 pb-1 pt-3 text-xs font-medium text-muted-foreground">{group}</div>
+      <ul role="group" aria-labelledby={`${listId}-group-${at}`}>{rows}</ul>
+    </li>
+  ));
+  const announcement = index.loading ? 'Loading…' : resultsAnnouncement(options);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -738,6 +748,12 @@ export function CommandPalette({
           if (!holdFocus) return;
           event.preventDefault();
           (event.currentTarget as HTMLElement | null)?.focus();
+        }}
+        // Focus goes back to what opened the palette, never to <body> (QA-5).
+        onCloseAutoFocus={(event) => {
+          if (!returnFocus || !returnFocus.isConnected || returnFocus.closest('[aria-hidden="true"]')) return;
+          event.preventDefault();
+          returnFocus.focus();
         }}
         // Escape during IME composition cancels the composition, not the palette.
         onEscapeKeyDown={(event) => {
@@ -913,6 +929,8 @@ export function CommandPalette({
               )}
               {aiState.status === 'error' && <p className="border-b px-4 py-2 text-xs text-destructive">{aiState.message}</p>}
             </div>
+            {/* The top suggestion and the result count, announced politely (QA-20). */}
+            <div className="sr-only" role="status" aria-live="polite" data-testid="palette-announcement">{announcement}</div>
             {/* Results enter in turn when the palette opens (H12); the list is the combobox's listbox. */}
             <Stagger as="ul" id={listId} role="listbox" aria-label="Results" className="max-h-[min(60vh,24rem,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)_-_8rem))] overflow-y-auto pb-2 md:max-h-[min(60vh,30rem,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)_-_8rem))]">
               {listItems.length > 0 ? listItems : (
@@ -1033,6 +1051,7 @@ function QuickAddPreview({
   const description = describeIntent(shown, self);
   const note = intent.kind === 'maintenance' ? mileageNote(intent.mileage, target) : null;
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const summaryId = useId();
   const firstFieldRef = useRef<HTMLSelectElement>(null);
   useEffect(() => {
     // The vehicle comes first when it must be chosen; otherwise Confirm has focus.
@@ -1047,7 +1066,7 @@ function QuickAddPreview({
   return (
     <div className="p-4" data-testid="quick-add-preview">
       <p className="text-xs font-medium text-muted-foreground">Check before saving</p>
-      <div className="mt-2 rounded-lg border bg-muted/40 p-3">
+      <div id={summaryId} className="mt-2 rounded-lg border bg-muted/40 p-3">
         <p className="font-medium">{description.title}</p>
         <p className="text-sm text-muted-foreground">{description.detail}</p>
       </div>
@@ -1161,6 +1180,8 @@ function QuickAddPreview({
           type="button"
           onClick={() => onConfirm({ assignee, room, target })}
           disabled={saving || blocker !== null}
+          // Confirm says what it confirms (QA-20).
+          aria-describedby={summaryId}
           data-testid="quick-add-confirm"
         >
           {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}

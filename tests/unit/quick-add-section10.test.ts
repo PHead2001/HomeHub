@@ -4,7 +4,9 @@ import { parseQuickAdd, splitItems, looksLikeItems, namedPets, foodFromText, typ
 import { canSplitChip, describeIntent, joinChips, removeChip, splitChip } from '../../src/lib/dashboard/quick-add-preview';
 import { mileageInText, portionInText, readMileage } from '../../src/lib/dashboard/quick-add-numbers';
 import { householdWallClock } from '../../src/lib/household-zone';
-import { groupContiguous, indexCacheKey, recentUse, searchScore, withinOneEdit } from '../../src/lib/dashboard/command-search';
+import { groupContiguous, resultsAnnouncement, indexCacheKey, recentUse, searchScore, withinOneEdit } from '../../src/lib/dashboard/command-search';
+import { redactPersonal } from '../../src/ai/redact';
+import { intentFromAiParse, mentionsDay, buildAiParseRequest } from '../../src/lib/dashboard/quick-add-ai';
 import { recognitionLanguage, voiceAutoPreview, voiceErrorMessage } from '../../src/lib/dashboard/voice';
 
 // Saturday, 1 August 2026, local noon.
@@ -288,5 +290,32 @@ describe('QA-4: the e2e AI-fallback sentence stays with the AI reader', () => {
     assert.equal(parse('could sam deal with the recycling on tuesdays')?.kind, 'chore');
     // The spec's sentence: no whole weekday word, a pronoun-free verb phrase the guess filter rejects.
     assert.equal(parse('could sam deal with the recycling, a tuesdayish job'), null);
+  });
+});
+
+describe('QA-7: redaction and refusing unstated days', () => {
+  it('redacts phones and street addresses, never odometer readings', () => {
+    assert.equal(redactPersonal('call 555-123-4567 about it'), 'call a phone number about it');
+    assert.equal(redactPersonal('ring (555) 123 4567'), 'ring a phone number');
+    assert.equal(redactPersonal('ring +15551234567 now'), 'ring a phone number now');
+    assert.equal(redactPersonal('pick up at 12 Oak Street tomorrow'), 'pick up at an address tomorrow');
+    assert.equal(redactPersonal('mail sam@example.test'), 'mail a member');
+    assert.equal(redactPersonal('oil change 48200 miles at 1234567'), 'oil change 48200 miles at 1234567');
+    assert.equal(buildAiParseRequest('call 555-123-4567 tomorrow', context).input.text, 'call a phone number tomorrow');
+  });
+  it('refuses an AI chore with no date when the sentence talked about a day', () => {
+    assert.equal(mentionsDay('could someone call the vet next week'), true);
+    assert.equal(mentionsDay('could someone call the vet'), false);
+    const refs = buildAiParseRequest('x', context).refs;
+    assert.equal(intentFromAiParse({ kind: 'chore', chore: { task: 'Call the vet' } }, refs, context, 'call the vet sometime next week'), null);
+    assert.equal(intentFromAiParse({ kind: 'chore', chore: { task: 'Call the vet' } }, refs, context, 'call the vet')?.kind, 'chore');
+  });
+});
+
+describe('QA-20: announcements', () => {
+  it('announces the top quick add and the count', () => {
+    assert.equal(resultsAnnouncement([{ group: 'Quick add', label: 'Add Milk', detail: 'to Groceries' }, { group: 'Go to', label: 'Shopping' }]), 'Quick add: Add Milk, to Groceries. 2 results.');
+    assert.equal(resultsAnnouncement([{ group: 'Go to', label: 'Home' }]), '1 result.');
+    assert.equal(resultsAnnouncement([]), 'No results.');
   });
 });

@@ -11,7 +11,7 @@
  * and an email typed into the sentence itself is replaced before it is sent.
  */
 import type { ParseCommandInput, ParseCommandOutput } from '@/ai/tasks/parse-command';
-import { containsEmail, redactEmails } from '@/ai/redact';
+import { containsEmail, redactPersonal } from '@/ai/redact';
 import { dayKey, startOfLocalDay } from './dates';
 import {
   firstDateForRepeat,
@@ -82,7 +82,8 @@ export function buildAiParseRequest(text: string, context: QuickAddContext): { i
   });
   return {
     input: {
-      text: redactEmails(text.trim().replace(/\s+/g, ' ')).slice(0, 200),
+      // No emails, phone numbers or street addresses (QA-7).
+      text: redactPersonal(text.trim().replace(/\s+/g, ' ')).slice(0, 200),
       today: dayKey(context.now),
       members: members.named,
       rooms: rooms.named,
@@ -119,9 +120,13 @@ function toRepeat(repeat: NonNullable<NonNullable<ParseCommandOutput['chore']>['
  * the member's own records; an unresolvable pet means no intent. A due date in the
  * past is moved to today.
  */
-export function intentFromAiParse(output: ParseCommandOutput, refs: AiParseRefs, context: QuickAddContext): QuickAddIntent | null {
+export function intentFromAiParse(output: ParseCommandOutput, refs: AiParseRefs, context: QuickAddContext, text?: string): QuickAddIntent | null {
   const today = dayKey(startOfLocalDay(context.now));
   if (output.kind === 'chore' && output.chore) {
+    // The server drops a date or repeat the sentence does not state (QA-7). When the
+    // sentence did talk about a day, a chore quietly due today would be wrong data,
+    // so the answer is refused instead.
+    if (!output.chore.dueDate && !output.chore.repeat && text && mentionsDay(text)) return null;
     const asked = output.chore.repeat ? toRepeat(output.chore.repeat) : null;
     const normalized = asked ? normalizeRepeat(asked) : null;
     const repeat = normalized?.repeat ?? null;
@@ -165,6 +170,11 @@ export function intentFromAiParse(output: ParseCommandOutput, refs: AiParseRefs,
     return { kind: 'feeding', pet, amount: output.feeding.amount ?? null, unit: output.feeding.unit ?? null };
   }
   return null;
+}
+
+/** True when a sentence talks about a day or a repeat ("Tuesday", "next week", "the 15th", "8/20"). */
+export function mentionsDay(text: string): boolean {
+  return /\b(?:tomorrow|tmrw|yesterday|week|weekend|weekends|month|monthly|daily|every|next|sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)\w*|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d|\b\d{1,2}\/\d{1,2}\b|\b\d{1,2}(?:st|nd|rd|th)\b/i.test(text);
 }
 
 export type RevisionGuard = {

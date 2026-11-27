@@ -136,3 +136,15 @@ export const recentItemsKey = (householdId: string) => `homehub.palette.items.${
 /** The palette index cache's key: household, person and the view permissions they hold (QA-12, QA-21). */
 export const indexCacheKey = (householdId: string, uid: string, permissions: Partial<Record<string, boolean>>) =>
   [householdId, uid, ...Object.keys(permissions).filter((name) => permissions[name]).sort()].join('|');
+
+/**
+ * The palette's polite announcement (QA-20): the top suggestion when it is a quick
+ * add, then the result count ("Quick add: Add Milk, to Groceries. 5 results.").
+ */
+export function resultsAnnouncement(options: ReadonlyArray<{ group: string; label: string; detail?: string }>): string {
+  const count = `${options.length} ${options.length === 1 ? 'result' : 'results'}.`;
+  const top = options[0];
+  if (!top) return 'No results.';
+  if (top.group === 'Quick add' || top.group === 'Add again') return `${top.group}: ${top.label}${top.detail ? `, ${top.detail}` : ''}. ${count}`;
+  return count;
+}
