@@ -9,6 +9,7 @@
  *   without error; otherwise the pet's `fed` is null ("unavailable").
  */
 import { newestFirst } from '../pets/care';
+import type { MissedEntry } from '../../../functions/src/shared/missed';
 import { computeChoreStats } from '../chores/stats';
 import type { ChoreRecord } from '../chores/dates';
 import { computeHomeHealth, isScored } from '../maintenance/health';
@@ -64,6 +65,8 @@ export type DashboardRaw = {
   leaderboard?: 'on' | 'off';
   /** Household membership records, for streaks. */
   members?: RawDoc[];
+  /** Missed days upkeep expired (CH-7, `stats/missed-recent`): they still break fair streaks. */
+  missedRecent?: MissedEntry[];
 };
 
 /** Extra failure keys: these hide one tile or badge and never make a section unavailable. */
@@ -144,8 +147,13 @@ export function assembleDashboardFacts(
   // only when the setting is known to be on, never while it is loading or unreadable.
   const leaderboard = failed.has(LEADERBOARD_FAILURE) ? 'unknown' : raw.leaderboard ?? 'unknown';
   if (access.chores && (raw.leaderboard === 'off' || failed.has(LEADERBOARD_FAILURE))) facts.streaksHidden = true;
-  if (access.chores && mayShowRanking(leaderboard) && !failed.has('chores') && !failed.has(STREAKS_FAILURE) && raw.completedChores && raw.members) {
-    facts.streaks = streakTileModel(computeChoreStats(raw.completedChores as unknown as ChoreRecord[], streakMembersFrom(raw.members), context.now));
+  // Fair streaks (CH-19) need the open chores too (a missed day ends a streak), and
+  // read days in the household's zone (D-6), like the Chores page; missed days that upkeep
+  // expired (CH-7) still count as days left undone.
+  if (access.chores && mayShowRanking(leaderboard) && !failed.has('chores') && !failed.has(STREAKS_FAILURE) && raw.completedChores && raw.openChores && raw.members && raw.missedRecent) {
+    const merged = new Map<string, RawDoc>();
+    [...raw.openChores, ...raw.completedChores].forEach((chore) => merged.set(chore.id, chore));
+    facts.streaks = streakTileModel(computeChoreStats([...merged.values()] as unknown as ChoreRecord[], streakMembersFrom(raw.members), context.now, { today, timeZone: zone, missed: raw.missedRecent }));
   }
 
   // HP-11b: the golden roof counts the same completions listener, so it turns gold live.

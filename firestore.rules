@@ -535,7 +535,7 @@ service cloud.firestore {
       return keys.hasOnly([
           'task', 'notes', 'assignedToEmail', 'assignedToUid', 'assignedToDisplayName', 'dueDate', 'originalDueDate',
           'roomIds', 'isCompleted', 'completedAt', 'completedAtServer', 'completedSubTasks', 'subTasks',
-          'templateId', 'sourceType',
+          'templateId', 'sourceType', 'createdByUid',
           // Server-written (H3): completion attribution and the generated occurrence's identity.
           'completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey'
         ]) &&
@@ -558,7 +558,12 @@ service cloud.firestore {
         (!('completedByEmail' in keys) || optionalString(data.completedByEmail, 320)) &&
         (!('completedByName' in keys) || optionalString(data.completedByName, 200)) &&
         (!('completionId' in keys) || optionalString(data.completionId, 100)) &&
-        (!('occurrenceKey' in keys) || boundedString(data.occurrenceKey, 700));
+        (!('occurrenceKey' in keys) || boundedString(data.occurrenceKey, 700)) &&
+        // Who added the chore (CH-20: a one-time chore you add for yourself earns no
+        // points): the writer, set only on create, then neither changed nor removed.
+        // Optional, so chores of older clients stay valid.
+        (!('createdByUid' in keys) || (resource == null && data.createdByUid == request.auth.uid)) &&
+        (resource == null || data.get('createdByUid', null) == resource.data.get('createdByUid', null));
     }
 
     // Completion attribution (H3, rules stage R1). Who completed a chore and the

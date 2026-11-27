@@ -43,6 +43,7 @@ import { notificationWindowQuery, viewableNotificationCategories } from '@/app/n
 import { SECTION_LIMITS, type DashboardFacts, type RawDoc } from './facts';
 import { assembleDashboardFacts, feedingFailureKey, LEADERBOARD_FAILURE, STREAKS_FAILURE, type DashboardRaw } from './assemble';
 import { leaderboardEnabledFrom } from './streaks';
+import { MISSED_DOC_ID, readMissedEntries } from '../../../functions/src/shared/missed';
 import { deviceStorage, readHouseOutline, readHouseSnapshot, writeHouseSnapshot, type HouseOutlineRoom } from './house-snapshot';
 import type { ChoreFacts } from './facts';
 import { resilientListener, type ResilientHandle } from './resilient-listener';
@@ -122,6 +123,7 @@ const PLAN = [
   { id: 'chores.doneLegacy', group: 'chores', access: 'chores', scope: 'day' },
   { id: 'streaks.completed', group: STREAKS_FAILURE, access: 'chores', scope: 'context' },
   { id: 'streaks.members', group: STREAKS_FAILURE, access: 'chores', scope: 'context' },
+  { id: 'streaks.missed', group: STREAKS_FAILURE, access: 'chores', scope: 'context' },
   { id: 'leaderboard', group: LEADERBOARD_FAILURE, access: 'chores', scope: 'context' },
   { id: 'shopping.lists', group: 'shopping', access: 'shopping', scope: 'context' },
   { id: 'pantry', group: 'pantry', access: 'shopping', scope: 'context' },
@@ -284,6 +286,14 @@ export function useDashboardData(enabled = true, options: { sections?: boolean }
       // Streaks (H22/H06): every retained completion and the approved members, as the Chores page reads them.
       'streaks.completed': () => watchQuery('streaks.completed', STREAKS_FAILURE, query(base('chores'), where('isCompleted', '==', true)), (s, r) => ({ ...r, completedChores: docs(s) })),
       'streaks.members': () => watchQuery('streaks.members', STREAKS_FAILURE, query(base('members')), (s, r) => ({ ...r, members: docs(s) })),
+      // CH-7 expired missed days (stats/missed-recent): they still break fair streaks (CH-19).
+      'streaks.missed': () => watch<DocumentSnapshot<DocumentData>>(
+        'streaks.missed',
+        STREAKS_FAILURE,
+        (next, error) => onSnapshot(doc(db, 'households', householdId, 'stats', MISSED_DOC_ID), { includeMetadataChanges: true }, next, error),
+        (snapshot) => snapshot.metadata.fromCache,
+        (snapshot, r) => ({ ...r, missedRecent: readMissedEntries(snapshot.exists() ? snapshot.data() : null) }),
+      ),
       // The Chores "Show leaderboard" setting gates the comparative streaks tile.
       leaderboard: () => watch<DocumentSnapshot<DocumentData>>(
         'leaderboard',

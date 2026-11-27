@@ -236,6 +236,8 @@ export async function createOneTimeChore({
     isCompleted: false,
     completedSubTasks: [],
     sourceType: 'temporary',
+    // CH-20: a one-time chore you add for yourself earns no points.
+    createdByUid: viewer.uid,
   };
   batch.set(choreRef, chore);
   // No "new chore" notification for a chore you give yourself.

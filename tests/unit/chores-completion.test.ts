@@ -126,9 +126,11 @@ describe('the completer gets the points (CH-12, D-7)', () => {
     const sam = stats.members.find(m => m.uid === 'u-sam')!;
     const alex = stats.members.find(m => m.uid === 'u-alex')!;
     assert.equal(sam.weekPoints, 15);
-    assert.equal(sam.streak, 1);
+    // Streaks follow each person's own due days (CH-19): Alex's day is done, whoever did it.
+    assert.equal(sam.streak, 0);
+    assert.equal(alex.streak, 1);
     assert.equal(alex.weekPoints, 0);
-    assert.equal(alex.weekAssigned, 1, 'fair share still counts the assignment');
+    assert.equal(alex.weekAssigned, 1, 'the assignment still counts as Alex\'s');
   });
 
   it('credits an older completedByEmail-only completion the same on the Chores page and the dashboard', () => {
@@ -149,7 +151,7 @@ describe('the completer gets the points (CH-12, D-7)', () => {
     const sam = pageStats.members.find(m => m.uid === 'u-sam')!;
     assert.equal(sam.weekPoints, 15);
     assert.equal(sam.stickers, 1);
-    assert.equal(sam.streak, 1);
+    assert.equal(pageStats.members.find(m => m.uid === 'u-alex')!.streak, 1);
     // The email is a matching key only: it never reaches the stats output or a name.
     assert.ok(!JSON.stringify(pageStats).includes('@'));
   });
