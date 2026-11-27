@@ -52,7 +52,9 @@ import type { MaintenanceTarget, QuickAddList, QuickAddMember, QuickAddRepeat, Q
 import {
   quickCreateId, quickMaintenanceLog, quickMaintenanceNext, quickMaintenanceValues, recurrenceFromRepeat, repeatingChoreTemplate, type QuickMaintenanceRequest, type QuickMaintenanceValues,
 } from '@/lib/dashboard/quick-add-writes';
-import { saveMaintenanceLog } from '@/app/maintenance/actions';
+import { saveMaintenanceLog, undoMaintenanceLog } from '@/app/maintenance/actions';
+import { undoQuickAddChore, undoQuickAddItems } from '@/app/command/actions';
+import type { ItemUndo } from '@/lib/dashboard/quick-add-undo';
 import { callMaintenanceAction, newOpId } from '@/components/maintenance/maintenance-action-client';
 import { householdToday } from '@/lib/household-zone';
 
@@ -61,7 +63,7 @@ export async function addShoppingItems(
   list: QuickAddList,
   items: QuickAddEntry[],
   onLateError: (error: unknown) => void,
-): Promise<ShoppingAddOutcome & { settled: Promise<{ failed: QuickAddEntry[] }> }> {
+): Promise<ShoppingAddOutcome & { settled: Promise<{ failed: QuickAddEntry[] }>; undo: ItemUndo[]; mergedNames: string[] }> {
   const categoriesSnapshot = await getDocOfflineAware(doc(db, 'households', householdId, 'shopping-lists', list.id, 'config', 'categories')).catch(() => null);
   const categories = (categoriesSnapshot?.exists() ? normalizeStoredCategories(categoriesSnapshot.data()) : null) ?? DEFAULT_SHOPPING_CATEGORIES;
   const itemsRef = collection(db, 'households', householdId, 'shopping-lists', list.id, 'items');
@@ -90,7 +92,36 @@ export async function addShoppingItems(
       ? ((await entryOutcome.settled) === 'failed' ? items[index] : null)
       : null
   ))).then((late) => ({ failed: late.filter((entry): entry is QuickAddEntry => entry !== null) }));
-  return { ...outcome, settled };
+  // Only entries the server confirmed can be taken back (QA-9); queued ones cannot.
+  const confirmed = outcomes.filter((entry) => entry.state === 'saved' && entry.itemId);
+  const undo = confirmed.map((entry) => ({ itemId: entry.itemId as string, merged: entry.merged, quantity: entry.entry.quantity }));
+  // "Already on the list" (QA-9): entries merged into a still-needed item.
+  const mergedNames = confirmed.filter((entry) => entry.merged).map((entry) => entry.name);
+  return { ...outcome, settled, undo, mergedNames };
+}
+
+/** Takes back a quick-add shopping save through the server (QA-9). */
+export async function undoShoppingAdd(householdId: string, listId: string, items: ItemUndo[]) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Your sign-in could not be verified. Sign in again.');
+  const result = await undoQuickAddItems({ idToken: await user.getIdToken(), householdId, listId, items });
+  if (!result.ok) throw new Error(result.message);
+  return result;
+}
+
+/** Takes back a quick-add one-time chore through the server (QA-9). */
+export async function undoOneTimeChore(householdId: string, choreId: string) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Your sign-in could not be verified. Sign in again.');
+  const result = await undoQuickAddChore({ idToken: await user.getIdToken(), householdId, choreId });
+  if (!result.ok) throw new Error(result.message);
+  return result;
+}
+
+/** Takes back a quick-add maintenance log the server saved, by its op id (Maintenance's own Undo, MA-8). */
+export async function undoQuickMaintenance(householdId: string, opId: string) {
+  const outcome = await callMaintenanceAction(householdId, (context) => undoMaintenanceLog({ ...context, opId }));
+  if (outcome.kind !== 'ok') throw new Error(outcome.kind === 'failed' ? outcome.message : 'Could not reach the server to undo it. Try again.');
 }
 
 // Feedings go through the Pets module's shared feed operation, so quick-add
@@ -334,7 +365,7 @@ export async function createRepeatingChore({
 
 export type QuickMaintenanceOutcome =
   /** The server saved it (or had saved it: a replay of the same op id). */
-  | { status: 'saved'; logId: string; values: QuickMaintenanceValues }
+  | { status: 'saved'; logId: string; values: QuickMaintenanceValues; /** Present when the server saved it: its Undo (QA-9). */ opId?: string }
   /** Offline before sending: the client write is queued and syncs on reconnect. */
   | { status: 'queued'; logId: string; values: QuickMaintenanceValues }
   /** No answer in time: it may have been saved. Confirm resends `request` (same op id). */
@@ -375,7 +406,7 @@ export async function logMaintenance({
   const outcome = await callMaintenanceAction(householdId, (context) => saveMaintenanceLog({ ...context, save: { opId: request.opId, values: request.values } }));
   const next = quickMaintenanceNext(outcome.kind, held !== null);
   // The values actually sent (a resent request keeps the target it was first confirmed with).
-  if (next === 'saved' && outcome.kind === 'ok') return { status: 'saved', logId: outcome.data.id, values: request.values };
+  if (next === 'saved' && outcome.kind === 'ok') return { status: 'saved', logId: outcome.data.id, values: request.values, opId: request.opId };
   if (next === 'failed' && outcome.kind === 'failed') return { status: 'failed', message: outcome.message };
   if (next === 'hold') return { status: 'no_answer', request };
   if (next === 'needs_connection') return { status: 'needs_connection', request };

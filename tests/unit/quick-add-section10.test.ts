@@ -6,6 +6,7 @@ import { mileageInText, portionInText, readMileage } from '../../src/lib/dashboa
 import { householdWallClock } from '../../src/lib/household-zone';
 import { groupContiguous, resultsAnnouncement, indexCacheKey, recentUse, searchScore, withinOneEdit } from '../../src/lib/dashboard/command-search';
 import { redactPersonal } from '../../src/ai/redact';
+import { choreUndoPlan, itemUndoPlan, parseItemUndos, QUICK_ADD_UNDO_GRACE_MS } from '../../src/lib/dashboard/quick-add-undo';
 import { intentFromAiParse, mentionsDay, buildAiParseRequest } from '../../src/lib/dashboard/quick-add-ai';
 import { recognitionLanguage, voiceAutoPreview, voiceErrorMessage } from '../../src/lib/dashboard/voice';
 
@@ -317,5 +318,44 @@ describe('QA-20: announcements', () => {
     assert.equal(resultsAnnouncement([{ group: 'Quick add', label: 'Add Milk', detail: 'to Groceries' }, { group: 'Go to', label: 'Shopping' }]), 'Quick add: Add Milk, to Groceries. 2 results.');
     assert.equal(resultsAnnouncement([{ group: 'Go to', label: 'Home' }]), '1 result.');
     assert.equal(resultsAnnouncement([]), 'No results.');
+  });
+});
+
+describe('QA-9: what quick-add Undo may take back', () => {
+  const now = 1_000_000_000;
+  const fresh = now - 5_000;
+  it('deletes a fresh item the member added, or takes off only their quantity', () => {
+    const item = { exists: true, addedByUid: 'sam', status: 'needed', quantity: 1, createdMs: fresh };
+    assert.deepEqual(itemUndoPlan(item, { itemId: 'i', merged: false, quantity: 1 }, 'sam', now), { action: 'delete' });
+    assert.deepEqual(itemUndoPlan({ ...item, quantity: 3 }, { itemId: 'i', merged: false, quantity: 1 }, 'sam', now), { action: 'decrement', by: 1 });
+  });
+  it('keeps what is not theirs, too old, bought, gone or changed', () => {
+    const item = { exists: true, addedByUid: 'sam', status: 'needed', quantity: 1, createdMs: fresh };
+    const ask = { itemId: 'i', merged: false, quantity: 1 };
+    assert.equal(itemUndoPlan({ ...item, addedByUid: 'alex' }, ask, 'sam', now).action, 'keep');
+    assert.equal(itemUndoPlan({ ...item, createdMs: now - QUICK_ADD_UNDO_GRACE_MS - 1 }, ask, 'sam', now).action, 'keep');
+    assert.equal(itemUndoPlan({ ...item, createdMs: null }, ask, 'sam', now).action, 'keep');
+    assert.equal(itemUndoPlan({ ...item, status: 'purchased' }, ask, 'sam', now).action, 'keep');
+    assert.equal(itemUndoPlan({ exists: false }, ask, 'sam', now).action, 'keep');
+    assert.equal(itemUndoPlan({ ...item, quantity: 1 }, { ...ask, quantity: 2 }, 'sam', now).action, 'keep');
+  });
+  it('takes a merge back off while more than that remains', () => {
+    const merged = { exists: true, addedByUid: 'alex', status: 'needed', quantity: 3, createdMs: now - 86_400_000 };
+    assert.deepEqual(itemUndoPlan(merged, { itemId: 'i', merged: true, quantity: 2 }, 'sam', now), { action: 'decrement', by: 2 });
+    assert.equal(itemUndoPlan({ ...merged, quantity: 2 }, { itemId: 'i', merged: true, quantity: 2 }, 'sam', now).action, 'keep');
+  });
+  it('removes only a fresh, open, quick one-time chore the member added', () => {
+    const chore = { exists: true, createdByUid: 'sam', sourceType: 'temporary', isCompleted: false, createdMs: fresh };
+    assert.deepEqual(choreUndoPlan(chore, 'sam', now), { action: 'delete' });
+    assert.equal(choreUndoPlan({ ...chore, isCompleted: true }, 'sam', now).action, 'keep');
+    assert.equal(choreUndoPlan({ ...chore, createdByUid: 'alex' }, 'sam', now).action, 'keep');
+    assert.equal(choreUndoPlan({ ...chore, sourceType: 'template' }, 'sam', now).action, 'keep');
+    assert.equal(choreUndoPlan({ ...chore, createdMs: now - QUICK_ADD_UNDO_GRACE_MS - 1 }, 'sam', now).action, 'keep');
+  });
+  it('validates the request', () => {
+    assert.deepEqual(parseItemUndos([{ itemId: 'a', merged: false, quantity: 2 }]), [{ itemId: 'a', merged: false, quantity: 2 }]);
+    for (const bad of [[], [{ itemId: 'a/b', merged: false, quantity: 1 }], [{ itemId: 'a', merged: 'no', quantity: 1 }], [{ itemId: 'a', merged: false, quantity: 0 }], 'x', Array.from({ length: 21 }, () => ({ itemId: 'a', merged: false, quantity: 1 }))]) {
+      assert.equal(parseItemUndos(bad), null);
+    }
   });
 });
