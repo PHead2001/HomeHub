@@ -301,6 +301,8 @@ export async function createRepeatingChore({
     roomId: room?.id ?? null,
     recurrence: recurrenceFromRepeat(repeat, firstDay),
     assignee,
+    // CH-24: the creator manages it (edit, stop, delete) like a chore added in Chores.
+    creatorUid: viewer.uid,
   });
   const status = await awaitWriteUnlessOffline(setDoc(doc(templates, templateId), template), onLateError);
 

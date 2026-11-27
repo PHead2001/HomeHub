@@ -431,6 +431,8 @@ export type ChoreTemplate = {
     rotation?: string[];
     /** Day the rotation counts its turns from (the first person does that day's occurrence). */
     rotationStart?: string;
+    /** Who created it (CH-24): set by the client on create (rules: the writer), never changed. Older templates have none. */
+    createdByUid?: string;
 }
 
 export type Chore = {
@@ -459,7 +461,7 @@ export type Chore = {
   completedByName?: string | null;
   /** Random id of the current completion; Undo succeeds only while it still matches. */
   completionId?: string | null;
-  /** Who added a one-time chore (rules: the writer, immutable). CH-20: your own earn no points. */
+  /** Who added a one-time chore (rules: the writer, immutable). CH-20: your own earn no points; CH-24: its creator may remove it while it is open. Generated days have none. */
   createdByUid?: string;
 };
 

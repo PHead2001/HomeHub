@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { format } from 'date-fns';
-import { Pencil, Repeat } from 'lucide-react';
+import { Pencil, Repeat, Trash2 } from 'lucide-react';
+import { ASK_AN_ADMIN } from '@/lib/chores/rights';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -33,6 +34,11 @@ type DetailSheetProps = {
   onSave: (chore: ChoreRecord, edit: DetailEdit) => Promise<boolean>;
   /** Opens the library chore's editor (every day of the series). */
   onEditSeries: (template: ChoreTemplate) => void;
+  /** CH-24: whether the reader may delete this chore (admins; its creator while it is open). */
+  canRemove: boolean;
+  /** Whether the reader may edit the library chore (editors; its creator). */
+  canEditSeries: boolean;
+  onDelete: (chore: ChoreRecord) => void;
 };
 
 const dayLabel = (day: string) => (day ? format(dayFromKey(day), 'EEE, MMM d') : 'No date');
@@ -121,14 +127,21 @@ function DetailBody(props: DetailSheetProps & { chore: ChoreRecord }) {
             )}
           </section>
 
-          {capabilities.canEdit && (
-            <div className="mt-auto flex flex-wrap gap-2 pt-2">
-              <Button variant="outline" onClick={() => setEditing(true)}><Pencil className="mr-2 h-4 w-4" /> Edit</Button>
-              {props.template && (
-                <Button variant="ghost" onClick={() => props.onEditSeries(props.template!)}><Repeat className="mr-2 h-4 w-4" /> Edit every day</Button>
-              )}
-            </div>
-          )}
+          <div className="mt-auto space-y-2 pt-2">
+            {(capabilities.canEdit || props.canRemove || (props.template && props.canEditSeries)) && (
+              <div className="flex flex-wrap gap-2">
+                {capabilities.canEdit && <Button variant="outline" onClick={() => setEditing(true)}><Pencil className="mr-2 h-4 w-4" /> Edit</Button>}
+                {props.template && props.canEditSeries && (
+                  <Button variant="ghost" onClick={() => props.onEditSeries(props.template!)}><Repeat className="mr-2 h-4 w-4" /> Edit every day</Button>
+                )}
+                {props.canRemove && (
+                  <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={() => props.onDelete(chore)}><Trash2 className="mr-2 h-4 w-4" /> Delete…</Button>
+                )}
+              </div>
+            )}
+            {/* CH-24: never a silent dead end. */}
+            {!props.canRemove && capabilities.canCreate && <p className="text-xs text-muted-foreground" data-testid="chore-detail-ask-admin">{ASK_AN_ADMIN}</p>}
+          </div>
         </>
       )}
     </>

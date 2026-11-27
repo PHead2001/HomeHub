@@ -106,7 +106,7 @@ describe('chore list helpers', () => {
     assert.match(page, /const templateId = id \|\| newChoreDocId\(choreData\.task \|\| '', doc\(templatesCollection\)\.id\)/);
     assert.match(page, /const roomId = id \|\| newChoreDocId\(roomData\.name, doc\(roomsCollection\)\.id, 'room'\)/);
     // The library create checks for an existing document and sets without merge.
-    assert.match(page, /if \(oldTemplateSnap\.exists\(\)\) throw new Error\([^)]*\);\s*transaction\.set\(templateRef, choreData\);/);
+    assert.match(page, /if \(oldTemplateSnap\.exists\(\)\) throw new Error\([^)]*\);\s*transaction\.set\(templateRef, \{ \.\.\.choreData, \.\.\.\(currentUser \? \{ createdByUid: currentUser\.uid \} : \{\}\) \}\);/);
   });
 });
 

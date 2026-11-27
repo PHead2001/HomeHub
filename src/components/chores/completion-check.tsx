@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef } from 'react';
+import { forwardRef, useId } from 'react';
 import { motion } from 'motion/react';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { cn } from '@/lib/utils';
@@ -10,6 +10,8 @@ type CompletionCheckProps = {
   /** Accessible name, e.g. "Mark Reset the kitchen done". */
   label: string;
   disabled?: boolean;
+  /** CH-24: why the check is disabled, shown as its tooltip and read with it. */
+  hint?: string | null;
   onToggle: () => void;
   /** Marks the main done check of a chore row, the only focus target after completing (CH-16). */
   rowCheck?: boolean;
@@ -23,10 +25,11 @@ type CompletionCheckProps = {
  * the end state shows instantly.
  */
 export const CompletionCheck = forwardRef<HTMLButtonElement, CompletionCheckProps>(function CompletionCheck(
-  { checked, label, disabled, onToggle, className, rowCheck },
+  { checked, label, disabled, hint, onToggle, className, rowCheck },
   ref,
 ) {
   const reduced = useReducedMotion();
+  const hintId = useId();
   return (
     <button
       ref={ref}
@@ -35,6 +38,8 @@ export const CompletionCheck = forwardRef<HTMLButtonElement, CompletionCheckProp
       aria-checked={checked}
       aria-label={label}
       data-chore-row-check={rowCheck ? '' : undefined}
+      aria-describedby={hint ? hintId : undefined}
+      title={hint ?? undefined}
       disabled={disabled}
       onClick={onToggle}
       className={cn('group grid h-[var(--target-min)] w-[var(--target-min)] shrink-0 place-items-center rounded-md disabled:cursor-not-allowed', className)}
@@ -62,6 +67,7 @@ export const CompletionCheck = forwardRef<HTMLButtonElement, CompletionCheckProp
           />
         </svg>
       </span>
+      {hint && <span id={hintId} className="sr-only">{hint}</span>}
     </button>
   );
 });

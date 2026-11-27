@@ -45,6 +45,7 @@ import { ChoreList } from '@/components/chores/chore-list';
 import { ChoreDetailSheet } from '@/components/chores/chore-detail-sheet';
 import type { DetailEdit } from '@/lib/chores/detail';
 import { oneTimeChoreRooms } from '@/lib/chores/add-chore';
+import { mayRemoveChore, templateRights } from '@/lib/chores/rights';
 import { PauseChoresDialog } from '@/components/chores/pause-dialog';
 import { pauseChoresOnServer, pauseMessage, type PauseRequest } from '@/lib/chores/pause-client';
 import { isQuietAt, readQuietHours } from '@/lib/devices/quiet-hours';
@@ -179,6 +180,7 @@ export function ChoreChartClient() {
   useEffect(() => { setIsMounted(true); }, []);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
+  const templatesById = useMemo(() => new Map(choreTemplates.map(template => [template.id, template])), [choreTemplates]);
   const usersByUid = useMemo(() => new Map(householdUsers.map(user => [user.uid, user])), [householdUsers]);
   const memberColors = useMemo(() => memberColorMap(householdUsers.map(user => ({ uid: user.uid, joinedAt: user.joinedAt }))), [householdUsers]);
 
@@ -348,7 +350,8 @@ export function ChoreChartClient() {
           isCompleted: false,
           completedSubTasks: [],
           sourceType: 'temporary',
-          // CH-20: a one-time chore you add for yourself earns no points.
+          // CH-20: a one-time chore you add for yourself earns no points; CH-24: its creator
+          // may remove it while it is open.
           createdByUid: currentUser.uid,
         }));
         if (shouldNotify(assignee.uid)) {
@@ -377,6 +380,8 @@ export function ChoreChartClient() {
           subTasks: [],
           recurrence,
           ...assigneeFields(assignee),
+          // CH-24: the creator manages it (edit, stop, delete) without chores.delete.
+          createdByUid: currentUser.uid,
         });
         if (shouldNotify(assignee.uid)) {
           await setDoc(doc(notificationsCollection), buildNotificationDocument({
@@ -414,7 +419,7 @@ export function ChoreChartClient() {
         if (!id) {
           // A create never merges into (or overwrites) an existing template.
           if (oldTemplateSnap.exists()) throw new Error('A chore with this ID already exists. Try again.');
-          transaction.set(templateRef, choreData);
+          transaction.set(templateRef, { ...choreData, ...(currentUser ? { createdByUid: currentUser.uid } : {}) });
           return;
         }
         const oldTemplate = oldTemplateSnap.exists() ? oldTemplateSnap.data() as ChoreTemplate : null;
@@ -534,6 +539,7 @@ export function ChoreChartClient() {
             templateId: template.id,
             // One-time library assignment: never folded as a missed repeating instance.
             sourceType: 'template',
+            // CH-24: whoever assigned it may remove it while it is open.
             createdByUid: currentUser.uid,
             originalDueDate,
             roomIds: roomId === 'general' ? [] : [roomId],
@@ -1180,6 +1186,9 @@ export function ChoreChartClient() {
     onClearMissed: (entry: ToDoEntry) => void deleteChores(entry.missed.map(c => c.id), `Cleared ${entry.missed.length} missed`),
     // CH-13: large cards in the room view.
     large: roomView,
+    // CH-24: who may remove what (creators manage their own chores).
+    currentUid: currentUser.uid,
+    templatesById,
   };
 
   const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
@@ -1308,6 +1317,9 @@ export function ChoreChartClient() {
         onSubTaskToggle={(chore, subTask) => void handleSubTaskToggle(chore, subTask)}
         onSave={handleEditChore}
         onEditSeries={template => { setDetailId(null); setSeriesToEdit(template); }}
+        canRemove={detailChore ? mayRemoveChore(detailChore, detailTemplate, currentUser.uid, capabilities) : false}
+        canEditSeries={detailTemplate ? templateRights(detailTemplate, currentUser.uid, capabilities).edit : false}
+        onDelete={chore => { setDetailId(null); setChoreToDelete(chore); }}
       />
       <ChoreTemplateEditDialog
         chore={seriesToEdit}
@@ -1316,6 +1328,7 @@ export function ChoreChartClient() {
         onOpenChange={open => { if (!open) setSeriesToEdit(null); }}
         rooms={rooms}
         capabilities={capabilities}
+        ownTemplate={seriesToEdit ? templateRights(seriesToEdit, currentUser.uid, capabilities).own : false}
         onSave={handleSaveChoreTemplate}
       />
       <PauseChoresDialog
@@ -1346,6 +1359,7 @@ export function ChoreChartClient() {
         onChoreTemplateDelete={handleDeleteChoreTemplate}
         onAssignChores={handleOpenAssignDialog}
         onCreateRoom={openCreateRoom}
+        currentUserUid={currentUser.uid}
       />
       <AssignChoresDialog
         isOpen={isAssignOpen}
@@ -1561,6 +1575,12 @@ export function ChoreChartClient() {
               <AccordionItem value="todo" data-chore-section="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
                 <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl"><span>To Do (<NumberTicker value={todoEntries.length} animateOnMount={false} />)</span></AccordionTrigger>
                 <AccordionContent className="pt-1">
+                  {!capabilities.canComplete && (
+                    // CH-24: a viewer who cannot tick chores is told so once, not left with dead checks.
+                    <p className="mb-2 rounded-md bg-muted/60 px-3 py-2 text-sm text-muted-foreground" data-testid="chores-read-only">
+                      You can see chores here but not tick them. Ask an admin if you should.
+                    </p>
+                  )}
                   {todoEntries.length > 0 ? roomGroups('todo', todoEntries, true) : (
                     <EmptyState
                       kind="chores"

@@ -21,6 +21,7 @@ import { MemberAvatar } from '@/components/member-avatar';
 import type { ChoreCapabilities } from '@/lib/chores/list';
 import { cn } from '@/lib/utils';
 import { chosenRoomIds } from '@/lib/chores/add-chore';
+import { ASK_AN_ADMIN, templateRights } from '@/lib/chores/rights';
 
 /**
  * CH-25: every chore dialog with a long body is a flex column. The dialog itself is
@@ -251,6 +252,7 @@ export function ChoreTemplateEditDialog({
   onOpenChange,
   capabilities,
   onCreateRoom,
+  ownTemplate = false,
 }: {
   chore: ChoreTemplate | null;
   isNew: boolean;
@@ -260,6 +262,8 @@ export function ChoreTemplateEditDialog({
   onOpenChange: (open: boolean) => void;
   capabilities: ChoreCapabilities;
   onCreateRoom?: () => void;
+  /** CH-24: the reader created this library chore, so removing its open days is allowed. */
+  ownTemplate?: boolean;
 }) {
   const [task, setTask] = useState('');
   const [notes, setNotes] = useState('');
@@ -288,7 +292,7 @@ export function ChoreTemplateEditDialog({
     if (!task.trim()) nextErrors.task = 'Give the chore a name.';
     // Removing a room deletes that room's open chores, which needs delete permission.
     const removedRooms = (chore?.roomIds || []).filter(id => !selectedRoomIds.includes(id));
-    if (!isNew && removedRooms.length > 0 && !capabilities.canDelete) {
+    if (!isNew && removedRooms.length > 0 && !capabilities.canDelete && !ownTemplate) {
       nextErrors.rooms = 'Removing a room also removes its open chores, which your role cannot do.';
     }
     setErrors(nextErrors);
@@ -403,8 +407,9 @@ export function AssignChoresDialog({
 
   // One-time assignment needs chores.create; recurring updates the template (chores.edit).
   const canOneTime = capabilities.canCreate;
-  // Repeats replaces the series' open days, which deletes chores (CH-4).
-  const canRecurring = capabilities.canEdit && capabilities.canDelete;
+  // Repeats replaces the series' open days, which deletes chores (CH-4): an editor with
+  // delete rights, or the creator of every chore being assigned (CH-24).
+  const canRecurring = templatesToAssign.length > 0 && templatesToAssign.every(template => templateRights(template, currentUserUid, capabilities).repeat);
   const assignableUsers = capabilities.canAssign ? users : users.filter(u => u.uid === currentUserUid);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
@@ -534,6 +539,7 @@ export function ChoreLibraryDialog({
   onChoreTemplateDelete,
   onAssignChores,
   onCreateRoom,
+  currentUserUid,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -544,13 +550,17 @@ export function ChoreLibraryDialog({
   onChoreTemplateDelete: (id: string) => Promise<void>;
   onAssignChores: (templates: ChoreTemplate[]) => void;
   onCreateRoom: () => void;
+  /** CH-24: the reader, so creators manage their own library chores. */
+  currentUserUid?: string;
 }) {
   const [editing, setEditing] = useState<{ template: ChoreTemplate | null } | null>(null);
   const [templateToDelete, setTemplateToDelete] = useState<ChoreTemplate | null>(null);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [filterRoomId, setFilterRoomId] = useState<string>('all');
-  // One time needs chores.create; Repeats needs chores.edit and chores.delete (CH-4).
+  // One time needs chores.create; Repeats needs chores.edit and chores.delete (CH-4), or
+  // the library chore's creator (CH-24).
   const canAssign = capabilities.canCreate || (capabilities.canEdit && capabilities.canDelete);
+  const rightsOf = (template: ChoreTemplate) => templateRights(template, currentUserUid, capabilities);
 
   const roomsById = useMemo(() => new Map(rooms.map(room => [room.id, room])), [rooms]);
   const filteredTemplates = useMemo(() => {
@@ -575,6 +585,7 @@ export function ChoreLibraryDialog({
         onSave={onChoreTemplateSave}
         rooms={rooms}
         capabilities={capabilities}
+        ownTemplate={editing?.template ? rightsOf(editing.template).own : false}
         onCreateRoom={onCreateRoom}
       />
       <AlertDialog open={!!templateToDelete} onOpenChange={(open) => !open && setTemplateToDelete(null)}>
@@ -669,8 +680,9 @@ export function ChoreLibraryDialog({
                         </div>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right">
-                        {capabilities.canEdit && <Button variant="ghost" size="icon" aria-label={`Edit ${template.task}`} className="h-9 w-9" onClick={() => setEditing({ template })}><Edit className="h-4 w-4" /></Button>}
-                        {capabilities.canDelete && <Button variant="ghost" size="icon" aria-label={`Delete ${template.task}`} className="h-9 w-9" onClick={() => setTemplateToDelete(template)}><Trash2 className="h-4 w-4 text-destructive" /></Button>}
+                        {rightsOf(template).edit && <Button variant="ghost" size="icon" aria-label={`Edit ${template.task}`} className="h-9 w-9" onClick={() => setEditing({ template })}><Edit className="h-4 w-4" /></Button>}
+                        {rightsOf(template).remove && <Button variant="ghost" size="icon" aria-label={`Delete ${template.task}`} className="h-9 w-9" onClick={() => setTemplateToDelete(template)}><Trash2 className="h-4 w-4 text-destructive" /></Button>}
+                        {capabilities.canCreate && !rightsOf(template).edit && !rightsOf(template).remove && <span className="text-xs text-muted-foreground" title={ASK_AN_ADMIN}>Ask an admin</span>}
                       </TableCell>
                     </TableRow>
                   )) : (
@@ -840,10 +852,12 @@ export function RecurringChoresDialog({
   onDelete: (choreId: string) => Promise<void>;
 }) {
   const [choreToEdit, setChoreToEdit] = useState<ChoreTemplate | null>(null);
+  // CH-24: the creator of a repeating chore changes or stops it too; others are told whom to ask.
+  const rightsOf = (template: ChoreTemplate) => templateRights(template, currentUserUid, capabilities);
   const [choreToDelete, setChoreToDelete] = useState<ChoreTemplate | null>(null);
   const usersByUid = useMemo(() => new Map(users.map(u => [u.uid, u])), [users]);
   // Changing or stopping a schedule rewrites the template and removes its open chores.
-  const canManage = capabilities.canEdit && capabilities.canDelete;
+  const canManage = recurringChores.some(template => rightsOf(template).repeat) || (capabilities.canCreate && recurringChores.length > 0);
 
   return (
     <>
@@ -901,8 +915,14 @@ export function RecurringChoresDialog({
                         <TableCell>{scheduleText(chore.recurrence)}</TableCell>
                         {canManage && (
                           <TableCell className="whitespace-nowrap text-right">
-                            <Button variant="ghost" size="icon" aria-label={`Edit repeating chore ${chore.task}`} onClick={() => setChoreToEdit(chore)}><Edit className="h-4 w-4" /></Button>
-                            <Button variant="ghost" size="icon" aria-label={`Stop repeating ${chore.task}`} onClick={() => setChoreToDelete(chore)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                            {rightsOf(chore).repeat ? (
+                              <>
+                                <Button variant="ghost" size="icon" aria-label={`Edit repeating chore ${chore.task}`} onClick={() => setChoreToEdit(chore)}><Edit className="h-4 w-4" /></Button>
+                                <Button variant="ghost" size="icon" aria-label={`Stop repeating ${chore.task}`} onClick={() => setChoreToDelete(chore)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                              </>
+                            ) : (
+                              <span className="text-xs text-muted-foreground" title={ASK_AN_ADMIN}>Ask an admin</span>
+                            )}
                           </TableCell>
                         )}
                       </TableRow>

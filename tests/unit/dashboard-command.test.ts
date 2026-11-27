@@ -125,6 +125,8 @@ describe('quick add writes: same shapes as the module screens', () => {
       { task: undefined, notes: '', roomIds: [], subTasks: [], recurrence: { frequency: 'daily', interval: 1 }, assignedToUid: 'u2' },
     );
     assert.deepEqual(repeatingChoreTemplate({ task: 'X', roomId: 'general', recurrence: { frequency: 'daily', interval: 1 }, assignee: { uid: 'u1', email: 'a@b.c' } }).roomIds, []);
+    // CH-24: the writer is recorded so they can manage the chore.
+    assert.equal(repeatingChoreTemplate({ task: 'X', roomId: null, recurrence: { frequency: 'daily', interval: 1 }, assignee: { uid: 'u2' }, creatorUid: 'u1' }).createdByUid, 'u1');
   });
 
   it('logs maintenance like the Add log form: mileage only on a vehicle log', () => {
