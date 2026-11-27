@@ -7,7 +7,7 @@ import {
   overdueRail, pantryExpiryEvents, pantryExpiryInputs, plannedRecurringEvents, projectedMaintenanceEvents, weekDays, withUniqueIds,
   type CalendarEvent,
 } from '../../src/lib/chores/calendar';
-import { parseHighlightChore } from '../../src/lib/chores/url-state';
+import { highlightPlacement, parseHighlightChore } from '../../src/lib/chores/url-state';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { blend, contrastRatio, hslTokenToRgb } from '../../src/lib/theme/contrast';
@@ -239,6 +239,23 @@ describe('review fixes (Codex, PR #234)', () => {
       nextDueDate: '2026-08-17', snoozedUntil: '2026-08-17', snoozedFrom: '2026-08-10',
     }] }], [], 'America/Chicago', '2026-08-01', '2026-10-31');
     assert.deepEqual(events.map(e => e.day), ['2026-09-10', '2026-10-10']);
+  });
+
+  it('places a ?chore= target in its section and says when its range must widen', () => {
+    const window = { today: '2026-08-01', weekAhead: '2026-08-08', recentFrom: '2026-07-29' };
+    assert.deepEqual(highlightPlacement({ due: '2026-07-30', completedDay: null }, window), { section: 'todo', widen: false });
+    assert.deepEqual(highlightPlacement({ due: '2026-08-05', completedDay: null }, window), { section: 'future', widen: false });
+    assert.deepEqual(highlightPlacement({ due: '2026-08-20', completedDay: null }, window), { section: 'future', widen: true });
+    assert.deepEqual(highlightPlacement({ isCompleted: true, due: '2026-07-30', completedDay: '2026-07-31' }, window), { section: 'completed', widen: false });
+    assert.deepEqual(highlightPlacement({ isCompleted: true, due: '2026-07-10', completedDay: '2026-07-11' }, window), { section: 'completed', widen: true });
+  });
+
+  it('the chores page reveals its target: controlled sections, widened ranges, rechecked until the row renders', () => {
+    const page = readFileSync(resolve(process.cwd(), 'src/components/chore-chart-client.tsx'), 'utf8');
+    assert.match(page, /value=\{openSections\} onValueChange=\{setOpenSections\}/);
+    assert.match(page, /setShowFullFuture\(true\)/);
+    assert.match(page, /setShowFullHistory\(true\)/);
+    assert.match(page, /if \(\+\+tries < 40\) timer = window\.setTimeout\(look, 100\)/);
   });
 
   it('skips and planned-move Undo go through the server, bound to the operation', () => {

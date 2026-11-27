@@ -103,3 +103,18 @@ export function parseHighlightChore(params: ParamsLike | null | undefined): stri
   const id = params?.get('chore')?.trim();
   return id && id.length <= 1500 && !id.includes('/') ? id : null;
 }
+
+/**
+ * Where a `?chore=` target is listed (review finding 6): To Do (due today or earlier, open),
+ * Future (open, later; past the first week only with **Show All**) or Completed (only the last
+ * three days without **History**). The page opens that section, widens its range when needed,
+ * then scrolls to the row once it has rendered.
+ */
+export function highlightPlacement(
+  chore: { isCompleted?: boolean; due: string; completedDay: string | null },
+  window: { today: string; weekAhead: string; recentFrom: string },
+): { section: 'todo' | 'future' | 'completed'; widen: boolean } {
+  if (chore.isCompleted) return { section: 'completed', widen: !chore.completedDay || chore.completedDay < window.recentFrom };
+  if (chore.due && chore.due > window.today) return { section: 'future', widen: chore.due > window.weekAhead };
+  return { section: 'todo', widen: false };
+}
