@@ -42,7 +42,7 @@ const mentions = (text: string, name: string): boolean => {
  */
 export function matchLocalIntents(
   input: string,
-  context: { pets: readonly LocalPet[]; chores: readonly LocalChore[]; sections: DeviceSections },
+  context: { pets: readonly LocalPet[]; chores: readonly LocalChore[]; sections: DeviceSections; /** The tablet's room (WT-4): its chores are offered first (QA-23). */ room?: string | null },
 ): LocalIntent[] {
   const text = normalize(input);
   if (!text) return [];
@@ -58,7 +58,12 @@ export function matchLocalIntents(
   }
   if (context.sections.chores) {
     const stripped = text.replace(DONE_WORDS, ' ').replace(/\s+/g, ' ').trim();
-    for (const chore of context.chores) {
+    const here = normalize(context.room ?? '');
+    // The tablet's own room first, then the rest in their order (QA-23).
+    const ordered = here
+      ? [...context.chores.filter((chore) => normalize(chore.roomName ?? '') === here), ...context.chores.filter((chore) => normalize(chore.roomName ?? '') !== here)]
+      : context.chores;
+    for (const chore of ordered) {
       const title = normalize(chore.title);
       if (!title || !stripped) continue;
       if (title.includes(stripped) || mentions(stripped, chore.title)) {

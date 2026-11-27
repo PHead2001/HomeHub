@@ -7,6 +7,7 @@
  * written afterwards. Screens themselves are remounted (see `HouseholdManager`).
  */
 import { clearHouseSnapshot, deviceStorage } from '@/lib/dashboard/house-snapshot';
+import { forgetPaletteHistory } from '@/lib/dashboard/command-search';
 import { browserJournalStorage, clearJournal, forgetHouseholdJournal } from '@/lib/shopping/undo';
 import { LOCAL_TICKS_KEY, RECENT_GROCERY_KEY } from '@/lib/shopping/overview';
 
@@ -110,6 +111,8 @@ export function forgetHouseholdOnDevice(householdId: string | null, now: number 
   clearHouseSnapshot(deviceStorage());
   forgetHouseholdKeys(browserKeyStorage(), householdId);
   forgetHouseholdMapEntries(browserKeyStorage(), householdId);
+  // The command palette's use history (item names, record ids; QA-11, QA-18).
+  forgetPaletteHistory(browserKeyStorage(), householdId);
   const journal = browserJournalStorage();
   if (householdId === null) clearJournal(journal);
   else forgetHouseholdJournal(journal, householdId, now);

@@ -175,3 +175,19 @@ export function joinChips(items: readonly Item[]): Item[] {
   const names = items.map((item, at) => (at === 0 ? item.name : item.name.charAt(0).toLowerCase() + item.name.slice(1)));
   return [{ name: `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`, quantity: 1 }];
 }
+
+/**
+ * Why a stacked preview (QA-25) cannot be confirmed yet: the index is still loading,
+ * or an entry needs a choice the stack does not ask for (which Sam, which vehicle for
+ * a reading). Those are added on their own, where the preview asks.
+ */
+export function batchBlocker(intents: readonly QuickAddIntent[], context: { indexLoading: boolean; vehicleCount: number }): string | null {
+  if (context.indexLoading) return 'Loading your household…';
+  for (const intent of intents) {
+    if (intent.kind === 'chore' && intent.assigneeQuery && !intent.assignee) return `"${intent.assigneeQuery}" fits more than one person. Remove "${intent.task}" here and add it on its own to choose.`;
+    if (intent.kind === 'maintenance' && intent.targetQuery && !intent.target) return `"${intent.targetQuery}" fits more than one record. Remove "${intent.title}" here and add it on its own to choose.`;
+    if (intent.kind === 'maintenance' && intent.mileage !== null && !intent.target && context.vehicleCount > 0) return `A reading needs its vehicle. Remove "${intent.title}" here and add it on its own to choose.`;
+    if (intent.kind === 'shopping' && !intent.list) return 'There is no shopping list to add to yet.';
+  }
+  return null;
+}

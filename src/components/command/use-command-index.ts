@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DATA_CHANGED_EVENT } from '@/lib/data-changed';
+import { HOUSEHOLD_FORGOTTEN_EVENT } from '@/lib/auth/household-scope';
 import { indexCacheKey } from '@/lib/dashboard/command-search';
 import { collection, query, where, type DocumentData, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -65,7 +66,11 @@ const rows = (snapshot: QuerySnapshot<DocumentData>) => snapshot.docs.map((d) =>
  */
 const CACHE_MS = 60_000;
 let cache: { key: string; at: number; value: Omit<CommandIndex, 'retry'> } | null = null;
-if (typeof window !== 'undefined') window.addEventListener(DATA_CHANGED_EVENT, () => { cache = null; });
+if (typeof window !== 'undefined') {
+  window.addEventListener(DATA_CHANGED_EVENT, () => { cache = null; });
+  // A household this device forgets (sign-out, access ended) leaves nothing cached.
+  window.addEventListener(HOUSEHOLD_FORGOTTEN_EVENT, () => { cache = null; });
+}
 const cached = (key: string | null) => (key && cache && cache.key === key && Date.now() - cache.at < CACHE_MS ? cache.value : null);
 
 export function useCommandIndex(open: boolean): CommandIndex {

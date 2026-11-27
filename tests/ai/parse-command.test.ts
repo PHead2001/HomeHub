@@ -120,6 +120,9 @@ describe('QA-7: AI answers must be stated by the sentence', () => {
     assert.equal(kept.chore?.repeat?.dayOfWeek, 2);
     const made = task.sanitizeParseCommandOutput({ kind: 'chore', chore: { task: 'Recycling', repeat: { frequency: 'weekly', dayOfWeek: 4 } } }, input('could sam deal with the recycling on tuesdays'), ALL);
     assert.equal(made.chore?.repeat, undefined);
+    // The e2e fallback sentence (tests/e2e/shell-wave4.spec.ts) keeps its weekday.
+    const e2e = task.sanitizeParseCommandOutput({ kind: 'chore', chore: { task: 'Recycling', repeat: { frequency: 'weekly', dayOfWeek: 2 } } }, input('could sam deal with the recycling, a tuesdayish job'), ALL);
+    assert.equal(e2e.chore?.repeat?.dayOfWeek, 2);
   });
   test('reads "48k" mileage and refuses 120 for "120k"', () => {
     const k = task.sanitizeParseCommandOutput({ kind: 'maintenance', maintenance: { title: 'Oil', mileage: 48_000 } }, input('had the oil done around 48k'), ALL);

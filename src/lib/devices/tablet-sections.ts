@@ -37,8 +37,8 @@ export function calendarSection(facts: DashboardFacts, sections: DeviceSections)
 }
 
 /** Names quick add matches against: every pet, and every open chore due today or within the week. */
-export function quickAddTargets(facts: DashboardFacts): { pets: Array<{ id: string; name: string }>; chores: Array<{ id: string; title: string }> } {
-  const chores = new Map<string, { id: string; title: string }>();
-  for (const chore of [...(facts.chores?.todayWork ?? []), ...(facts.chores?.upcoming ?? [])]) chores.set(chore.id, { id: chore.id, title: chore.task });
+export function quickAddTargets(facts: DashboardFacts): { pets: Array<{ id: string; name: string }>; chores: Array<{ id: string; title: string; roomName?: string | null }> } {
+  const chores = new Map<string, { id: string; title: string; roomName?: string | null }>();
+  for (const chore of [...(facts.chores?.todayWork ?? []), ...(facts.chores?.upcoming ?? [])]) chores.set(chore.id, { id: chore.id, title: chore.task, roomName: chore.room ?? null });
   return { pets: (facts.pets?.pets ?? []).map((pet) => ({ id: pet.id, name: pet.name })), chores: [...chores.values()] };
 }

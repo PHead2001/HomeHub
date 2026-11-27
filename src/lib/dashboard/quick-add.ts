@@ -117,6 +117,9 @@ const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', '
  * never read as Mar 2 or Dec 2.
  */
 const MONTH_WORDS = '(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)';
+/** Day words that make a shopping verb a chore: never "n/n" or a bare short weekday. */
+const STRONG_DAY = /\b(?:today|tonight|tomorrow|tmrw|day after tomorrow|next week|this weekend|in \d{1,3} (?:days?|weeks?)|sunday|monday|tuesday|wednesday|thursday|friday|saturday|(?:on|by|due|next|this) (?:sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat))\b|\b(?:january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.? \d{1,2}(?:st|nd|rd|th)?\b/i;
+
 /** Units after "1/2" that make it a fraction ("1/2 gallon milk"), never a date (QA-3). */
 const FRACTION_UNIT = '(?:gal(?:lon)?s?|cups?|lbs?|pounds?|oz|ounces?|kg|g|grams?|l|lit(?:er|re)s?|ml|tsp|tbsp|teaspoons?|tablespoons?|pints?|quarts?|qt|dozen|cans?|bags?|box(?:es)?|packs?|sticks?|loaf|loaves|inch(?:es)?|ft|feet|bottles?|jars?|bunch(?:es)?|heads?|scoops?|pouch(?:es)?)';
 
@@ -208,7 +211,10 @@ export function findDate(text: string, now: Date, rooms: readonly { name: string
     return { date: addLocalDays(now, amount), consumed: /\bin \d{1,3} (day|days|week|weeks)\b/i };
   }
 
-  const weekday = /\b(next |this |on |by |due )?(sun(?:day)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?)\b/.exec(lower);
+  // Full weekday names always; a short one ("sun", "wed") only after on/by/due/next/this,
+  // so "sun dried tomatoes" or "sat nav" is never a date (QA-3).
+  const weekday = /\b(next |this |on |by |due )?(sunday|monday|tues(?:day)?|wednesday|thur(?:s(?:day)?)?|thursday|friday|saturday)\b/.exec(lower)
+    ?? /\b(next |this |on |by |due )(sun|mon|tue|wed|thu|fri|sat)\b/.exec(lower);
   if (weekday && !/\bevery\b/.test(lower.slice(Math.max(0, weekday.index - 12), weekday.index + 1))) {
     const day = weekdayFromWord(weekday[2]);
     if (day !== null) {
@@ -600,6 +606,12 @@ export function bareCommandVerb(input: string): CommandVerbKind | null {
 
 /** A chore sentence ("vacuum Friday for Sam"; "chore …" also works). Exported for the palette's Chore mode. */
 export function parseChore(text: string, context: QuickAddContext): ChoreIntent | null {
+  // "remind Sam to take out the trash Tuesday": a chore for Sam (QA-25).
+  const remindSomeone = /^remind\s+(\p{L}[\p{L}.'-]*)\s+to\s+(.+)$/iu.exec(text);
+  if (remindSomeone && !/^(?:me|us)$/i.test(remindSomeone[1])) {
+    const named = findAssignee(`for ${remindSomeone[1]}`, context);
+    if (named) return parseChore(`chore ${remindSomeone[2]} for ${remindSomeone[1]}`, context);
+  }
   const explicit = /^(?:chore|task|todo|to do|remind (?:me|us) to)[:\s]+(.+)$/i.exec(text);
   let body = explicit ? explicit[1] : text;
   const repeat = findRepeat(body, context.now);
@@ -658,7 +670,9 @@ export function parseQuickAdd(input: string, context: QuickAddContext): QuickAdd
     // tomorrow"), unless the sentence named a shopping list (QA-3).
     if (!shopping?.listNamed) {
       const chore = parseChore(text, context);
-      if (chore) return chore;
+      // Only a person, a repeat or a plain day word flips it ("pick up dry cleaning for
+      // Sam tomorrow"); "add 3/8 bolts" stays an item (QA-3).
+      if (chore && (chore.assignee || chore.assigneeQuery || chore.repeat || STRONG_DAY.test(text))) return chore;
     }
     return shopping?.intent ?? null;
   }
@@ -679,6 +693,9 @@ export function parseQuickAdd(input: string, context: QuickAddContext): QuickAdd
   const lower = normalize(text);
   if ((context.rooms ?? []).some((room) => normalize(room.name) === lower)) return null;
   if (context.members.some((member) => normalize(member.name) === lower || normalize(member.name.split(/\s+/)[0] ?? '') === lower)) return null;
+  // Nor a pet (or one word of its name: "rex" for "Audit Rex"), a vehicle or an asset.
+  if (namedPets(text, context.pets).length > 0 && context.pets.some((pet) => normalize(pet.name) === lower || normalize(pet.name).split(' ').includes(lower))) return null;
+  if ([...(context.vehicles ?? []).map((vehicle) => vehicle.name), ...(context.assets ?? []).map((asset) => asset.name)].some((name) => normalize(name) === lower)) return null;
   return shopping;
 }
 
@@ -817,4 +834,40 @@ export function quickAddRetryMessage(failed: readonly QuickAddEntry[]): string |
  */
 export function foodTypeFromLatest(lists: Array<Array<{ id: string; date: unknown; foodType?: unknown }>>): FoodType {
   return knownFoodType(newestFirst(lists, 1)[0]?.foodType) ?? 'Dry';
+}
+
+const CLAUSE_SPLIT = /\s*;\s*|,?\s+and then\s+|,\s+then\s+|,\s*(?:and\s+)?(?:also\s+)?(?=(?:remind|fed|feed|add|buy|get|grab|pick up|chore|task|log|logged|did|done|we need|i need)\b)/i;
+
+/**
+ * Several things in one sentence (QA-25): "milk and eggs, and remind Sam to take out
+ * the trash Tuesday" or "fed Maple and Oreo". Splits into clauses at ";", "and then"
+ * or a comma before a command word, and gives one intent per clause (one feeding per
+ * pet named), but only when every clause reads on its own; otherwise null and the
+ * single reading stands. A shopping list alone is never split here ("milk, eggs and
+ * bread" is one shopping intent).
+ */
+export function parseQuickAddClauses(input: string, context: QuickAddContext): QuickAddIntent[] | null {
+  const text = collapse(input).replace(/[.!?]+$/, '');
+  if (text.length < 2 || text.length > 200) return null;
+  const parts = text.split(CLAUSE_SPLIT).map((part) => part.trim()).filter(Boolean);
+  const intents: QuickAddIntent[] = [];
+  if (parts.length >= 2) {
+    for (const part of parts) {
+      const one = parseQuickAdd(part, context);
+      if (!one) return expandPets(parseQuickAdd(text, context));
+      intents.push(one);
+    }
+    if (intents.every((intent) => intent.kind === 'shopping')) return expandPets(parseQuickAdd(text, context));
+  } else {
+    return expandPets(parseQuickAdd(text, context));
+  }
+  const expanded = intents.flatMap((intent) => expandPets(intent) ?? [intent]);
+  return expanded.length >= 2 ? expanded : null;
+}
+
+/** A feeding that named several pets, as one feeding per pet; null for anything else. */
+function expandPets(intent: QuickAddIntent | null): QuickAddIntent[] | null {
+  if (!intent || intent.kind !== 'feeding' || !intent.alsoPets?.length) return null;
+  const { alsoPets, ...first } = intent;
+  return [first, ...alsoPets.map((pet) => ({ ...first, pet }))];
 }
