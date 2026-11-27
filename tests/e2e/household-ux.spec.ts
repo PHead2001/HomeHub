@@ -174,10 +174,12 @@ test.describe('profile and automation', () => {
     await expect(page.getByText('Appearance', { exact: true })).toBeVisible();
   });
 
-  test('automation explains it is read-only and offers the connect form to the owner', async ({ page }) => {
+  test('automation explains it is read-only and offers the connect form with its guide to the owner', async ({ page }) => {
     await page.clock.setFixedTime(fixedNow);
     await page.goto('/automation');
     await expect(page.getByText(/never switches anything/)).toBeVisible();
+    await expect(page.getByRole('list', { name: 'How to connect' })).toBeVisible();
+    await expect(page.getByText('Why does it need https?')).toBeVisible();
     await expect(page.getByText('Connect Home Assistant')).toBeVisible();
     await expect(page.getByPlaceholder('https://your-home.ui.nabu.casa')).toBeVisible();
   });

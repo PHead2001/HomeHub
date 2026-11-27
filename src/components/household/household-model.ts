@@ -358,6 +358,11 @@ const AUDIT_LABELS: Record<string, string> = {
   'child.created': 'Added a kid profile',
   'child.updated': 'Edited a kid profile',
   'child.removed': 'Removed a kid profile',
+  // Home Assistant (AU-12; written by the server, never with the token).
+  'automation.connected': 'Connected Home Assistant',
+  'automation.token_replaced': 'Replaced the Home Assistant token',
+  'automation.disconnected': 'Disconnected Home Assistant',
+  'automation.settings_changed': 'Changed Home Assistant privacy or alerts',
   // Written by the Pets delete action (D-P12).
   'pet.deleted': 'Deleted a pet',
 };

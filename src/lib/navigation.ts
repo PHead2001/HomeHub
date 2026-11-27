@@ -1,3 +1,10 @@
+/**
+ * AU-6: Automation takes a header slot only when Home Assistant is connected, or for
+ * people who can connect it; otherwise it lives in the account menu (and the phone's
+ * More sheet and the palette, as before).
+ */
+export const automationInHeader = (input: { connected: boolean; canManage: boolean }) => input.connected || input.canManage;
+
 /** True when `pathname` is `href` or one of its sub-routes (`/` matches only itself). */
 export const isActiveRoute = (pathname: string, href: string) =>
   href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`);
