@@ -43,3 +43,17 @@ export function householdToday(timeZone: string | null | undefined, now: Date = 
 export function householdDayStart(timeZone: string | null | undefined, day: string = householdToday(timeZone)): Date {
   return new Date(zonedMidnightIso(day, householdDayZone(timeZone)));
 }
+
+/**
+ * The household's current wall-clock time as a Date whose local fields (year, month,
+ * day, hours, weekday) are the household's, for pure day math written against local
+ * dates (the quick-add parser's "tomorrow" and "Friday", D-6). Only its fields are
+ * meaningful; never store its instant.
+ */
+export function householdWallClock(timeZone: string | null | undefined, now: Date = new Date()): Date {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: householdDayZone(timeZone), hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+  }).formatToParts(now);
+  const get = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return new Date(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+}

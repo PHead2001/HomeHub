@@ -1,8 +1,8 @@
 
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { User, LogOut, ScanBarcode, Home, Search, ChevronDown, Bot } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { User, LogOut, ScanBarcode, Home, Search, ChevronDown, Bot, Mic, Plus } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
@@ -25,6 +25,7 @@ import { GO_TARGETS } from '@/lib/dashboard/shortcuts';
 import dynamic from 'next/dynamic';
 import { Logo } from './brand/logo';
 import { openCommandPalette } from './command/events';
+import { speechSupported, startVoiceSession } from './command/voice-session';
 import { ConnectionStatus } from './shell/connection-status';
 import { useSessionKnown } from '@/hooks/use-session-known';
 import { SignOutConfirmDialog } from './sign-out-confirm';
@@ -201,6 +202,7 @@ export function Header() {
         <div className="ml-auto flex shrink-0 items-center justify-end gap-2 pl-2">
             {currentUser ? (
               <>
+                 {currentUser.householdId && currentMember && !isPendingNewUser && <TouchQuickAdd />}
                  {currentUser.householdId && currentMember && !isPendingNewUser && (
                    <ShortcutHint shortcut="palette" label="Search or quick add">
                      <Button
@@ -291,5 +293,42 @@ export function Header() {
       </div>
       <ConnectionStatus />
     </header>
+  );
+}
+
+/**
+ * Big Add and Speak buttons for a personal account on a touch screen 768 px and wider
+ * (the wall tablet signed in as a person, QA-13 and QA-22), where the phone's tab bar
+ * and its "+" are not shown. Registered tablets have their own rail (WT-14) and no
+ * Speak button. Speak starts listening inside this tap (iOS needs a gesture), then
+ * opens the palette, which takes the session over and previews what was said.
+ */
+const noSubscription = () => () => undefined;
+
+function TouchQuickAdd() {
+  // False in the server HTML, then whether this browser has speech recognition.
+  const speech = useSyncExternalStore(noSubscription, speechSupported, () => false);
+  const visible = 'hidden [@media(pointer:coarse)_and_(min-width:768px)]:inline-flex';
+  return (
+    <>
+      <Button type="button" variant="outline" className={cn(visible, 'min-h-12 gap-2 px-4 text-base')} onClick={() => openCommandPalette()} data-testid="header-touch-add">
+        <Plus aria-hidden className="h-5 w-5" />
+        Add
+      </Button>
+      {speech && (
+        <Button
+          type="button"
+          className={cn(visible, 'min-h-12 gap-2 px-4 text-base')}
+          onClick={() => {
+            startVoiceSession();
+            openCommandPalette({ voice: true });
+          }}
+          data-testid="header-touch-speak"
+        >
+          <Mic aria-hidden className="h-5 w-5" />
+          Speak
+        </Button>
+      )}
+    </>
   );
 }

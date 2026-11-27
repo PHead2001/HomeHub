@@ -21,6 +21,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { playFeedback } from '@/lib/feedback';
 import { DEFAULT_PORTION, formatPortion } from '@/lib/pets/care';
 import { cn } from '@/lib/utils';
+import { householdWallClock } from '@/lib/household-zone';
 import {
   MODE_COPY,
   chosenItemList,
@@ -311,10 +312,12 @@ export function ChoreMode({
   onTypeInstead: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const { household } = useAuth();
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!context || loading) return;
-    const intent = choreModeIntent(text, { ...context, now: new Date() });
+    // The household's day (D-6): "tomorrow" is the household's tomorrow.
+    const intent = choreModeIntent(text, { ...context, now: householdWallClock(household?.timeZone) });
     if (!intent) {
       setError('Type what needs doing, like “vacuum Friday for Sam”.');
       return;

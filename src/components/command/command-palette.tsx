@@ -35,6 +35,7 @@ import {
   User,
   Users,
   Wrench,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
@@ -60,9 +61,11 @@ import { FEED_UNDO_MS, feedAgainPrompt, petFeedToastGroup } from '@/lib/pets/fee
 import { feedConfirmOf, newFeedOpId, type FeedConfirm } from '@/lib/pets/feed-plan';
 import { undoFeed } from '@/lib/pets/feed-operation';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
+import { householdWallClock } from '@/lib/household-zone';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
+import { VOICE_DISCLOSURE, voiceAutoPreview } from '@/lib/dashboard/voice';
 import { ChoreMode, FeedingMode, ItemMode } from './palette-modes';
 import { bareVerbOffer, feedingModeState, itemModeState, modeBlocker, MODE_PERMISSION, type PaletteMode } from '@/lib/dashboard/palette-mode';
 
@@ -180,6 +183,10 @@ export function CommandPalette({
     return () => { active = false; };
   }, [pending, previewHouseholdId, previewTimeZone]);
   const inputRef = useRef<HTMLInputElement>(null);
+  // A touch screen: no keyboard is raised unless the member taps the field (QA-14).
+  const [coarse] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+  // A final spoken sentence opens its preview once the index has loaded (QA-22).
+  const [voiceFinal, setVoiceFinal] = useState(false);
   const listId = useId();
   const optionId = (i: number) => `${listId}-option-${i}`;
 
@@ -203,7 +210,7 @@ export function CommandPalette({
   }, [close, router]);
 
   const quickContext = useMemo<QuickAddContext | null>(() => (currentUser ? {
-    now: new Date(),
+    now: householdWallClock(household?.timeZone),
     viewer: { uid: currentUser.uid, email: currentUser.email },
     members: index.members,
     pets: index.pets,
@@ -211,7 +218,7 @@ export function CommandPalette({
     rooms: index.rooms,
     vehicles: index.vehicles,
     assets: index.assets,
-  } : null), [currentUser, index.members, index.pets, index.lists, index.rooms, index.vehicles, index.assets]);
+  } : null), [currentUser, household?.timeZone, index.members, index.pets, index.lists, index.rooms, index.vehicles, index.assets]);
 
   /** Only intents the member may save (the same permissions as the module screens). */
   const permitted = useCallback((candidate: QuickAddIntent | null): QuickAddIntent | null => {
@@ -225,8 +232,8 @@ export function CommandPalette({
   // no) assignee, room, list or vehicle. Each new sentence is read against the
   // current time, so "tomorrow" stays right if the palette is open past midnight.
   const intent = useMemo(
-    () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, { ...quickContext, now: new Date() })) : null),
-    [text, quickContext, permitted, index.loading],
+    () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, { ...quickContext, now: householdWallClock(household?.timeZone) })) : null),
+    [text, quickContext, permitted, index.loading, household?.timeZone],
   );
 
   // AI reading (H13 fallback): only on request, for a sentence the parser could not read.
@@ -240,6 +247,17 @@ export function CommandPalette({
     [text, index.loading, index.pets, permissions],
   );
   const offerAi = canQuickAdd && !index.loading && !bareOffer && shouldOfferAiParse(text, intent);
+
+  // Mic, speak, Confirm (QA-22): an explicit spoken intent goes straight to its
+  // preview; nothing is saved before Confirm.
+  // (Adjusted while rendering, React's pattern for state that follows other state.)
+  if (voiceFinal && !index.loading) {
+    setVoiceFinal(false);
+    if (!pending && voiceAutoPreview(intent)) {
+      setPendingFromAi(false);
+      setPending(intent);
+    }
+  }
 
   // Each AI read belongs to one input revision. Editing the text, opening another
   // preview or going back starts a new revision, so a slower, older answer (or
@@ -257,7 +275,7 @@ export function CommandPalette({
     // would discard the first, already charged answer; wait for it instead.
     if (aiRequests.isPending()) return;
     const revision = aiRequests.next();
-    const context = { ...quickContext, now: new Date() };
+    const context = { ...quickContext, now: householdWallClock(household?.timeZone) };
     setAiState({ status: 'reading' });
     try {
       const { input, refs } = buildAiParseRequest(text, context);
@@ -278,7 +296,7 @@ export function CommandPalette({
     } finally {
       aiRequests.settle(revision);
     }
-  }, [currentUser?.householdId, quickContext, text, permitted, aiRequests]);
+  }, [currentUser?.householdId, quickContext, text, permitted, aiRequests, household?.timeZone]);
 
   const options = useMemo<Option[]>(() => {
     const search = text.trim();
@@ -388,18 +406,23 @@ export function CommandPalette({
     document.getElementById(activeOptionId)?.scrollIntoView({ block: 'nearest' });
   }, [activeOptionId]);
 
-  const listen = useCallback(() => {
-    voice.start((spoken, final) => {
-      invalidateAi();
-      setText(spoken);
-      setActive(0);
-      if (final) inputRef.current?.focus();
-    });
-  }, [voice, invalidateAi]);
+  const heard = useCallback((spoken: string, final: boolean) => {
+    invalidateAi();
+    setText(spoken);
+    setActive(0);
+    if (final) {
+      setVoiceFinal(true);
+      if (!coarse) inputRef.current?.focus();
+    }
+  }, [invalidateAi, coarse]);
+  // The mic's own tap starts listening (never outside a gesture: QA-16).
+  const listen = useCallback(() => voice.start(heard), [voice, heard]);
 
   useEffect(() => {
-    if (open && startVoice && voice.supported) listen();
-    // Only when the palette is opened by the tab bar's long-press.
+    // Opened by the header's Speak button or the tab bar's long-press: take over the
+    // session their tap started.
+    if (open && startVoice && voice.supported) voice.adopt(heard);
+    // Only on open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, startVoice, voice.supported]);
 
@@ -622,7 +645,7 @@ export function CommandPalette({
         onPointerMove={() => setActive(i)}
         onClick={() => option.run()}
         className={cn(
-          'mx-1 flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm',
+          'mx-1 flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm coarse:min-h-12',
           i === active ? 'bg-accent text-accent-foreground' : 'text-foreground',
         )}
       >
@@ -631,7 +654,7 @@ export function CommandPalette({
           <span className="block truncate">{option.label}</span>
           {option.detail && <span className="block truncate text-xs text-muted-foreground">{option.detail}</span>}
         </span>
-        {option.hint && <kbd className="hidden shrink-0 rounded border bg-muted px-1.5 text-[11px] text-muted-foreground sm:inline">{option.hint}</kbd>}
+        {option.hint && <kbd className="hidden shrink-0 rounded border bg-muted px-1.5 text-[11px] text-muted-foreground sm:inline coarse:hidden">{option.hint}</kbd>}
       </li>,
     );
   });
@@ -640,12 +663,16 @@ export function CommandPalette({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         hideClose
-        className="top-[12%] max-w-lg translate-y-0 gap-0 overflow-hidden p-0 sm:top-[15%]"
+        // Wider on tablets, and on a touch screen high up so the on-screen keyboard leaves
+        // the top results visible (QA-14); the list shrinks by `--keyboard-inset`.
+        className="top-[12%] max-w-lg translate-y-0 gap-0 overflow-hidden p-0 sm:top-[15%] md:max-w-2xl coarse:top-2"
         data-testid="command-palette"
         // Feeding mode has no field: focus waits on the dialog until its pets have loaded,
         // and FeedingMode then puts it on the first pet (never on "Search or type instead").
         onOpenAutoFocus={(event) => {
-          if (mode !== 'feeding' || pending) return;
+          // Opened by voice on a touch screen, nothing takes focus either, so no keyboard rises (QA-14).
+          const holdFocus = (mode === 'feeding' && !pending) || (coarse && startVoice && !mode);
+          if (!holdFocus) return;
           event.preventDefault();
           (event.currentTarget as HTMLElement | null)?.focus();
         }}
@@ -744,7 +771,8 @@ export function CommandPalette({
               <Search aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input
                 ref={inputRef}
-                autoFocus
+                // Opened by voice on a touch screen: no keyboard until the field is tapped (QA-14).
+                autoFocus={!(coarse && startVoice)}
                 value={text}
                 onChange={(event) => {
                   setText(event.target.value);
@@ -766,7 +794,7 @@ export function CommandPalette({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className={cn('h-9 w-9 shrink-0', voice.listening && 'text-primary')}
+                  className={cn('touch-target h-9 w-9 shrink-0', voice.listening && 'text-primary')}
                   aria-label={voice.listening ? 'Stop listening' : 'Speak to quick add'}
                   aria-pressed={voice.listening}
                   onClick={() => (voice.listening ? voice.stop() : listen())}
@@ -774,8 +802,33 @@ export function CommandPalette({
                   {voice.listening ? <VoiceWave /> : <Mic aria-hidden />}
                 </Button>
               )}
+              {/* Touch screens have no Esc key: a close button (QA-14). */}
+              <Button type="button" variant="ghost" size="icon" className="touch-target hidden h-9 w-9 shrink-0 coarse:inline-flex" aria-label="Close" onClick={close} data-testid="palette-close">
+                <X aria-hidden />
+              </Button>
             </div>
             {voice.error && <p role="alert" className="border-b px-4 py-2 text-xs text-destructive">{voice.error}</p>}
+            {/* A clear listening state, announced (QA-16). */}
+            <div role="status" aria-live="polite" data-testid="palette-voice-status">
+              {voice.listening && (
+                <div className="flex items-center gap-3 border-b bg-primary/5 px-4 py-3">
+                  <span className="text-primary"><VoiceWave /></span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">Listening… say something like “fed Maple” or “milk and eggs”.</span>
+                    <span className="block text-xs text-muted-foreground">{VOICE_DISCLOSURE}</span>
+                  </span>
+                </div>
+              )}
+            </div>
+            {startVoice && voice.supported && !voice.listening && !text && (
+              <div className="border-b px-4 py-3">
+                <Button type="button" size="lg" className="min-h-12 w-full text-base" onClick={listen} data-testid="palette-speak">
+                  <Mic aria-hidden className="mr-2 h-5 w-5" />
+                  Tap to speak
+                </Button>
+                <p className="mt-2 text-xs text-muted-foreground">{VOICE_DISCLOSURE}</p>
+              </div>
+            )}
             <div role="status" aria-live="polite" data-testid="palette-ai-status">
               {aiState.status === 'reading' && (
                 <p className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
@@ -789,15 +842,18 @@ export function CommandPalette({
               {aiState.status === 'error' && <p className="border-b px-4 py-2 text-xs text-destructive">{aiState.message}</p>}
             </div>
             {/* Results enter in turn when the palette opens (H12); the list is the combobox's listbox. */}
-            <Stagger as="ul" id={listId} role="listbox" aria-label="Results" className="max-h-[min(60vh,24rem)] overflow-y-auto pb-2">
+            <Stagger as="ul" id={listId} role="listbox" aria-label="Results" className="max-h-[min(60vh,24rem,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)_-_8rem))] overflow-y-auto pb-2 md:max-h-[min(60vh,30rem,calc(var(--dialog-max-h)_-_var(--keyboard-inset,0px)_-_8rem))]">
               {listItems.length > 0 ? listItems : (
                 <li role="presentation" className="px-4 py-6 text-center text-sm text-muted-foreground">
                   {index.loading ? 'Loading…' : 'No matches. Try “add milk” or “chore vacuum tomorrow”.'}
                 </li>
               )}
             </Stagger>
-            <p className="hidden border-t px-4 py-2 text-[11px] text-muted-foreground sm:block">
+            <p className="hidden border-t px-4 py-2 text-[11px] text-muted-foreground sm:block coarse:hidden">
               ↑ ↓ to move · Enter to choose · Esc to close · ? for shortcuts
+            </p>
+            <p className="hidden border-t px-4 py-2 text-xs text-muted-foreground coarse:block" data-testid="palette-touch-footer">
+              Tap a result to choose it. Nothing is saved until you confirm.
             </p>
           </>
         )}

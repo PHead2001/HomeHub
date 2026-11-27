@@ -11,6 +11,7 @@ import { addLocalDays, dayKey, startOfLocalDay } from './dates';
 import { knownFoodType, newestFirst, parsePortion } from '../pets/care';
 import type { FoodType, PortionUnit, PetProfile } from '../pets/types';
 import { parseQuickAdd as parseShoppingEntries, type QuickAddEntry } from '../shopping/items';
+import { readMileage } from './quick-add-numbers';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Matches `value` only as whole words (a letter or digit on either side does not count). */
@@ -107,6 +108,13 @@ const WEEKDAYS: Array<[RegExp, Weekday]> = [
 ];
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+/**
+ * Month words as whole words only (QA-3): "marshmallows 2" or "decorate 2 cakes"
+ * never read as Mar 2 or Dec 2.
+ */
+const MONTH_WORDS = '(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)';
+/** Units after "1/2" that make it a fraction ("1/2 gallon milk"), never a date (QA-3). */
+const FRACTION_UNIT = '(?:gal(?:lon)?s?|cups?|lbs?|pounds?|oz|ounces?|kg|g|grams?|l|lit(?:er|re)s?|ml|tsp|tbsp|teaspoons?|tablespoons?|pints?|quarts?|qt|dozen|cans?|bags?|box(?:es)?|packs?|sticks?|loaf|loaves|inch(?:es)?|ft|feet|bottles?|jars?|bunch(?:es)?|heads?|scoops?|pouch(?:es)?)';
 
 export const weekdayFromWord = (word: string): Weekday | null => {
   const lower = word.toLowerCase();
@@ -164,7 +172,18 @@ export function firstDateForRepeat(repeat: QuickAddRepeat, now: Date): Date {
 type DateMatch = { date: Date; consumed: RegExp };
 
 /** Finds one date phrase in `text`. Returns the date and a pattern that removes it. */
-export function findDate(text: string, now: Date): DateMatch | null {
+/**
+ * "in" after "1/2" is inches ("1/2 in pipe"), unless it starts a place: an article or
+ * possessive ("in the kitchen", "in our garage") or one of the household's rooms ("in
+ * kitchen"). Then "8/20 in the kitchen" stays a date.
+ */
+function inchesAfter(rooms: readonly { name: string }[]): string {
+  const places = ['the', 'a', 'an', 'my', 'our', 'his', 'her', 'their', 'your',
+    ...rooms.map((room) => room.name.trim().toLowerCase()).filter(Boolean).map((name) => escapeRegExp(name).replace(/\s+/g, '\\s+'))];
+  return `in\\b(?!\\s+(?:${places.join('|')})(?![\\p{L}\\p{N}]))`;
+}
+
+export function findDate(text: string, now: Date, rooms: readonly { name: string }[] = []): DateMatch | null {
   const lower = text.toLowerCase();
   const simple: Array<[RegExp, () => Date]> = [
     [/\b(today|tonight|this evening)\b/, () => startOfLocalDay(now)],
@@ -195,9 +214,11 @@ export function findDate(text: string, now: Date): DateMatch | null {
     }
   }
 
-  const monthDay = new RegExp(`\\b(on |by |due )?(${MONTHS.join('|')})[a-z]*\\.? (\\d{1,2})(st|nd|rd|th)?\\b`).exec(lower);
+  // A named month is a date whatever follows ("on March 3 in the kitchen"); only
+  // whole month words count, so "marshmallows 2" is no date (QA-3).
+  const monthDay = new RegExp(`\\b(on |by |due )?${MONTH_WORDS}\\.? (\\d{1,2})(st|nd|rd|th)?\\b`).exec(lower);
   if (monthDay) {
-    const month = MONTHS.indexOf(monthDay[2]);
+    const month = MONTHS.indexOf(monthDay[2].slice(0, 3));
     const day = Number(monthDay[3]);
     let date = new Date(now.getFullYear(), month, day);
     if (date.getMonth() !== month) return null;
@@ -205,7 +226,7 @@ export function findDate(text: string, now: Date): DateMatch | null {
     return { date, consumed: new RegExp(monthDay[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') };
   }
 
-  const numeric = /\b(on |by |due )?(\d{1,2})\/(\d{1,2})\b/.exec(lower);
+  const numeric = new RegExp(`(?<![\\d.]\\s?)\\b(on |by |due )?(\\d{1,2})\\/(\\d{1,2})\\b(?!\\s*${FRACTION_UNIT}\\b)(?!\\s*${inchesAfter(rooms)})(?!\\/)`, 'u').exec(lower);
   if (numeric) {
     const month = Number(numeric[2]) - 1;
     const day = Number(numeric[3]);
@@ -382,7 +403,45 @@ const defaultList = (lists: QuickAddList[]) => lists.find((list) => list.type ==
  * names match the Shopping list's inline quick add exactly.
  */
 export function splitItems(text: string): Array<{ name: string; quantity: number }> {
-  return parseShoppingEntries(text.replace(/\s+(?:and|&|\+)\s+/gi, ','));
+  // Known compound names keep their "and" (QA-3): "mac and cheese", "half and half".
+  let protectedText = text;
+  for (const compound of COMPOUND_ITEMS) {
+    protectedText = protectedText.replace(new RegExp(`(?<![\\p{L}])${compound.replace(/ and /g, '\\s+(?:and|&)\\s+')}(?![\\p{L}])`, 'giu'), (match) => match.replace(/\s+(?:and|&)\s+/gi, AND_MARK));
+  }
+  const parts = protectedText.split(/[,;\n]+/);
+  const withCommas = parts.length > 1;
+  const split = parts.flatMap((part) => {
+    const pieces = part.split(/\s+(?:and|&|\+)\s+/i);
+    if (pieces.length === 1) return [part];
+    // Without commas, "and" splits only single words ("milk and eggs"); "dry cleaning
+    // and milk" stays one entry the preview can split (QA-19).
+    return withCommas || pieces.every((piece) => itemWords(piece) <= 1) ? pieces : [part];
+  });
+  return parseShoppingEntries(split.join(',')).map((entry) => ({ ...entry, name: entry.name.split(AND_MARK).join(' and ') }));
+}
+
+const AND_MARK = '~and~';
+/** Names that contain "and" and are one item. */
+export const COMPOUND_ITEMS = [
+  'mac and cheese', 'macaroni and cheese', 'half and half', 'salt and pepper', 'peanut butter and jelly', 'pb and j', 'fish and chips',
+  'bread and butter', 'cookies and cream', 'sour cream and onion', 'ham and cheese', 'pork and beans', 'rice and beans', 'oil and vinegar',
+  'spaghetti and meatballs', 'chicken and rice', 'biscuits and gravy', 'strawberries and cream', 'franks and beans', 'cheese and onion',
+];
+/** Words in one entry, without a leading count ("2 milk") or a trailing "x2". */
+const itemWords = (piece: string) => piece.trim().replace(/^\d{1,3}\s*(?:[x×]\s+)?/i, '').replace(/\s+[x×]\s*\d{1,3}$/i, '').split(/\s+/).filter(Boolean).length;
+
+/**
+ * Words that make bare text a sentence rather than a thing to buy: pronouns and
+ * verbs ("gave Rex his pill", "need to call the dentist", "replaced furnace
+ * filter"). Bare text with one of these, or with more than four words in an entry,
+ * is never guessed as groceries (QA-2): the palette offers "Read with AI" first.
+ */
+const NOT_AN_ITEM = /(?<![\p{L}'])(?:i|i'm|im|we|we're|you|he|she|they|it|it's|his|her|hers|their|our|my|me|us|him|them|your|gave|give|given|call|called|take|took|taken|replaced|replace|fix|fixed|fixing|clean|cleaned|ate|did|do|does|done|was|were|is|are|be|been|have|has|had|will|would|should|could|remind|nothing|went|go|going|walked|fed|feed|pay|paid|book|booked|schedule|scheduled|made|checked|tell|ask|text|email|today|yesterday|tonight|tomorrow)(?![\p{L}'])/iu;
+
+/** True when bare text reads like things to buy: short noun phrases only (QA-2). */
+export function looksLikeItems(text: string, items: ReadonlyArray<{ name: string }>): boolean {
+  if (items.length === 0 || NOT_AN_ITEM.test(text)) return false;
+  return items.every((item) => itemWords(item.name) <= 4);
 }
 
 const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
@@ -409,10 +468,16 @@ function parseMaintenance(text: string, context: QuickAddContext): MaintenanceIn
   const explicit = /^(?:log|logged|did|done)\s+(.+)$/i.exec(text);
   let body = explicit ? explicit[1] : text;
   if (!MAINTENANCE_WORDS.test(body)) return null;
-  const mileageMatch = /(\d{1,3}(?:,\d{3})+|\d{3,7})\s*(?:k\s*)?(?:miles|mi)\b/i.exec(body) ?? /\bat\s+(\d{1,3}(?:,\d{3})+|\d{4,7})\b/i.exec(body);
-  const mileage = mileageMatch ? Number(mileageMatch[1].replace(/,/g, '')) : null;
+  // "120k miles" is 120,000 and "48k" after a service word is a reading (QA-3).
+  const mileageMatch = readMileage(body, { bareK: true });
+  const mileage = mileageMatch?.value ?? null;
   if (!explicit && mileage === null && !/\b(oil change|tire rotation|tyre rotation|tune[- ]?up|alignment)\b/i.test(body)) return null;
-  body = body.replace(mileageMatch?.[0] ?? '', ' ');
+  // A log records work that was done: "oil change tomorrow" is a chore to do, never
+  // a log saved as done today (QA-3). A date of today is dropped from the title.
+  const when = findDate(body, context.now, context.rooms ?? []);
+  if (when && when.date.getTime() > startOfLocalDay(context.now).getTime()) return null;
+  if (when) body = body.replace(when.consumed, ' ');
+  if (mileageMatch) body = body.replace(mileageMatch.text, ' ');
   // A mileage reading belongs to a vehicle, so only vehicles are matched then.
   const found = findMaintenanceTarget(body, context.vehicles ?? [], mileage !== null ? [] : context.assets ?? []);
   if (found?.consumed) body = body.replace(found.consumed, ' ');
@@ -428,13 +493,21 @@ function parseMaintenance(text: string, context: QuickAddContext): MaintenanceIn
 }
 
 function parseShopping(text: string, context: QuickAddContext): ShoppingIntent | null {
+  return readShopping(text, context)?.intent ?? null;
+}
+
+/** Shopping, plus whether the sentence named a list ("to the hardware list"). */
+function readShopping(text: string, context: QuickAddContext): { intent: ShoppingIntent; listNamed: boolean } | null {
   const verb = /^(?:please\s+)?(?:add|buy|get|grab|pick up|need|we need|i need|we're out of|out of)\s+(.+)$/i.exec(text);
   let body = verb ? verb[1] : text;
   let list: QuickAddList | null = null;
   let explicitList = false;
   const target = /\s+(?:to|on|onto|for)\s+(?:the\s+|my\s+|our\s+)?([a-z0-9' -]+?)(?:\s+list)?\s*$/i.exec(body);
   if (target) {
-    const found = findList(target[1], context.lists);
+    // "to the list", "on my shopping list": the default list, and the words never
+    // stay in the item's name (QA-3).
+    const generic = /^(?:the\s+|my\s+|our\s+)?(?:shopping\s+)?list$|^shopping$/i.test(target[1].trim());
+    const found = generic ? defaultList(context.lists) : findList(target[1], context.lists);
     if (found) {
       list = found;
       explicitList = true;
@@ -443,7 +516,7 @@ function parseShopping(text: string, context: QuickAddContext): ShoppingIntent |
   }
   const items = splitItems(body);
   if (items.length === 0) return null;
-  return { kind: 'shopping', items, list: list ?? defaultList(context.lists), explicit: Boolean(verb) || explicitList };
+  return { intent: { kind: 'shopping', items, list: list ?? defaultList(context.lists), explicit: Boolean(verb) || explicitList }, listNamed: explicitList };
 }
 
 /** What a command verb asks for: a feeding, a shopping item or a chore. */
@@ -472,7 +545,7 @@ export function parseChore(text: string, context: QuickAddContext): ChoreIntent 
   let body = explicit ? explicit[1] : text;
   const repeat = findRepeat(body, context.now);
   if (repeat) body = body.replace(repeat.consumed, ' ');
-  const date = repeat ? null : findDate(body, context.now);
+  const date = repeat ? null : findDate(body, context.now, context.rooms ?? []);
   if (date) body = body.replace(date.consumed, ' ');
   const assignee = findAssignee(body, context);
   if (assignee) body = body.replace(assignee.consumed, ' ');
@@ -518,7 +591,17 @@ export function parseQuickAdd(input: string, context: QuickAddContext): QuickAdd
   if (/^(?:chore|task|todo|to do|remind (?:me|us) to)\b/i.test(text)) return parseChore(text, context);
 
   if (/^(?:please\s+)?(?:add|buy|get|grab|pick up|need|we need|i need|we're out of|out of)\s/i.test(text)) {
-    return parseShopping(text, context);
+    // "need to call the dentist" is something to do, never an item (QA-3): a chore
+    // when it has a date, repeat or person, otherwise nothing (the AI reader is offered).
+    if (/^(?:please\s+)?(?:i\s+|we\s+)?need\s+to\s/i.test(text)) return parseChore(text.replace(/^(?:please\s+)?(?:i\s+|we\s+)?need\s+to\s+/i, ''), context);
+    const shopping = readShopping(text, context);
+    // A date, repeat or person makes it a chore ("pick up dry cleaning for Sam
+    // tomorrow"), unless the sentence named a shopping list (QA-3).
+    if (!shopping?.listNamed) {
+      const chore = parseChore(text, context);
+      if (chore) return chore;
+    }
+    return shopping?.intent ?? null;
   }
 
   const maintenance = parseMaintenance(text, context);
@@ -528,7 +611,16 @@ export function parseQuickAdd(input: string, context: QuickAddContext): QuickAdd
   if (chore) return chore;
 
   const shopping = parseShopping(text, context);
-  return shopping && shopping.list ? shopping : null;
+  if (!shopping || !shopping.list) return null;
+  // A sentence that named its list ("milk to my groceries") is explicit and kept as is.
+  if (shopping.explicit) return shopping;
+  // Bare text is a grocery guess only when it reads like things to buy, and never
+  // when it names a room or a member (QA-2).
+  if (!looksLikeItems(text, shopping.items)) return null;
+  const lower = normalize(text);
+  if ((context.rooms ?? []).some((room) => normalize(room.name) === lower)) return null;
+  if (context.members.some((member) => normalize(member.name) === lower || normalize(member.name.split(/\s+/)[0] ?? '') === lower)) return null;
+  return shopping;
 }
 
 export function describeRepeat(repeat: QuickAddRepeat): string {
