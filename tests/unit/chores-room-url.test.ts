@@ -51,7 +51,7 @@ describe('house is clean', () => {
     assert.equal(cleanHouseRooms(rooms, new Set())[0].icon, 'Home');
     const many = Array.from({ length: 12 }, (_, i) => ({ id: `r${i}`, name: `Room ${String(i).padStart(2, '0')}` }));
     assert.equal(cleanHouseRooms(many, new Set()).length, HOUSE_CLEAN_MAX_ROOMS);
-    assert.deepEqual(cleanHouseRooms([], new Set()).map(room => room.name), ['Home']);
+    assert.deepEqual(cleanHouseRooms([], new Set()).map(room => room.name), ['Around the house']);
   });
 
   it('sparkles room by room inside the 1.5 s budget', () => {

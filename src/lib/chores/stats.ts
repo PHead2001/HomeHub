@@ -6,6 +6,7 @@
  * (the rules pin it to the request time), else the older `completedAt` string.
  */
 import { resolveAssigneeUid } from '../../../functions/src/shared/assignee';
+import { localDay, safeTimeZone } from '../../../functions/src/shared/calendar';
 import { addDaysToKey, choreDueKey, completionInstant, dayKey, weekStartKey, type ChoreRecord } from './dates';
 import { publicDisplayName, type HouseholdPerson } from '../member-directory';
 
@@ -123,8 +124,18 @@ export function creditedUid(
  * chore (`creditedUid`); fair share counts the chores assigned to each member.
  * Completions credited to someone who is no longer a member are ignored.
  */
-export function computeChoreStats(chores: readonly ChoreRecord[], members: readonly StatsMember[], now: Date): ChoreStats {
-  const today = dayKey(now);
+export function computeChoreStats(
+  chores: readonly ChoreRecord[],
+  members: readonly StatsMember[],
+  now: Date,
+  /**
+   * The household's day and zone (CH-10): completion instants are read as household days,
+   * the same days the page and the server use. Without them, the device's own day.
+   */
+  household?: { today: string; timeZone: string },
+): ChoreStats {
+  const today = household?.today ?? dayKey(now);
+  const dayOf = (instant: Date) => (household ? localDay(instant, safeTimeZone(household.timeZone)) : dayKey(instant));
   const weekStart = weekStartKey(today);
   const weekEnd = addDaysToKey(weekStart, 6);
   const inWeek = (key: string) => key >= weekStart && key <= weekEnd;
@@ -147,7 +158,7 @@ export function computeChoreStats(chores: readonly ChoreRecord[], members: reado
     const creditedTo = creditedUid(chore, members);
     const credited = creditedTo ? acc.get(creditedTo) : undefined;
     if (!credited) continue;
-    const completedDay = dayKey(completed);
+    const completedDay = dayOf(completed);
     if (completedDay > today) continue; // clock skew: never count the future
     const points = chorePoints(chore);
     credited.totalPoints += points;

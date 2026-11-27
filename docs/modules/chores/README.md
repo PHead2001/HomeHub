@@ -171,5 +171,6 @@ Completion rules, stage R1 (ahead of the shared completion operation): chore wri
 ## Names and days (CH-10, CH-23)
 
 - Chores without a room are called **Around the house** everywhere (the room filter, To Do groups, Add Chore, the library filter, the dashboard house and the House is clean moment); chores of a room that was removed are grouped under **Removed room** (the dashboard uses the same name). To Do groups by room id, never by name, so a room someone named "General" or "Around the house" stays its own group.
-- The page's "today" (To Do, Future, overdue, streaks and the House is clean check) is the household's day, the same day the server generates and judges chores on (`useHouseholdToday`), not the device's.
+- The page's "today" (To Do, Future, overdue, streaks and the House is clean check) is the household's day, the same day the server generates and judges chores on (`useHouseholdToday`), not the device's; completion instants are read as household days too (Completed, completed today, and the stats via `computeChoreStats`'s `household` option), so a device in another zone never drops or misdates a completion.
+- Assigning a library chore as Repeats replaces its whole schedule: optional keys the new schedule leaves out (start, end, day options) are deleted, so an older end date never survives.
 - With nothing left in To Do, the empty state says "All done for today" with the next chore, or "Nothing else is scheduled." when there is none; "Nothing is scheduled" shows only when nothing was done today either.

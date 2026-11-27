@@ -7,6 +7,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, RotateCw, Trophy, User as UserIcon } from 'lucide-react';
 import { type DocumentData, type DocumentReference, type Transaction, arrayRemove, arrayUnion, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
+import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import { withSkippedOccurrences } from '@functions/shared/skips';
 import { isGeneratedInstance, isUpcomingInstance, roomDeletionPlan, skipsForDeletion } from '@/lib/chores/recurrence-edits';
 import { approvedPeople, type HouseholdPerson } from '@/lib/member-directory';
@@ -91,6 +92,8 @@ export function ChoreChartClient() {
   // Completion eligibility follows the household's day, as on the server (CH-2); so do
   // skips and repeat edits (CH-3, CH-4).
   const householdDay = useHouseholdToday(household?.timeZone);
+  /** The household day a completion instant falls on (CH-10: never the device's day). */
+  const householdDayOf = (instant: Date) => localDay(instant, safeTimeZone(household?.timeZone));
   const { toast, toastError } = useToast();
   const capabilities = useMemo(() => choreCapabilities(permissions), [permissions]);
   const isManager = currentMember?.role === 'owner' || currentMember?.role === 'admin';
@@ -445,7 +448,13 @@ export function ChoreChartClient() {
             // A merge keeps fields it does not name, so an older assignee's email (top level
             // and inside `recurrence`) is removed explicitly: it would otherwise win over the uid.
             transaction.set(doc(templatesCollection, template.id), {
-              recurrence: { ...schedule.recurrence, assignedToEmail: deleteField() },
+              // A merge keeps keys it does not name: every optional key the new schedule
+              // leaves out is deleted, so an older end date, start or option never survives.
+              recurrence: {
+                startDate: deleteField(), endDate: deleteField(), dailyOptions: deleteField(), weeklyOptions: deleteField(), monthlyOptions: deleteField(),
+                ...schedule.recurrence,
+                assignedToEmail: deleteField(),
+              },
               ...fields,
               assignedToEmail: deleteField(),
               // The rooms chosen in the dialog; none chosen keeps the chore's own rooms.
@@ -625,7 +634,7 @@ export function ChoreChartClient() {
     markHouseCleanShown(key);
     const doneToday = after.filter(chore => {
       const instant = completionInstant(chore);
-      return instant && dayKey(instant) === today;
+      return instant && householdDayOf(instant) === today;
     });
     // Every room of the household (the whole house is clean); rooms worked in today sparkle first.
     const workedIn = new Set(doneToday.flatMap(chore => chore.roomIds || []));
@@ -897,7 +906,8 @@ export function ChoreChartClient() {
   // matching key for older `completedByEmail` / `assignedToEmail` chores, never shown.
   const statsMembers = useMemo(() => householdUsers.map(statsMemberFrom), [householdUsers]);
   // Follows `today`, so the week, streaks and podium roll over at midnight.
-  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today)), [assignedChores, statsMembers, today]);
+  const householdZone = household?.timeZone;
+  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today), householdZone ? { today, timeZone: householdZone } : undefined), [assignedChores, statsMembers, today, householdZone]);
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
 
   // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.
@@ -954,8 +964,8 @@ export function ChoreChartClient() {
   const completedChores = filteredChores
     .filter(c => c.isCompleted && completionInstant(c))
     .sort((a, b) => completionInstant(b)!.getTime() - completionInstant(a)!.getTime());
-  const visibleCompletedChores = showFullHistory ? completedChores : completedChores.filter(c => dayKey(completionInstant(c)!) >= recentFrom);
-  const completedToday = completedChores.filter(c => dayKey(completionInstant(c)!) === today).length;
+  const visibleCompletedChores = showFullHistory ? completedChores : completedChores.filter(c => householdDayOf(completionInstant(c)!) >= recentFrom);
+  const completedToday = completedChores.filter(c => householdDayOf(completionInstant(c)!) === today).length;
   const recurringChores = choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence));
   const isEmptyHousehold = assignedChores.length === 0 && choreTemplates.length === 0;
 

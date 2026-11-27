@@ -97,9 +97,10 @@ describe('quick add: rooms, vehicles and assets', () => {
 
 describe('quick add writes: same shapes as the module screens', () => {
   it('builds the Chores dialog recurrence for each repeat', () => {
-    assert.deepEqual(recurrenceFromRepeat({ frequency: 'weekly', dayOfWeek: 2 }, '2026-08-04'), { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] } });
-    assert.deepEqual(recurrenceFromRepeat({ frequency: 'biweekly', dayOfWeek: 5 }, '2026-08-07'), { frequency: 'biweekly', interval: 2, weeklyOptions: { daysOfWeek: [5] }, startDate: '2026-08-07' });
-    assert.deepEqual(recurrenceFromRepeat({ frequency: 'daily' }, '2026-08-01'), { frequency: 'daily', interval: 1, dailyOptions: { excludeWeekends: false } });
+    assert.deepEqual(recurrenceFromRepeat({ frequency: 'weekly', dayOfWeek: 2 }, '2026-08-04'), { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, startDate: '2026-08-04' });
+    // Every 2 weeks starts on the Monday of the first week (CH-10).
+    assert.deepEqual(recurrenceFromRepeat({ frequency: 'biweekly', dayOfWeek: 5 }, '2026-08-07'), { frequency: 'biweekly', interval: 2, weeklyOptions: { daysOfWeek: [5] }, startDate: '2026-08-03' });
+    assert.deepEqual(recurrenceFromRepeat({ frequency: 'daily' }, '2026-08-01'), { frequency: 'daily', interval: 1, dailyOptions: { excludeWeekends: false }, startDate: '2026-08-01' });
     assert.deepEqual(recurrenceFromRepeat({ frequency: 'monthly', dayOfMonth: 28 }, '2026-08-28'), { frequency: 'monthly', interval: 1, monthlyOptions: { mode: 'dayOfMonth', dayOfMonth: 28 } });
     // A day the dialog cannot store is refused, never silently changed (intents are normalized before their preview).
     assert.throws(() => recurrenceFromRepeat({ frequency: 'monthly', dayOfMonth: 31 }, '2026-08-31'), /invalid-recurrence/);
@@ -112,7 +113,7 @@ describe('quick add writes: same shapes as the module screens', () => {
       notes: '',
       roomIds: ['kitchen'],
       subTasks: [],
-      recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] } },
+      recurrence: { frequency: 'weekly', interval: 1, weeklyOptions: { daysOfWeek: [2] }, startDate: '2026-08-04' },
       // Member privacy release C: the uid only, never the email (even when the writer knows it).
       assignedToUid: 'uid-sam',
     });
