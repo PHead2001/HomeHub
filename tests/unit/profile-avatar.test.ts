@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { AVATAR_MAX_EDGE, avatarExtensionFor, ownAvatarPath, profilePhotoError } from '../../src/lib/profile/avatar';
+import { AVATAR_MAX_EDGE, avatarExtensionFor, ownAvatarPath, photoReplacedAndSafe, profilePhotoError } from '../../src/lib/profile/avatar';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { planDownscale } from '../../src/lib/images/downscale';
 
 const BUCKET = 'homehub.appspot.com';
@@ -49,5 +51,29 @@ describe('profile photos (PR-9)', () => {
     assert.equal(ownAvatarPath(url('users/uid-1/avatars/../../x'), me, BUCKET), null);
     assert.equal(ownAvatarPath('not a url', me, BUCKET), null);
     assert.equal(ownAvatarPath(null, me, BUCKET), null);
+  });
+});
+
+describe('the old photo is deleted only after the membership record took the new one (PR #246 review)', () => {
+  const NEW = 'https://firebasestorage.googleapis.com/v0/b/b/o/users%2Fu%2Favatars%2Fnew.jpg?alt=media';
+  it('keeps the old file when the sync failed or could not be confirmed', () => {
+    assert.equal(photoReplacedAndSafe(undefined, NEW), false);
+  });
+  it('keeps the old file when the record still shows another photo', () => {
+    assert.equal(photoReplacedAndSafe({ avatarUrl: 'https://old' }, NEW), false);
+    assert.equal(photoReplacedAndSafe({ avatarUrl: null }, NEW), false);
+  });
+  it('deletes once the record holds the new photo, or the removal, or there is no record', () => {
+    assert.equal(photoReplacedAndSafe({ avatarUrl: NEW }, NEW), true);
+    assert.equal(photoReplacedAndSafe({ avatarUrl: null }, null), true);
+    assert.equal(photoReplacedAndSafe({ avatarUrl: null, noHousehold: true }, NEW), true);
+  });
+  it('the profile form deletes only from the sync callback, and updateUser reports the sync', () => {
+    const client = readFileSync(resolve(process.cwd(), 'src/components/profile-client.tsx'), 'utf8');
+    assert.equal((client.match(/deletePreviousPhoto\(previousUrl/g) ?? []).length, 1);
+    assert.match(client, /onMemberSync: \(sync\) => \{\s*if \(photoReplacedAndSafe\(sync, newUrl\)\) deletePreviousPhoto\(previousUrl, newUrl\);/);
+    const auth = readFileSync(resolve(process.cwd(), 'src/contexts/auth-context.tsx'), 'utf8');
+    assert.match(auth, /if \(options\?\.onMemberSync\) void sync\.then\(options\.onMemberSync\);/);
+    assert.match(auth, /return \{ avatarUrl: result\.data\.avatarUrl \};/);
   });
 });

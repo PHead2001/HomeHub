@@ -76,3 +76,18 @@ export function ownAvatarPath(
     ? path
     : null;
 }
+
+/**
+ * Whether the previous photo may be deleted after a save (PR-9 review): only once
+ * nothing housemates read can still point at it, i.e. the person has no membership
+ * record, or the server confirmed the record now holds the new photo URL (null for a
+ * removed photo). An unconfirmed or different result keeps the old file.
+ */
+export function photoReplacedAndSafe(
+  sync: { avatarUrl: string | null; noHousehold?: boolean } | undefined,
+  newUrl: string | null,
+): boolean {
+  if (!sync) return false;
+  if (sync.noHousehold) return true;
+  return sync.avatarUrl === newUrl;
+}

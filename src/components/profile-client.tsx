@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils';
 import { roleLabel } from '@/components/household/household-model';
 import { AVATAR_MAX_BYTES } from '@/components/profile/profile-validation';
 import { downscaleImage } from '@/lib/images/downscale';
-import { AVATAR_MAX_EDGE, PROFILE_PHOTO_ACCEPT, avatarExtensionFor, ownAvatarPath, profilePhotoError } from '@/lib/profile/avatar';
+import { AVATAR_MAX_EDGE, PROFILE_PHOTO_ACCEPT, avatarExtensionFor, ownAvatarPath, photoReplacedAndSafe, profilePhotoError } from '@/lib/profile/avatar';
 import { PushNotificationSettings } from './PushNotificationSettings';
 import { AppearanceSettings } from './appearance-settings';
 import { TabletPinCard } from '@/components/profile/tablet-pin-card';
@@ -188,9 +188,17 @@ export function ProfileClient() {
         uploaded = upload.storageRef;
       }
 
+      const newUrl = avatarUrl || null;
       const saved = await updateUser({
         displayName: values.displayName.trim(),
-        avatarUrl: avatarUrl || null,
+        avatarUrl: newUrl,
+      }, {
+        // The old photo is deleted only once nothing housemates read can still point at
+        // it: no household, or the membership record confirmed with the new photo.
+        // Otherwise it is kept (an orphaned file, never a broken avatar).
+        onMemberSync: (sync) => {
+          if (photoReplacedAndSafe(sync, newUrl)) deletePreviousPhoto(previousUrl, newUrl);
+        },
       });
       // PR-1: a failed save keeps the chosen photo and the edited name on screen (the
       // error toast has been shown) and removes the file it uploaded, which nothing uses.
@@ -198,7 +206,6 @@ export function ProfileClient() {
         if (uploaded) void deleteObject(uploaded).catch(() => undefined);
         return;
       }
-      deletePreviousPhoto(previousUrl, avatarUrl || null);
 
       // Only the photo this save uploaded is cleared; one chosen meanwhile stays pending.
       if (photoChoiceRef.current === savedPhoto) {

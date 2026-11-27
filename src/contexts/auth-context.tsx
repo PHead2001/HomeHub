@@ -97,6 +97,19 @@ const readCached = async (path: string[]) => {
   }
 };
 
+/** Options for `updateUser`. */
+export type UpdateUserOptions = {
+  /** Skip the global loading state and the success toast (background sync). */
+  silent?: boolean;
+  /**
+   * Called after a successful write that changed the name or photo: with the photo URL
+   * the membership record now holds once the server confirmed it, `{ noHousehold: true }`
+   * when no membership record exists to update, or `undefined` when the record could
+   * not be confirmed (the next load heals it).
+   */
+  onMemberSync?: (result: { avatarUrl: string | null; noHousehold?: boolean } | undefined) => void;
+};
+
 interface AuthContextType {
   /** A person or a registered wall tablet (see `Principal`). */
   principal: Principal;
@@ -131,7 +144,7 @@ interface AuthContextType {
    * error toast has then been shown), so callers run their success steps only on true.
    * `silent` skips the global loading state and the success toast (background sync).
    */
-  updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, options?: { silent?: boolean }) => Promise<boolean>;
+  updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, options?: UpdateUserOptions) => Promise<boolean>;
   /**
    * PR-7: true when the signed-in person's profile could not be read from the server
    * (offline, a server error). `/profile` shows an error with Retry instead of an endless
@@ -200,15 +213,24 @@ const takeSignedOutMark = (): boolean => {
   }
 };
 
-/** Copies your profile's name and photo onto your membership record (server action, best effort). */
-async function syncMemberProfile(householdId: string): Promise<void> {
+/**
+ * Copies your profile's name and photo onto your membership record (server action, best
+ * effort). Resolves the photo URL the record now holds, or `undefined` when the sync
+ * could not be confirmed (failed, offline, signed out).
+ */
+async function syncMemberProfile(householdId: string): Promise<{ avatarUrl: string | null } | undefined> {
   try {
     const user = auth.currentUser;
-    if (!user) return;
+    if (!user) return undefined;
     const result = await syncMyMemberProfileAction({ idToken: await user.getIdToken(), householdId });
-    if (!result.ok) console.warn('Your name and photo could not be shared with the household yet.', result.code);
+    if (!result.ok) {
+      console.warn('Your name and photo could not be shared with the household yet.', result.code);
+      return undefined;
+    }
+    return { avatarUrl: result.data.avatarUrl };
   } catch (error) {
     console.warn('Your name and photo could not be shared with the household yet.', error instanceof Error ? error.message : String(error));
+    return undefined;
   }
 }
 
@@ -755,7 +777,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // PR-21: consumers keep one stable `updateUser`; it reads the latest profile from a ref.
   const currentUserRef = useRef<User | null>(null);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
-  const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, options?: { silent?: boolean }): Promise<boolean> => {
+  const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, options?: UpdateUserOptions): Promise<boolean> => {
     const silent = options?.silent === true;
     const me = currentUserRef.current;
     if (!auth.currentUser || !me?.email) {
@@ -771,7 +793,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setProfile(prev => prev ? mergeProfilePatch<User>(prev, data) : null);
       // Housemates see the name and photo through the membership record, which only
       // the server may write for you (best effort: the next load heals a failure).
-      if (me.householdId && ('displayName' in data || 'avatarUrl' in data)) void syncMemberProfile(me.householdId);
+      // `onMemberSync` hears whether the record now shows the new photo (PR-9: the old
+      // file is deleted only then); without a household nothing references the photo.
+      if (me.householdId && ('displayName' in data || 'avatarUrl' in data)) {
+        const sync = syncMemberProfile(me.householdId);
+        if (options?.onMemberSync) void sync.then(options.onMemberSync);
+      } else {
+        options?.onMemberSync?.({ avatarUrl: null, noHousehold: true });
+      }
       if (!silent) toast({ title: 'Profile Updated', description: 'Your information has been successfully updated.' });
       return true;
     } catch (error) {
