@@ -10,7 +10,7 @@ import { initialCategory, rememberedCategories } from '@/lib/shopping/local-cate
 import type { OperationContext } from '@/lib/server/operation-context';
 import { assertActorRule, type DeviceAuthority } from '@/lib/server/device-gate';
 import { DeviceActionError } from '@/lib/server/device-errors';
-import { assertUndoable, createdRecordUnchanged, type DeviceOp } from '@/lib/server/device-ops';
+import { assertUndoable, createdRecordUnchanged, opRef, type DeviceOp } from '@/lib/server/device-ops';
 
 // Shopping item writes as an actor, on the server (docs/modules/shopping/README.md, "Wall
 // tablets"; docs/modules/devices/README.md, "Device actions: shopping"). The personal Shopping
@@ -26,6 +26,8 @@ import { assertUndoable, createdRecordUnchanged, type DeviceOp } from '@/lib/ser
 // actor's uid goes into `addedByUid` / `purchasedByUid` (WT-18c); the tablet's attribution
 // goes into `deviceAttribution` (a new item) and `purchaseDeviceAttribution` (a tick, bound to
 // its `purchaseOpId`, so a later personal un-tick or re-tick never leaves a stale claim).
+
+const householdRefOf = (db: Firestore, householdId: string) => db.collection('households').doc(householdId);
 
 /** Every write lives under a list that still exists (the rules' `shoppingListExists`, SH-9b). */
 const listRefOf = (db: Firestore, householdId: string, listId: string) =>
@@ -270,12 +272,19 @@ export async function undoShoppingAddAs(db: Firestore, householdId: string, ctx:
     if (stored.status !== 'added' || !Array.isArray(stored.items)) throw new DeviceActionError('not_undoable');
     const added = stored.items as AddedItem[];
     const refs = added.map((entry) => listRef.collection('items').doc(idOf(entry.itemId)));
+    // The add's ledger entry was created in the add's own transaction, so its creation time is
+    // the commit time of every item the add merged into: an item whose last write is still
+    // that one was changed by nobody since (no rename, no quantity there and back, no delete
+    // and restore under the same id).
+    const ledger = await tx.get(opRef(householdRefOf(db, householdId), ctx.authority.deviceId, ctx.opId!));
+    const addedAt = ledger.exists ? ledger.createTime : undefined;
     const snapshots = refs.length > 0 ? await tx.getAll(...refs) : [];
     const unchanged = added.every((entry, index) => {
       const snapshot = snapshots[index];
       if (!snapshot?.exists) return false;
       if (entry.created) return createdByThisAdd(snapshot, ctx);
-      return snapshot.get('status') === 'needed' && snapshot.get('quantity') === entry.after;
+      return Boolean(addedAt && snapshot.updateTime?.isEqual(addedAt))
+        && snapshot.get('status') === 'needed' && snapshot.get('quantity') === entry.after;
     });
     if (!unchanged) throw new DeviceActionError('changed_since');
     added.forEach((entry, index) => {

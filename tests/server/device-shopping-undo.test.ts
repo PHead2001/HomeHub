@@ -154,6 +154,24 @@ describe('shopping.add', () => {
     assert.equal((await read('eggs'))!.quantity, 2);
   });
 
+  test('a merged item changed since in any way (renamed, or a quantity changed and back) keeps its change', async () => {
+    await seedItem('pears', { name: 'Apples', nameKey: 'apples', quantity: 1, category: 'Produce', categorySource: 'manual' });
+    const renamed = opId();
+    await add(tablet, member.uid, renamed, [['apples', 2]]);
+    await item('pears').update({ name: 'Pears', nameKey: 'pears' });
+    await refused(undoShoppingAddFromTablet(request(tablet, member.uid, renamed), opts(later(2000))), 'changed_since');
+    assert.equal((await read('pears'))!.quantity, 3, 'the rename keeps the three');
+
+    await seedItem('kiwi', { name: 'Kiwi', nameKey: 'kiwi', quantity: 2, category: 'Produce', categorySource: 'manual' });
+    const flip = opId();
+    await add(tablet, member.uid, flip, [['kiwi', 1]]);
+    const kiwi = item('kiwi');
+    await kiwi.update({ quantity: 4 });
+    await kiwi.update({ quantity: 3 });
+    await refused(undoShoppingAddFromTablet(request(tablet, member.uid, flip), opts(later(2000))), 'changed_since');
+    assert.equal((await read('kiwi'))!.quantity, 3);
+  });
+
   test('a remembered category on the list wins over the keyword map', async () => {
     await seedItem('old-oat', { name: 'Oat milk', nameKey: 'oat milk', status: 'purchased', category: 'Drinks', categorySource: 'manual' });
     await add(tablet, member.uid, opId(), ['oat milk']);
