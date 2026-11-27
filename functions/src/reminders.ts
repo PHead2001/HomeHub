@@ -28,6 +28,7 @@ import {
   choreOccurrenceKey, deterministicNotificationId, occurrenceChoreId,
   storedOccurrenceKey,
 } from "./shared/ids";
+import {skippedOccurrenceKeys} from "./shared/skips";
 import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
@@ -400,12 +401,15 @@ export const runHouseholdReminders = async (
     if (!person) continue;
     const rooms: string[] = Array.isArray(template.roomIds) &&
       template.roomIds.length > 0 ? template.roomIds : ["general"];
+    // Days someone deleted on purpose ("we're away Saturday") stay deleted.
+    const skipped = skippedOccurrenceKeys(template);
     for (const day of upcomingOccurrences(recurrence, today,
       RECURRING_LOOKAHEAD)) {
       for (const roomId of rooms) {
         const id = occurrenceChoreId(templateDoc.id, roomId, day);
         const occurrenceKey = choreOccurrenceKey(templateDoc.id, roomId, day);
-        if (choreIds.has(id) || occurrenceKeys.has(occurrenceKey)) continue;
+        if (choreIds.has(id) || occurrenceKeys.has(occurrenceKey) ||
+          skipped.has(occurrenceKey)) continue;
         choreIds.add(id);
         occurrenceKeys.add(occurrenceKey);
         const choreRef = house.collection("chores").doc(id);
