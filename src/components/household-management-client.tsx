@@ -12,6 +12,7 @@ import { pendingReminderDue } from '@/lib/household-records';
 import {
   canAssignRole,
   canEditPermissions,
+  canLeaveHousehold,
   canManageInvites as mayManageInvites,
   canManageMember,
   canRemindPendingMembers,
@@ -790,6 +791,10 @@ export function HouseholdManagementClient() {
                   {isOwner ? (
                     <p className="mt-1 text-sm text-muted-foreground">
                       You&apos;re the owner. Make someone else the owner from Members, or delete the household, before leaving.
+                    </p>
+                  ) : !canLeaveHousehold(currentMember).ok ? (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Ask an owner or admin if you need to leave; they can remove you from Members.
                     </p>
                   ) : (
                     <>

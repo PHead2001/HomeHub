@@ -4,6 +4,7 @@ import {
   OWNER_ONLY_PERMISSIONS,
   canAssignRole,
   canDeleteHousehold,
+  canLeaveHousehold,
   canEditPermissions,
   canGrantPermission,
   canManageInvites,
@@ -339,11 +340,28 @@ describe('owner-only operations', () => {
 
 describe('refusal messages', () => {
   it('every refusal has a plain-language sentence with no internal names', () => {
-    const reasons: PolicyRefusal[] = ['not_member', 'missing_permission', 'self', 'rank', 'role_not_assignable', 'role_too_high', 'owner_only', 'grant_unheld', 'target_pending'];
+    const reasons: PolicyRefusal[] = ['not_member', 'missing_permission', 'self', 'rank', 'role_not_assignable', 'role_too_high', 'owner_only', 'grant_unheld', 'target_pending', 'child_cannot_leave'];
     for (const reason of reasons) {
       const message = refusalMessage(reason);
       assert.ok(message.length > 10, reason);
       assert.doesNotMatch(message, /newuser|household\.[a-z]|_/, reason);
     }
+  });
+});
+
+describe('leaving (HO-3, HO-4, HO-11)', () => {
+  const m = (role: PolicyMember['role'], extra: Partial<PolicyMember> = {}): PolicyMember => ({ uid: role, role, status: 'active', ...extra });
+  it('everyone but the owner may leave; a pending person may withdraw their request', () => {
+    for (const role of ['admin', 'member', 'guest', 'newuser'] as const) assert.equal(canLeaveHousehold(m(role)).ok, true, role);
+    assert.deepEqual(canLeaveHousehold(m('owner')), { ok: false, reason: 'owner_only' });
+    assert.deepEqual(canLeaveHousehold(null), { ok: false, reason: 'not_member' });
+  });
+  it('a child is removed by an adult, except while the household is being deleted', () => {
+    assert.deepEqual(canLeaveHousehold(m('child')), { ok: false, reason: 'child_cannot_leave' });
+    assert.equal(canLeaveHousehold(m('child', { status: 'deleting' }), { deleting: true }).ok, true);
+    assert.deepEqual(canLeaveHousehold(m('owner', { status: 'deleting' }), { deleting: true }), { ok: false, reason: 'owner_only' });
+  });
+  it('a kid profile never leaves by itself', () => {
+    assert.equal(canLeaveHousehold(m('child', { kind: 'identity' }), { deleting: true }).ok, false);
   });
 });

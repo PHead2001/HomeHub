@@ -287,6 +287,44 @@ describe('leaving and deleting', () => {
     await rejects(leaveHousehold(newcomer, HOUSE, NOW), /not part/);
   });
 
+  test('a child account cannot leave on its own (HO-11); an adult removes them', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await house.collection('members').doc(second.uid).set({ uid: second.uid, role: 'child', status: 'active' });
+    await rejects(leaveHousehold(second, HOUSE, NOW), /Ask an owner or admin/);
+    assert.equal((await house.collection('members').doc(second.uid).get()).exists, true);
+    // While the household is being deleted a child may leave like anyone else (HO-4).
+    await house.update({ deletingAt: new Date() });
+    await house.collection('members').doc(second.uid).update({ status: 'deleting' });
+    await leaveHousehold(second, HOUSE, NOW);
+    assert.equal((await house.collection('members').doc(second.uid).get()).exists, false);
+  });
+
+  test('a pending person cancels their request (HO-3): record and pointer gone, approval notices resolved, free to join elsewhere', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await invite('CANC-ELME-XX');
+    await redeemInvite(newcomer, 'CANC-ELME-XX', NOW);
+    const requests = async () => (await house.collection('notifications').where('sourceType', '==', 'household-newuser').get()).docs;
+    assert.ok((await requests()).length > 0);
+    await leaveHousehold(newcomer, HOUSE, new Date(NOW.getTime() + 60_000));
+    assert.equal((await house.collection('members').doc(newcomer.uid).get()).exists, false);
+    assert.equal((await house.collection('members').doc(newcomer.uid).collection('private').doc('contact').get()).exists, false);
+    assert.equal((await adminDb.collection('users').doc(newcomer.email).get()).data()?.householdId, null);
+    for (const request of await requests()) assert.ok(request.get('resolvedAt'), 'join request resolved');
+    // No "Member left" notices for a request that was never approved; the log says what happened.
+    assert.equal((await house.collection('notifications').where('sourceType', '==', 'household-member-left').get()).size, 0);
+    const log = (await house.collection('auditLogs').where('action', '==', 'member.request_cancelled').get()).docs;
+    assert.equal(log.length, 1);
+    assert.equal(log[0].get('actorUid'), newcomer.uid);
+    // Joining another household is no longer blocked.
+    await adminDb.collection('inviteCodes').doc('OTHE-RHOU-SE').set({
+      code: 'OTHE-RHOU-SE', householdId: OTHER, createdByUid: elsewhere.uid, createdAt: NOW.toISOString(),
+      expiresAt: '2026-08-01T12:20:00.000Z', maxUses: 1, useCount: 0,
+    });
+    const joined = await redeemInvite(newcomer, 'OTHE-RHOU-SE', new Date(NOW.getTime() + 120_000));
+    assert.equal(joined.household.id, OTHER);
+    await adminDb.collection('inviteCodes').doc('OTHE-RHOU-SE').delete();
+  });
+
   test('only the owner, typing the exact name, can delete; everything goes', async () => {
     const house = adminDb.collection('households').doc(HOUSE);
     await house.collection('chores').doc('c1').set({ task: 'Trash' });
@@ -316,15 +354,34 @@ describe('leaving and deleting', () => {
     assert.equal((await house.collection('members').doc(admin.uid).get()).data()?.status, 'active');
   });
 
-  test('a household being deleted refuses joining and leaving, and only its owner can finish', async () => {
+  test('a household being deleted refuses joining; non-owners may leave it (HO-4); only its owner can finish', async () => {
     const house = adminDb.collection('households').doc(HOUSE);
     // The state a delete leaves when it froze the household and then failed partway.
     await house.update({ deletingAt: new Date(), deletingByUid: owner.uid });
     for (const id of [owner.uid, admin.uid, guest.uid]) await house.collection('members').doc(id).update({ status: 'deleting' });
-    await house.collection('chores').doc('left-behind').set({ task: 'Leftover' });
+    await house.collection('members').doc(guest.uid).collection('private').doc('contact').set({ email: guest.email, updatedAt: 'x' });
+    await adminDb.collection('users').doc(guest.email).set({ email: guest.email, householdId: HOUSE, role: 'guest' });
+    await house.collection('chores').doc('left-behind').set({ task: 'Leftover', assignedToUid: guest.uid, isCompleted: false });
     await invite('FROZ-ENHO-US');
     await rejects(redeemInvite(newcomer, 'FROZ-ENHO-US', NOW), /being deleted/);
-    await rejects(leaveHousehold(guest, HOUSE, NOW), /being deleted/);
+    // The guest leaves: their own documents go, nothing is written into the household.
+    await leaveHousehold(guest, HOUSE, NOW);
+    assert.equal((await house.collection('members').doc(guest.uid).get()).exists, false);
+    assert.equal((await house.collection('members').doc(guest.uid).collection('private').doc('contact').get()).exists, false);
+    assert.equal((await adminDb.collection('users').doc(guest.email).get()).data()?.householdId, null);
+    assert.equal((await house.collection('auditLogs').get()).size, 0);
+    assert.equal((await house.collection('notifications').get()).size, 0);
+    assert.equal((await house.collection('chores').doc('left-behind').get()).data()?.assignedToUid, guest.uid);
+    // And can join another household at once.
+    await adminDb.collection('inviteCodes').doc('ELSE-WHER-EE').set({
+      code: 'ELSE-WHER-EE', householdId: OTHER, createdByUid: elsewhere.uid, createdAt: NOW.toISOString(),
+      expiresAt: '2026-08-01T12:20:00.000Z', maxUses: 1, useCount: 0,
+    });
+    const joined = await redeemInvite(guest, 'ELSE-WHER-EE', NOW);
+    assert.equal(joined.household.id, OTHER);
+    await adminDb.collection('inviteCodes').doc('ELSE-WHER-EE').delete();
+    // The owner cannot walk away from it; they finish deleting instead.
+    await rejects(leaveHousehold(owner, HOUSE, NOW), /Finish deleting/);
     await rejects(deleteHousehold(admin, HOUSE, 'Join House'), /Only the household owner/);
     await deleteHousehold(owner, HOUSE, 'Join House');
     assert.equal((await house.get()).exists, false);

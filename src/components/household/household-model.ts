@@ -338,6 +338,7 @@ const AUDIT_LABELS: Record<string, string> = {
   'member.permissions_changed': 'Customized permissions',
   'member.removed': 'Removed a member',
   'member.left': 'Left the household',
+  'member.request_cancelled': 'Cancelled a request to join',
   'ownership.transferred': 'Transferred ownership',
   'device.code_created': 'Created a wall-tablet code',
   'device.repair_code_created': 'Created a code to re-pair a wall tablet',

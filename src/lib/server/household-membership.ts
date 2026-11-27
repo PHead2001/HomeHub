@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import {
   canAssignRole,
   canEditPermissions,
+  canLeaveHousehold,
   canManageInvites,
   canManageMember,
   canRemindPendingMembers,
@@ -457,17 +458,78 @@ const unassignTemplateFields = (d: QueryDoc): FirebaseFirestore.UpdateData<Fireb
   };
 };
 
-// Leaving: any non-owner. Chores and recurring templates assigned to the leaver
-// become unassigned so nothing keeps being scheduled for someone who left.
-// The membership is read inside the transaction, so a concurrent ownership
-// transfer to the leaver forces a retry and the leave is then refused.
+// Leaving: any non-owner (a Child only while the household is being deleted; see
+// canLeaveHousehold). Chores and recurring templates assigned to the leaver become
+// unassigned so nothing keeps being scheduled for someone who left. The membership is
+// read inside the transaction, so a concurrent ownership transfer to the leaver forces
+// a retry and the leave is then refused.
+//
+// Two shorter paths:
+// - A pending person withdrawing their request (HO-3, "Cancel request"): the record,
+//   contact document and profile pointer go, the open approval notices about them are
+//   resolved, and the log says "Cancelled a request to join"; no stats, chores or
+//   "Member left" notices (they never had any of it).
+// - Anyone but the owner leaving a household that is being deleted (HO-4): only their
+//   own documents (record, contact, PIN, tablet state, profile pointer) go. Nothing is
+//   written into the household's subcollections, which the deletion is removing.
 export const leaveHousehold = async (caller: VerifiedCaller, householdId: string, now = new Date()) => {
-  const householdRef = adminDb.collection('households').doc(householdId);
+  const id = requireId(householdId, 'That household no longer exists.');
+  const householdRef = adminDb.collection('households').doc(id);
   const memberRef = householdRef.collection('members').doc(caller.uid);
+  const profileRef = adminDb.collection('users').doc(caller.email);
   await adminDb.runTransaction(async transaction => {
-    const [householdSnap, memberSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers, statsSnap, opsSnap] = await Promise.all([
+    const [householdSnap, memberSnap, profileSnap] = await Promise.all([
       transaction.get(householdRef),
       transaction.get(memberRef),
+      transaction.get(profileRef),
+    ]);
+    const member = toStoredMember(memberSnap);
+    if (!member) throw new MembershipError('You are not part of this household.');
+    const deleting = Boolean(householdSnap.get('deletingAt'));
+    const allowed = canLeaveHousehold(member, { deleting });
+    if (!allowed.ok) {
+      if (allowed.reason === 'owner_only') {
+        throw new MembershipError(
+          deleting ? 'This household is being deleted. Finish deleting it instead.' : 'Transfer ownership to someone else before leaving.',
+          'owner_only',
+        );
+      }
+      throw new MembershipError(refusalMessage(allowed.reason), allowed.reason);
+    }
+    // Only a profile that still points here is cleared.
+    const clearPointer = () => {
+      if (profileSnap.exists && profileSnap.get('householdId') === id) {
+        transaction.set(profileRef, { householdId: null, role: 'member', permissions: {} }, { merge: true });
+      }
+    };
+
+    if (deleting) {
+      const tabletState = await readMemberTabletState(transaction, householdRef, caller.uid);
+      transaction.delete(memberRef);
+      transaction.delete(memberContactRef(householdRef, caller.uid));
+      memberPinRefs(householdRef, caller.uid).forEach(ref => transaction.delete(ref));
+      tabletState.forEach(ref => transaction.delete(ref));
+      clearPointer();
+      return;
+    }
+    if (!householdSnap.exists) throw new MembershipError('That household no longer exists.');
+
+    const iso = now.toISOString();
+    if (member.role === 'newuser') {
+      const aboutCaller = await readPendingNotices(transaction, householdRef, caller.uid);
+      transaction.delete(memberRef);
+      transaction.delete(memberContactRef(householdRef, caller.uid));
+      transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
+      clearPointer();
+      transaction.set(householdRef.collection('auditLogs').doc(), {
+        actorUid: caller.uid, actorEmail: caller.email, actorName: member.displayName || caller.displayName || null,
+        action: 'member.request_cancelled', targetUid: caller.uid, targetEmail: caller.email, createdAt: iso,
+      });
+      resolvePendingNotices(transaction, aboutCaller, now);
+      return;
+    }
+
+    const [choresByEmail, choresByUid, templatesByEmail, templatesByUid, approvers, statsSnap, opsSnap] = await Promise.all([
       // Open chores only (HO-5, HO-22): completed ones keep their history and are never read.
       transaction.get(householdRef.collection('chores').where('assignedToEmail', '==', caller.email).where('isCompleted', '==', false)),
       transaction.get(householdRef.collection('chores').where('assignedToUid', '==', caller.uid).where('isCompleted', '==', false)),
@@ -479,13 +541,8 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     ]);
     const chores = assignedDocs(choresByEmail, choresByUid, caller.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, caller.email);
-    if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.');
-    const member = memberSnap.exists ? memberSnap.data() || null : null;
-    if (!member) throw new MembershipError('You are not part of this household.');
-    if (member.role === 'owner') throw new MembershipError('Transfer ownership to someone else before leaving.');
     const tabletState = await readMemberTabletState(transaction, householdRef, caller.uid);
 
-    const iso = now.toISOString();
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
     memberPinRefs(householdRef, caller.uid).forEach(ref => transaction.delete(ref));
@@ -493,7 +550,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     foldDepartingStatsKey(transaction, statsSnap, caller.uid, caller.email);
     recordDepartedIdentity(transaction, householdRef, opsSnap, caller.uid, caller.email, now);
     transaction.update(householdRef, { ...legacyMemberEmailRemoval(householdSnap.data(), caller.email), updatedAt: iso });
-    transaction.set(adminDb.collection('users').doc(caller.email), { householdId: null, role: 'member', permissions: {} }, { merge: true });
+    transaction.set(profileRef, { householdId: null, role: 'member', permissions: {} }, { merge: true });
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
     templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
     transaction.set(householdRef.collection('auditLogs').doc(), {
