@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { SignOutButton } from '@/components/sign-out-confirm';
 import { exportMyDataAction } from '@/app/profile/account-actions';
+import { DeleteAccountSection } from '@/components/profile/delete-account';
 
 const exportFileName = (now: Date) => `homehub-my-data-${now.toISOString().slice(0, 10)}.json`;
 
@@ -65,6 +66,7 @@ export function AccountCard() {
           {exporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : <Download className="mr-2 h-4 w-4" aria-hidden />}
           Download my data
         </Button>
+        <DeleteAccountSection />
       </CardContent>
     </Card>
   );

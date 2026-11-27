@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, describe, test } from 'node:test';
 import { adminDb } from '../../src/lib/server/firebase-admin';
-import { exportMyData } from '../../src/lib/server/my-account';
-import type { VerifiedCaller } from '../../src/lib/server/household-membership';
+import { adminAuth, adminStorageBucket } from '../../src/lib/server/firebase-admin';
+import { deleteMyAccount, exportMyData } from '../../src/lib/server/my-account';
+import { MembershipError, type VerifiedCaller } from '../../src/lib/server/household-membership';
 
 // Account controls (audit PR-26) against the Firestore emulator.
 const NOW = new Date('2026-08-01T12:00:00.000Z');
@@ -61,5 +62,72 @@ describe('download my data (PR-26)', () => {
     const data = await exportMyData(me, NOW);
     assert.equal(data.household, null);
     assert.deepEqual(data.choresAssigned, []);
+  });
+});
+
+const ensureAuthUser = async (user: VerifiedCaller) => {
+  try {
+    await adminAuth.createUser({ uid: user.uid, email: user.email });
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'auth/uid-already-exists') throw error;
+  }
+};
+const authUserExists = async (uid: string) => adminAuth.getUser(uid).then(() => true, () => false);
+
+describe('delete my account (PR-26)', () => {
+  test('a member leaves through leaveHousehold, then profile, push tokens, photos and sign-in go', async () => {
+    await ensureAuthUser(me);
+    const bucket = adminStorageBucket();
+    if (bucket) await bucket.file(`users/${me.uid}/avatars/a.jpg`).save(Buffer.from('x'), { contentType: 'image/jpeg' });
+    const result = await deleteMyAccount(me, NOW);
+    assert.equal(result.leftHousehold, true);
+    assert.equal((await house().collection('members').doc(me.uid).get()).exists, false);
+    assert.equal((await house().collection('members').doc(me.uid).collection('private').doc('contact').get()).exists, false);
+    assert.equal((await profile(me).get()).exists, false);
+    assert.equal((await profile(me).collection('private').doc('push').get()).exists, false);
+    assert.equal(await authUserExists(me.uid), false);
+    // Open chores were unassigned; finished history stays.
+    assert.equal((await house().collection('chores').doc('mine').get()).get('assignedToUid'), '');
+    assert.equal((await house().collection('chores').doc('done').get()).get('completedByUid'), me.uid);
+    // Owners and admins are told.
+    const notes = await house().collection('notifications').where('sourceType', '==', 'household-member-left').get();
+    assert.deepEqual(notes.docs.map((d) => d.get('targetUserUid')), [other.uid]);
+    if (bucket) {
+      const [files] = await bucket.getFiles({ prefix: `users/${me.uid}/avatars/` });
+      assert.equal(files.length, 0);
+    }
+  });
+
+  test('running it again after a partial failure finishes without errors', async () => {
+    await ensureAuthUser(me);
+    await deleteMyAccount(me, NOW);
+    const again = await deleteMyAccount(me, NOW);
+    assert.equal(again.leftHousehold, false);
+  });
+
+  test('an owner is refused until the household is handed on or deleted; nothing is removed', async () => {
+    await ensureAuthUser(other);
+    await assert.rejects(deleteMyAccount(other, NOW), (error: unknown) => {
+      assert.ok(error instanceof MembershipError);
+      assert.match(error.userMessage, /Make someone else the owner first/);
+      return true;
+    });
+    // Alone with only a kid profile: delete the household first.
+    await house().collection('members').doc(me.uid).delete();
+    await house().collection('members').doc('kid_aaaaaaaaaaaaaaaaaaaa').set({ uid: 'kid_aaaaaaaaaaaaaaaaaaaa', role: 'child', status: 'active', kind: 'identity' });
+    await assert.rejects(deleteMyAccount(other, NOW), /Delete the household first/);
+    assert.equal((await profile(other).get()).exists, true);
+    assert.equal(await authUserExists(other.uid), true);
+    await adminAuth.deleteUser(other.uid);
+  });
+
+  test('someone without a household just loses their profile and sign-in', async () => {
+    await ensureAuthUser(me);
+    await profile(me).update({ householdId: null });
+    const result = await deleteMyAccount(me, NOW);
+    assert.equal(result.leftHousehold, false);
+    assert.equal((await profile(me).get()).exists, false);
+    // Their membership record (not pointed at) is left for the household to manage.
+    assert.equal((await house().collection('members').doc(me.uid).get()).exists, true);
   });
 });

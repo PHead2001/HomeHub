@@ -1,8 +1,8 @@
 import 'server-only';
 
-import { adminDb } from '@/lib/server/firebase-admin';
-import type { VerifiedCaller } from '@/lib/server/household-membership';
-import { exportableProfile, toPlain } from '@/lib/profile/account-data';
+import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
+import { MembershipError, leaveHousehold, type VerifiedCaller } from '@/lib/server/household-membership';
+import { DELETION_BLOCKER_COPY, accountDeletionBlocker, exportableProfile, isRecentSignIn, toPlain } from '@/lib/profile/account-data';
 
 /**
  * "Download my data" (audit PR-26). Everything is read on the server for the
@@ -79,4 +79,78 @@ export async function exportMyData(caller: VerifiedCaller, now = new Date()): Pr
       'Shared household records (shopping lists, pets, maintenance) belong to the household and are not included.',
     ],
   };
+}
+
+/**
+ * The caller of a sensitive account action: a person (with an email, never a wall
+ * tablet), whose token is unrevoked and who signed in within the last five minutes
+ * (`auth_time`), so a phone left unlocked cannot delete the account on its own.
+ */
+export async function verifyRecentCaller(idToken: unknown, nowMs = Date.now()): Promise<VerifiedCaller> {
+  if (!idToken || typeof idToken !== 'string') throw new MembershipError('Please sign in again.', 'unauthenticated');
+  let decoded: Awaited<ReturnType<typeof adminAuth.verifyIdToken>>;
+  try {
+    decoded = await adminAuth.verifyIdToken(idToken, true);
+  } catch {
+    throw new MembershipError('Your sign-in has expired. Please sign in again.', 'unauthenticated');
+  }
+  if (typeof decoded.email !== 'string' || !decoded.email) throw new MembershipError('Please sign in again.', 'unauthenticated');
+  if (!isRecentSignIn(decoded.auth_time, nowMs)) {
+    throw new MembershipError('For your safety, confirm with Google again, then delete your account.', 'unauthenticated');
+  }
+  return { uid: decoded.uid, email: decoded.email, displayName: typeof decoded.name === 'string' ? decoded.name : undefined };
+}
+
+export type AccountDeletion = { leftHousehold: boolean; filesDeleted: number };
+
+/**
+ * "Delete my account" (audit PR-26). Refused for a household owner (hand the
+ * household on, or delete it, first). Otherwise, in an order that can be run again
+ * after a partial failure:
+ * 1. leave the household with the existing `leaveHousehold` (membership record,
+ *    contact document, tablet PINs and sessions, open chores unassigned, stats kept
+ *    under a former-member key, owners and admins notified);
+ * 2. delete the profile `users/{email}` with its subcollections (private push
+ *    tokens, the legacy inbox);
+ * 3. delete the person's profile photos (`users/{uid}/avatars/` and the older
+ *    `users/{email}/avatars/`);
+ * 4. delete the Firebase Auth user last (which also revokes its sessions), so a
+ *    failure before it leaves the person able to sign in and run it again.
+ */
+export async function deleteMyAccount(caller: VerifiedCaller, now = new Date()): Promise<AccountDeletion> {
+  const profileRef = adminDb.collection('users').doc(caller.email);
+  const profileSnap = await profileRef.get();
+  const householdId = profileSnap.exists && typeof profileSnap.get('householdId') === 'string' ? profileSnap.get('householdId') as string : '';
+
+  let leftHousehold = false;
+  if (householdId) {
+    const members = await adminDb.collection('households').doc(householdId).collection('members').get();
+    const mine = members.docs.find((d) => d.id === caller.uid);
+    if (mine) {
+      const others = members.docs.filter((d) => d.id !== caller.uid).map((d) => d.data());
+      const blocker = accountDeletionBlocker(mine.data(), others);
+      if (blocker) throw new MembershipError(DELETION_BLOCKER_COPY[blocker], 'conflict');
+      await leaveHousehold(caller, householdId, now);
+      leftHousehold = true;
+    }
+  }
+
+  await adminDb.recursiveDelete(profileRef);
+
+  let filesDeleted = 0;
+  const bucket = adminStorageBucket();
+  if (bucket) {
+    for (const folder of [caller.uid, caller.email]) {
+      const [files] = await bucket.getFiles({ prefix: `users/${folder}/avatars/` });
+      await Promise.all(files.map((f) => f.delete({ ignoreNotFound: true })));
+      filesDeleted += files.length;
+    }
+  }
+
+  try {
+    await adminAuth.deleteUser(caller.uid);
+  } catch (error) {
+    if ((error as { code?: string })?.code !== 'auth/user-not-found') throw error;
+  }
+  return { leftHousehold, filesDeleted };
 }
