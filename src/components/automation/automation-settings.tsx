@@ -9,7 +9,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import type { AutomationConfig } from '@/lib/automation/config';
+import type { AutomationConfig, ConfigChange } from '@/lib/automation/config';
 
 /** AU-9: a new token, tested by the server before it replaces the old one. */
 export function ReplaceTokenDialog({ open, onOpenChange, onReplace }: {
@@ -56,10 +56,11 @@ export function ReplaceTokenDialog({ open, onOpenChange, onReplace }: {
  * Owners and admins (automation.manage): who sees people and cameras (AU-11). Saved on
  * the server, which validates it again.
  */
-export function AutomationSettings({ config, saving, onSave }: {
+export function AutomationSettings({ config, saving, onChange }: {
   config: AutomationConfig;
   saving: boolean;
-  onSave: (next: AutomationConfig) => Promise<boolean>;
+  /** One change; the server applies it to the stored settings. */
+  onChange: (change: ConfigChange) => Promise<boolean>;
 }) {
   return (
     <Card>
@@ -78,7 +79,7 @@ export function AutomationSettings({ config, saving, onSave }: {
             className="mt-1"
             checked={config.showSensitiveToMembers}
             disabled={saving}
-            onCheckedChange={(checked) => void onSave({ ...config, showSensitiveToMembers: checked })}
+            onCheckedChange={(checked) => void onChange({ kind: 'showSensitiveToMembers', show: checked })}
           />
         </div>
       </CardContent>

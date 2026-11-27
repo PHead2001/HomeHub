@@ -6,7 +6,7 @@ import {
   visibleEntities,
   type HomeAssistantEntitySummary,
 } from '../../src/lib/automation/entities';
-import { EMPTY_AUTOMATION_CONFIG, configForViewer, readAutomationConfig, validateAutomationConfig } from '../../src/lib/automation/config';
+import { EMPTY_AUTOMATION_CONFIG, applyConfigChange, configForViewer, readAutomationConfig, validateAutomationConfig } from '../../src/lib/automation/config';
 import { decryptToken, encryptToken, readStoredToken, readTokenKey, storedTokenFields } from '../../src/lib/automation/token-crypto';
 import { automationInHeader } from '../../src/lib/navigation';
 
@@ -93,5 +93,30 @@ describe('AU-6: the header slot', () => {
     assert.equal(automationInHeader({ connected: false, canManage: false }), false);
     assert.equal(automationInHeader({ connected: true, canManage: false }), true);
     assert.equal(automationInHeader({ connected: false, canManage: true }), true);
+  });
+});
+
+describe('one settings change at a time', () => {
+  const stored = { favorites: ['light.a'], showSensitiveToMembers: false };
+
+  it('pinning or unpinning a favourite changes only the favourites', () => {
+    assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.b', pinned: true }), { ok: true, value: { favorites: ['light.a', 'light.b'], showSensitiveToMembers: false } });
+    assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.a', pinned: false }), { ok: true, value: { favorites: [], showSensitiveToMembers: false } });
+    assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.a', pinned: true }), { ok: true, value: stored }, 'pinning twice keeps one');
+  });
+
+  it('the privacy choice changes only itself', () => {
+    assert.deepEqual(applyConfigChange(stored, { kind: 'showSensitiveToMembers', show: true }), { ok: true, value: { favorites: ['light.a'], showSensitiveToMembers: true } });
+  });
+
+  it('refuses anything else, including a whole config', () => {
+    for (const change of [null, [], { kind: 'favorite', entityId: 'nope', pinned: true }, { kind: 'favorite', entityId: 'light.a' }, { kind: 'showSensitiveToMembers', show: 1 }, { ...stored }, { kind: 'config', ...stored }]) {
+      assert.equal(applyConfigChange(stored, change).ok, false, JSON.stringify(change));
+    }
+  });
+
+  it('refuses a favourite past the limit', () => {
+    const full = { favorites: Array.from({ length: 40 }, (_, i) => `light.l${i}`), showSensitiveToMembers: false };
+    assert.equal(applyConfigChange(full, { kind: 'favorite', entityId: 'light.extra', pinned: true }).ok, false);
   });
 });

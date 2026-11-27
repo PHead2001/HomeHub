@@ -9,7 +9,8 @@ import {
   getHomeAssistantEntities,
   getHomeAssistantStatus,
   replaceHomeAssistantToken,
-  saveAutomationSettings,
+  setAutomationFavorite,
+  setMembersSeeSensitive,
   type HomeAssistantEntities,
   type HomeAssistantStatus,
 } from '@/app/automation/actions';
@@ -34,13 +35,23 @@ import { friendlyError } from '@/lib/friendly-error';
 import { cn } from '@/lib/utils';
 import { householdDayZone } from '@/lib/household-zone';
 import { arrangeEntities } from '@/lib/automation/entities';
-import { EMPTY_AUTOMATION_CONFIG, type AutomationConfig } from '@/lib/automation/config';
+import { EMPTY_AUTOMATION_CONFIG, type ConfigChange } from '@/lib/automation/config';
 import { POLL_INTERVAL_MS, pollDue, updatedLabel } from '@/lib/automation/refresh';
 import { ConnectForm } from '@/components/automation/connect-form';
 import { EntityTile } from '@/components/automation/entity-tile';
 import { AutomationSettings, ReplaceTokenDialog } from '@/components/automation/automation-settings';
 
 type Failure = { ok: false; message: string };
+
+/** Each kind of settings change has its own server action. */
+const sendConfigChange = (ctx: { idToken: string; householdId: string }, change: ConfigChange) => {
+  switch (change.kind) {
+    case 'favorite':
+      return setAutomationFavorite(ctx, { entityId: change.entityId, pinned: change.pinned });
+    case 'showSensitiveToMembers':
+      return setMembersSeeSensitive(ctx, { show: change.show });
+  }
+};
 const failure = (error: unknown): Failure => ({ ok: false, message: friendlyError(error) });
 
 /** Visible page: polls only while the tab is shown (AU-1). */
@@ -130,11 +141,13 @@ export function AutomationClient() {
     return () => window.clearInterval(id);
   }, [configured, visible, loadEntities]);
 
-  const saveConfig = useCallback(async (next: AutomationConfig) => {
+  // One change at a time: the server applies it to the stored settings, so this page
+  // never sends back (and overwrites) settings someone else changed since it loaded.
+  const changeSettings = useCallback(async (change: ConfigChange) => {
     const ctx = await context();
     if (!ctx) return false;
     setSavingConfig(true);
-    const result = await saveAutomationSettings(ctx, next).catch(failure);
+    const result = await sendConfigChange(ctx, change).catch(failure);
     setSavingConfig(false);
     if (!result.ok) {
       toast({ variant: 'destructive', title: 'Could not save', description: result.message });
@@ -222,10 +235,7 @@ export function AutomationClient() {
       canManage={canManage}
       onToggleFavorite={() => {
         if (!config) return;
-        const favorites = config.favorites.includes(entity.entity_id)
-          ? config.favorites.filter((id) => id !== entity.entity_id)
-          : [...config.favorites, entity.entity_id];
-        void saveConfig({ ...config, favorites });
+        void changeSettings({ kind: 'favorite', entityId: entity.entity_id, pinned: !config.favorites.includes(entity.entity_id) });
       }}
     />
   );
@@ -351,7 +361,7 @@ export function AutomationClient() {
       </Card>
 
       {canManage && config && (
-        <AutomationSettings config={config} saving={savingConfig} onSave={saveConfig} />
+        <AutomationSettings config={config} saving={savingConfig} onChange={changeSettings} />
       )}
     </div>
   );

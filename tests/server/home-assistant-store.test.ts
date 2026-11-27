@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import { adminDb } from '../../src/lib/server/firebase-admin';
 import { HomeAssistantError } from '../../src/lib/server/home-assistant';
-import { deleteCredentials, persistConfig, persistCredentials, readConfig, readConnectedUrl, readCredentials, syncConnectedFlag } from '../../src/lib/server/home-assistant-store';
+import { changeConfig, deleteCredentials, persistCredentials, readConfig, readConnectedUrl, readCredentials, syncConnectedFlag } from '../../src/lib/server/home-assistant-store';
 
 // Against the Firestore emulator: the write re-checks household and membership.
 const HOUSE = 'ha-store-house';
@@ -78,12 +78,24 @@ describe('Home Assistant credential storage', () => {
     assert.equal(await readConnectedUrl(HOUSE), data.url);
   });
 
-  test('AU-6: a household connected before the flag existed gets it; a stale flag is cleared', async () => {
+  test('AU-6: the flag follows the credentials read in the same transaction', async () => {
     await creds().set({ url: data.url, accessToken: data.accessToken });
-    assert.equal(await syncConnectedFlag(HOUSE, true), true);
+    assert.equal(await syncConnectedFlag(HOUSE), true, 'a connection from before the flag gets it');
     assert.deepEqual((await house().get()).get('homeAssistant'), { connected: true });
-    assert.equal(await syncConnectedFlag(HOUSE, true), false, 'nothing to change');
-    assert.equal(await syncConnectedFlag(HOUSE, false), true);
+    assert.equal(await syncConnectedFlag(HOUSE), false, 'nothing to change');
+    // A disconnect that landed after a status request read the old address: the sync
+    // decides from the credentials it reads itself, so the flag is cleared, not kept.
+    await creds().delete();
+    assert.equal(await syncConnectedFlag(HOUSE), true);
+    assert.equal((await house().get()).get('homeAssistant'), undefined);
+    assert.equal(await syncConnectedFlag(HOUSE), false, 'never set again without credentials');
+    assert.equal((await house().get()).get('homeAssistant'), undefined);
+  });
+
+  test('AU-6: a sync racing a disconnect ends with no flag, whichever commits first', async () => {
+    await persistCredentials(HOUSE, 'owner', data);
+    await Promise.all([deleteCredentials(HOUSE, 'owner'), syncConnectedFlag(HOUSE), syncConnectedFlag(HOUSE)]);
+    assert.equal((await creds().get()).exists, false);
     assert.equal((await house().get()).get('homeAssistant'), undefined);
   });
 
@@ -112,15 +124,41 @@ describe('Home Assistant credential storage', () => {
 });
 
 describe('Home Assistant settings storage', () => {
-  const config = { favorites: ['light.k'], showSensitiveToMembers: false };
-
-  test('managers save settings; members cannot; the privacy choice is logged', async () => {
-    await refused(persistConfig(HOUSE, 'member', config), /no longer have permission/);
-    await persistConfig(HOUSE, 'owner', config);
-    assert.deepEqual(await readConfig(HOUSE), config);
-    await persistConfig(HOUSE, 'owner', { ...config, showSensitiveToMembers: true });
+  test('managers change one setting at a time; members cannot; the privacy choice is logged', async () => {
+    await refused(changeConfig(HOUSE, 'member', { kind: 'favorite', entityId: 'light.k', pinned: true }), /no longer have permission/);
+    assert.deepEqual(await changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.k', pinned: true }), { favorites: ['light.k'], showSensitiveToMembers: false });
+    await changeConfig(HOUSE, 'owner', { kind: 'showSensitiveToMembers', show: true });
+    assert.deepEqual(await readConfig(HOUSE), { favorites: ['light.k'], showSensitiveToMembers: true });
     const entry = (await audits()).find((e) => e.action === 'automation.settings_changed');
     assert.equal(entry?.details.showSensitiveToMembers, true);
+  });
+
+  test('a favourite change never touches the privacy choice another manager made', async () => {
+    await changeConfig(HOUSE, 'owner', { kind: 'showSensitiveToMembers', show: true });
+    await changeConfig(HOUSE, 'owner', { kind: 'showSensitiveToMembers', show: false });
+    // An older page pins a favourite: only the favourite changes.
+    await changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.k', pinned: true });
+    assert.equal((await readConfig(HOUSE)).showSensitiveToMembers, false);
+    await changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.k', pinned: false });
+    assert.deepEqual(await readConfig(HOUSE), { favorites: [], showSensitiveToMembers: false });
+  });
+
+  test('concurrent changes from two pages both survive', async () => {
+    await Promise.all([
+      changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.a', pinned: true }),
+      changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.b', pinned: true }),
+      changeConfig(HOUSE, 'owner', { kind: 'showSensitiveToMembers', show: true }),
+    ]);
+    const config = await readConfig(HOUSE);
+    assert.deepEqual([...config.favorites].sort(), ['light.a', 'light.b']);
+    assert.equal(config.showSensitiveToMembers, true);
+  });
+
+  test('a malformed change is refused and nothing is written', async () => {
+    await refused(changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'not an id', pinned: true }), /not a Home Assistant device/);
+    await refused(changeConfig(HOUSE, 'owner', { kind: 'favorites', favorites: [] }), /could not be read/);
+    await refused(changeConfig(HOUSE, 'owner', { kind: 'showSensitiveToMembers', show: 'yes' }), /privacy choice/);
+    assert.equal((await house().collection('home-automation').doc('config').get()).exists, false);
   });
 
   test('no settings stored reads as privacy on', async () => {

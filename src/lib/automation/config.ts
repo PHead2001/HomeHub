@@ -1,5 +1,5 @@
 // The household's Home Assistant settings (AU-8 favourites, AU-11 privacy). Stored server-only at households/{h}/home-automation/config (the
-// rules deny every client) and changed only through saveAutomationSettings
+// rules deny every client) and changed only one setting at a time (ConfigChange)
 // (automation.manage). Pure: tests/unit/automation.test.ts.
 
 import { isSensitiveEntity, maySeeSensitive } from './entities';
@@ -54,4 +54,33 @@ export function validateAutomationConfig(input: unknown): ConfigValidation {
       showSensitiveToMembers: data.showSensitiveToMembers,
     },
   };
+}
+
+/**
+ * One settings change. The server applies it to the config it reads inside the same
+ * transaction that writes it (`changeConfig` in src/lib/server/home-assistant-store.ts),
+ * so a page opened earlier never sends back, and never overwrites, settings it did not
+ * mean to change (pinning a favourite cannot turn the privacy choice back on).
+ */
+export type ConfigChange =
+  | { kind: 'favorite'; entityId: string; pinned: boolean }
+  | { kind: 'showSensitiveToMembers'; show: boolean };
+
+/** The current config with one change applied and validated whole, or why it is refused. */
+export function applyConfigChange(config: AutomationConfig, change: unknown): ConfigValidation {
+  if (!change || typeof change !== 'object' || Array.isArray(change)) return { ok: false, message: 'That change could not be read.' };
+  const input = change as Record<string, unknown>;
+  switch (input.kind) {
+    case 'favorite': {
+      if (!isEntityId(input.entityId) || typeof input.pinned !== 'boolean') return { ok: false, message: 'A favourite is not a Home Assistant device.' };
+      const rest = config.favorites.filter((id) => id !== input.entityId);
+      return validateAutomationConfig({ ...config, favorites: input.pinned ? [...rest, input.entityId] : rest });
+    }
+    case 'showSensitiveToMembers': {
+      if (typeof input.show !== 'boolean') return { ok: false, message: 'The privacy choice could not be read.' };
+      return validateAutomationConfig({ ...config, showSensitiveToMembers: input.show });
+    }
+    default:
+      return { ok: false, message: 'That change could not be read.' };
+  }
 }

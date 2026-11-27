@@ -4,7 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/server/firebase-admin';
 import { HomeAssistantError } from '@/lib/server/home-assistant';
 import { getMemberPermissions } from '@/lib/permissions';
-import { readAutomationConfig, type AutomationConfig } from '@/lib/automation/config';
+import { applyConfigChange, readAutomationConfig, type AutomationConfig } from '@/lib/automation/config';
 import { readStoredToken, readTokenKey, storedTokenFields } from '@/lib/automation/token-crypto';
 import type { HouseholdMember } from '@/lib/types';
 
@@ -124,30 +124,38 @@ export const deleteCredentials = async (householdId: string, uid: string, now = 
 /**
  * The household's `homeAssistant.connected` flag matches the stored credentials. Households
  * connected before the flag existed get it the first time anyone opens /automation; a
- * stale flag is cleared. Returns whether it wrote.
+ * stale flag is cleared. The credentials are read in the same transaction as the flag, so
+ * a disconnect racing this call can never leave the flag set. Returns whether it wrote.
  */
-export const syncConnectedFlag = async (householdId: string, connected: boolean): Promise<boolean> => {
+export const syncConnectedFlag = async (householdId: string): Promise<boolean> => {
   const household = householdRef(householdId);
   return adminDb.runTransaction(async (transaction) => {
-    const snapshot = await transaction.get(household);
+    const [snapshot, credentials] = await Promise.all([transaction.get(household), transaction.get(credentialsRef(householdId))]);
     if (!snapshot.exists || snapshot.get('deletingAt')) return false;
+    const connected = typeof credentials.get('url') === 'string';
     if ((snapshot.get('homeAssistant.connected') === true) === connected) return false;
     transaction.update(household, { homeAssistant: connected ? { connected: true } : FieldValue.delete() });
     return true;
   });
 };
 
-/** Saves the household's automation settings (already validated by validateAutomationConfig). */
-export const persistConfig = async (householdId: string, uid: string, config: AutomationConfig, now = new Date()) => {
-  await adminDb.runTransaction(async (transaction) => {
+/**
+ * Applies one settings change (AU-8, AU-11) to the config read inside this transaction,
+ * after re-checking the caller, and returns the saved config. Throws HomeAssistantError
+ * when the change is refused.
+ */
+export const changeConfig = async (householdId: string, uid: string, change: unknown, now = new Date()): Promise<AutomationConfig> =>
+  adminDb.runTransaction(async (transaction) => {
     const previous = await transaction.get(configRef(householdId));
     const checked = await checkManager(transaction, householdId, uid);
-    transaction.set(configRef(householdId), { ...config, updatedAt: now.toISOString(), updatedByUid: uid });
     const before = readAutomationConfig(previous.data());
-    if (before.showSensitiveToMembers !== config.showSensitiveToMembers) {
+    const next = applyConfigChange(before, change);
+    if (!next.ok) throw new HomeAssistantError(next.message);
+    transaction.set(configRef(householdId), { ...next.value, updatedAt: now.toISOString(), updatedByUid: uid });
+    if (before.showSensitiveToMembers !== next.value.showSensitiveToMembers) {
       audit(transaction, checked, uid, 'automation.settings_changed', now, {
-        showSensitiveToMembers: config.showSensitiveToMembers,
+        showSensitiveToMembers: next.value.showSensitiveToMembers,
       });
     }
+    return next.value;
   });
-};

@@ -4,7 +4,8 @@ import { adminAuth, adminDb } from '../../src/lib/server/firebase-admin';
 import {
   disconnectHomeAssistant,
   getHomeAssistantStatus,
-  saveAutomationSettings,
+  setAutomationFavorite,
+  setMembersSeeSensitive,
 } from '../../src/app/automation/actions';
 
 // The automation server actions against the Auth and Firestore emulators. Home Assistant
@@ -41,6 +42,9 @@ const config = {
   favorites: ['light.k', 'lock.front'],
   showSensitiveToMembers: false,
 };
+const configDoc = () => house.collection('home-automation').doc('config');
+/** Stored settings as a manager left them (written directly, as setup). */
+const seedConfig = (value: Record<string, unknown>) => configDoc().set(value);
 
 before(async () => {
   for (const caller of Object.keys(CALLERS) as Caller[]) tokens.set(caller, await idTokenFor(caller));
@@ -57,16 +61,29 @@ beforeEach(async () => {
 after(() => adminDb.recursiveDelete(house));
 
 describe('settings and what each person is sent', () => {
-  test('only managers save; invalid settings are refused whole', async () => {
-    assert.equal((await saveAutomationSettings(as('member'), config)).ok, false);
-    assert.equal((await saveAutomationSettings(as('owner'), { ...config, favorites: ['not an id'] })).ok, false);
-    const saved = await saveAutomationSettings(as('owner'), config);
-    assert.equal(saved.ok, true);
-    assert.deepEqual((await house.collection('home-automation').doc('config').get()).get('favorites'), config.favorites);
+  test('only managers change settings; a bad change is refused', async () => {
+    assert.equal((await setAutomationFavorite(as('member'), { entityId: 'light.k', pinned: true })).ok, false);
+    assert.equal((await setMembersSeeSensitive(as('member'), { show: true })).ok, false);
+    assert.equal((await setAutomationFavorite(as('owner'), { entityId: 'not an id', pinned: true })).ok, false);
+    assert.equal((await setMembersSeeSensitive(as('owner'), { show: 'yes' as unknown as boolean })).ok, false);
+    const saved = await setAutomationFavorite(as('owner'), { entityId: 'light.k', pinned: true });
+    assert.deepEqual(saved, { ok: true, data: { favorites: ['light.k'], showSensitiveToMembers: false } });
+    assert.equal((await configDoc().get()).exists, true);
+  });
+
+  test('pinning a favourite never turns member access back on (an older page)', async () => {
+    await seedConfig({ favorites: [], showSensitiveToMembers: true });
+    // Another manager turns member access off...
+    assert.equal((await setMembersSeeSensitive(as('owner'), { show: false })).ok, true);
+    // ...then a page loaded while it was on pins a favourite.
+    const pinned = await setAutomationFavorite(as('owner'), { entityId: 'light.k', pinned: true });
+    assert.ok(pinned.ok);
+    assert.equal(pinned.data.showSensitiveToMembers, false);
+    assert.equal((await configDoc().get()).get('showSensitiveToMembers'), false);
   });
 
   test('AU-11: members and children get no privacy choice and no sensitive favourites', async () => {
-    await saveAutomationSettings(as('owner'), config);
+    await seedConfig(config);
     const owner = await getHomeAssistantStatus(as('owner'));
     const member = await getHomeAssistantStatus(as('member'));
     const child = await getHomeAssistantStatus(as('child'));
@@ -76,7 +93,7 @@ describe('settings and what each person is sent', () => {
     assert.deepEqual(member.data.config, { favorites: ['light.k'], showSensitiveToMembers: false });
     assert.equal(member.data.canSeeSensitive, false);
     assert.equal(child.data.canSeeSensitive, false);
-    await saveAutomationSettings(as('owner'), { ...config, showSensitiveToMembers: true });
+    assert.equal((await setMembersSeeSensitive(as('owner'), { show: true })).ok, true);
     const allowed = await getHomeAssistantStatus(as('member'));
     assert.ok(allowed.ok && allowed.data.canSeeSensitive);
     const stillChild = await getHomeAssistantStatus(as('child'));

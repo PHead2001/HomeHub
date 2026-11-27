@@ -7,10 +7,10 @@ import {
   fetchHomeAssistantSnapshot,
   normalizeHomeAssistantUrl,
 } from '@/lib/server/home-assistant';
-import { deleteCredentials, persistConfig, persistCredentials, readConfig, readConnectedUrl, syncConnectedFlag } from '@/lib/server/home-assistant-store';
+import { changeConfig, deleteCredentials, persistCredentials, readConfig, readConnectedUrl, syncConnectedFlag } from '@/lib/server/home-assistant-store';
 import { forgetSnapshot, householdSnapshot } from '@/lib/server/home-assistant-snapshot';
 import { maySeeSensitive, visibleEntities, type HomeAssistantEntitySummary } from '@/lib/automation/entities';
-import { configForViewer, validateAutomationConfig, type AutomationConfig } from '@/lib/automation/config';
+import { configForViewer, type AutomationConfig } from '@/lib/automation/config';
 import type { HouseholdPermission } from '@/lib/types';
 
 // Every call derives identity from a verified ID token and authorizes against the
@@ -57,7 +57,7 @@ export async function getHomeAssistantStatus(context: Context): Promise<Result<H
     // A token that can't be read still counts as connected (managers can replace it).
     const [url, config] = await Promise.all([readConnectedUrl(user.householdId), readConfig(user.householdId)]);
     // AU-6: households connected before the flag existed get it now (never fails the read).
-    await syncConnectedFlag(user.householdId, url !== null).catch((error) => console.error('Home Assistant flag sync failed', error));
+    await syncConnectedFlag(user.householdId).catch((error) => console.error('Home Assistant flag sync failed', error));
     let host: string | null = null;
     try {
       host = url ? new URL(url).host : null;
@@ -135,13 +135,16 @@ export async function disconnectHomeAssistant(context: Context): Promise<Result<
   });
 }
 
-/** AU-8, AU-11: favourites and the privacy choice. */
-export async function saveAutomationSettings(context: Context, input: AutomationConfig): Promise<Result<AutomationConfig>> {
-  return run(context, 'automation.manage', async (user) => {
-    const checked = validateAutomationConfig(input);
-    if (!checked.ok) throw new HomeAssistantError(checked.message);
-    await persistConfig(user.householdId, user.uid, checked.value);
-    return checked.value;
-  });
+/**
+ * AU-8, AU-11: each setting is its own action, applied by the server to the stored config
+ * inside one transaction, so an older page never overwrites another manager's change.
+ */
+export async function setAutomationFavorite(context: Context, input: { entityId: string; pinned: boolean }): Promise<Result<AutomationConfig>> {
+  return run(context, 'automation.manage', (user) =>
+    changeConfig(user.householdId, user.uid, { kind: 'favorite', entityId: input?.entityId, pinned: input?.pinned }));
 }
 
+export async function setMembersSeeSensitive(context: Context, input: { show: boolean }): Promise<Result<AutomationConfig>> {
+  return run(context, 'automation.manage', (user) =>
+    changeConfig(user.householdId, user.uid, { kind: 'showSensitiveToMembers', show: input?.show }));
+}
