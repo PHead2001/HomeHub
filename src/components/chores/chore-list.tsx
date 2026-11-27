@@ -95,6 +95,8 @@ function ChoreRow({ entry, props }: { entry: ToDoEntry; props: ChoreListProps })
       transition={SPRING_UI}
       className={cn(
         'rounded-lg border bg-card',
+        // The calendar's "Open Chores" marks its chore for a moment (CA-17, `?chore=`).
+        'transition-shadow data-[highlight=true]:ring-2 data-[highlight=true]:ring-primary',
         isOverdue && 'border-l-4 border-l-destructive',
         props.selectedIds.has(chore.id) && 'border-primary',
         leaving && 'pointer-events-none',

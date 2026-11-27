@@ -17,6 +17,7 @@ import {
 } from '../../../functions/src/shared/chore-points';
 import { addDaysToKey, completionInstant, dayKey, diffDayKeys, weekStartKey, type ChoreRecord } from './dates';
 import { publicDisplayName, type HouseholdPerson } from '../member-directory';
+import { DEFAULT_WEEK_STARTS_ON, type WeekStartsOn } from './week-start';
 
 export { DAILY_POINT_CAP, POINTS, type WeekSummary };
 
@@ -44,7 +45,7 @@ export type MemberChoreStats = {
   name: string;
   /** Child accounts collect stickers instead of points. */
   stickerMode: boolean;
-  /** Points this week (Monday to Sunday), each day capped at `DAILY_POINT_CAP`. */
+  /** Points this week (the household's week: Monday to Sunday unless it starts on Sunday, CA-16), each day capped at `DAILY_POINT_CAP`. */
   weekPoints: number;
   /** Points over the whole retained history (completed chores are kept 90 days). */
   totalPoints: number;
@@ -94,6 +95,8 @@ export type StatsOptions = {
    * holds is not counted twice.
    */
   missed?: ReadonlyArray<{ key?: string; day: string; assignedToUid: string | null }>;
+  /** The household's first weekday (CA-16, `readWeekStartsOn`): Monday unless it starts on Sunday. */
+  weekStartsOn?: WeekStartsOn;
 };
 
 /** Days back a streak looks (completed chores are kept 90 days). */
@@ -175,7 +178,8 @@ const byStanding = (a: MemberChoreStats, b: MemberChoreStats) =>
 export function computeChoreStats(chores: readonly ChoreRecord[], members: readonly StatsMember[], now: Date, options: StatsOptions = {}): ChoreStats {
   const dayOf = dayReader(options.timeZone);
   const today = options.today ?? dayOf(now);
-  const weekStart = weekStartKey(today);
+  // The household's week (CA-16): Monday unless it starts on Sunday.
+  const weekStart = weekStartKey(today, options.weekStartsOn ?? DEFAULT_WEEK_STARTS_ON);
   const weekEnd = addDaysToKey(weekStart, 6);
   const inWeek = (key: string) => key >= weekStart && key <= weekEnd;
   const streakFrom = missedHorizon(options.missed, addDaysToKey(today, -STREAK_LOOKBACK_DAYS));
@@ -254,9 +258,9 @@ export function computeChoreStats(chores: readonly ChoreRecord[], members: reado
  */
 export const PODIUM_DAYS = 2;
 
-/** Monday of the closed week the podium shows on `today`, or null when it is not shown. */
-export function podiumWeekStart(today: string): string | null {
-  const thisWeek = weekStartKey(today);
+/** First day of the closed week the podium shows on `today` (the household's week, CA-16), or null when it is not shown. */
+export function podiumWeekStart(today: string, weekStartsOn: WeekStartsOn = DEFAULT_WEEK_STARTS_ON): string | null {
+  const thisWeek = weekStartKey(today, weekStartsOn);
   return diffDayKeys(thisWeek, today) < PODIUM_DAYS ? addDaysToKey(thisWeek, -7) : null;
 }
 

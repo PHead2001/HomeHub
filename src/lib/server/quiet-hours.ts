@@ -12,7 +12,7 @@ import type { VerifiedCaller } from '@/lib/server/household-membership';
 // null, in the household's time zone. Registered wall tablets dim during them. Set only
 // here, by an active owner or admin (role), in one transaction that re-reads the household
 // and the caller's membership; clients cannot write it (the household update rule allows
-// only `timeZone` and `updatedAt`). Ships with the devices flag.
+// only `timeZone`, `weekStartsOn` and `updatedAt`). Ships with the devices flag.
 
 export type QuietHoursRefusal = 'unavailable' | 'invalid_input' | 'not_found' | 'household_deleting' | 'not_member' | 'forbidden';
 

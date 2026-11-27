@@ -1,0 +1,190 @@
+import 'server-only';
+
+import { randomUUID } from 'node:crypto';
+import { Timestamp, type Firestore } from 'firebase-admin/firestore';
+import { householdToday, isChoreDocId } from '@/lib/chores/completion';
+import { isGeneratedInstance } from '@/lib/chores/recurrence-edits';
+import { MAX_SKIP_ITEMS, withoutSkippedOccurrences } from '@/lib/chores/calendar';
+import { safeTimeZone } from '@functions/shared/calendar';
+import { isDocId } from '@functions/shared/push-media';
+import { occurrenceChoreId, storedOccurrenceKey } from '@functions/shared/ids';
+import { occurrenceKeyDay, skippedOccurrenceKeys, withSkippedOccurrences } from '@functions/shared/skips';
+import { CALENDAR_OPS, CALENDAR_OP_UNDO_MS, readCalendarOp } from '@/lib/server/planned-chore-move';
+
+/**
+ * Skipping days of repeating chores from the calendar (audit CA-27, the skip mechanism of
+ * CH-3 and CA-5), on the server (review findings 2 and 3). One Admin SDK transaction, after
+ * the server action verified the caller and `chores.delete`:
+ * - records each day's occurrence key on its template (`withSkippedOccurrences`, as
+ *   deleting a day on Chores does), only keys of that template, today or later;
+ * - resolves every requested day to the chores that hold it (the id the calendar saw, the
+ *   occurrence's deterministic id, and an occurrence-key query, so a day sent as planned
+ *   that upkeep generated meanwhile is found), and deletes each only while it is
+ *   still that open generated occurrence (same template and occurrence key, not completed,
+ *   no one-time `sourceType`): a chore completed or changed into another day's chore
+ *   meanwhile is kept, so a completion is never deleted;
+ * - keeps each deleted chore's fields in its own document under a server-only operation
+ *   record (`households/{h}/calendar-ops/{opId}/removed/{n}`, no client may read or write
+ *   them), so a long range never nears Firestore's 1 MiB document limit; a skip is capped
+ *   at `MAX_SKIP_ITEMS` days and refused (`too-many`) past the 500-write transaction limit;
+ * - records for its Undo only the keys it introduced (a day already skipped by someone
+ *   else stays skipped when this one is undone).
+ * Undo (the same person, by `opId`, within `CALENDAR_OP_UNDO_MS`) removes those keys again
+ * and puts each deleted chore back exactly as it was (its moved day, assignee, ticked steps)
+ * while its day is still free (no chore with its id or occurrence key); otherwise upkeep
+ * regenerates what is missing.
+ */
+
+export class ChoreSkipError extends Error {
+  constructor(readonly code: 'invalid' | 'not-found' | 'too-many') {
+    super(code);
+    this.name = 'ChoreSkipError';
+  }
+}
+
+/** Most days one skip may name (a long "We're away"); shared with the dialog. */
+export { MAX_SKIP_ITEMS };
+/** Firestore's writes per transaction, less a margin. */
+const MAX_WRITES = 490;
+/** The deleted chores' backups: one document each under the operation (each well under 1 MiB). */
+const REMOVED = 'removed';
+
+export type SkipItem = { templateId: string; key: string; choreId?: string };
+
+const readItems = (value: unknown): SkipItem[] => {
+  if (!Array.isArray(value) || value.length === 0) throw new ChoreSkipError('invalid');
+  if (value.length > MAX_SKIP_ITEMS) throw new ChoreSkipError('too-many');
+  return value.map((raw) => {
+    const item = raw as Record<string, unknown> | null;
+    const templateId = item?.templateId;
+    const key = item?.key;
+    const choreId = item?.choreId;
+    if (!isDocId(templateId) || typeof key !== 'string' || !key.startsWith(`${templateId}|`) || occurrenceKeyDay(key) === null ||
+      (choreId !== undefined && choreId !== null && !isChoreDocId(choreId))) {
+      throw new ChoreSkipError('invalid');
+    }
+    return { templateId, key, ...(typeof choreId === 'string' ? { choreId } : {}) };
+  });
+};
+
+export type SkipOutcome = { opId: string; skipped: number; deleted: number; kept: number };
+
+export async function skipChoreDays(db: Firestore, householdId: string, input: { items: unknown }, actorUid: string, now = new Date()): Promise<SkipOutcome> {
+  if (!isDocId(householdId) || !actorUid) throw new ChoreSkipError('invalid');
+  const items = readItems(input?.items);
+  const house = db.collection('households').doc(householdId);
+  return db.runTransaction(async (tx) => {
+    const home = await tx.get(house);
+    if (!home.exists || home.get('deletingAt')) throw new ChoreSkipError('not-found');
+    const today = householdToday(now, safeTimeZone(home.get('timeZone')));
+    const templateIds = [...new Set(items.map(item => item.templateId))];
+    // Every chore that may hold a requested day (review round 2): the id the calendar saw, the
+    // occurrence's deterministic id, and any chore carrying its occurrence key, so a day sent
+    // as planned that upkeep generated meanwhile is found and skipped too.
+    const candidateIds = (item: SkipItem) => [...new Set([
+      ...(item.choreId ? [item.choreId] : []),
+      occurrenceChoreId(item.templateId, item.key.split('|')[1], occurrenceKeyDay(item.key) as string),
+    ])];
+    const choreIds = [...new Set(items.flatMap(candidateIds))];
+    const keys = [...new Set(items.map(item => item.key))];
+    const [templates, chores, holders] = await Promise.all([
+      Promise.all(templateIds.map(id => tx.get(house.collection('chore-templates').doc(id)))),
+      Promise.all(choreIds.map(id => tx.get(house.collection('chores').doc(id)))),
+      Promise.all(keys.map(key => tx.get(house.collection('chores').where('occurrenceKey', '==', key).limit(10)))),
+    ]);
+    const choreById = new Map<string, FirebaseFirestore.DocumentSnapshot>(chores.map(snap => [snap.id, snap]));
+    const holdersByKey = new Map(keys.map((key, index) => [key, holders[index].docs]));
+    holders.forEach(result => result.docs.forEach(snap => choreById.set(snap.id, snap)));
+    const keysByTemplate = new Map<string, string[]>();
+    const removed: { id: string; key: string; data: FirebaseFirestore.DocumentData }[] = [];
+    let kept = 0;
+    for (const item of items) {
+      const day = occurrenceKeyDay(item.key);
+      if (!day || day < today) continue;
+      const list = keysByTemplate.get(item.templateId) ?? [];
+      if (!list.includes(item.key)) list.push(item.key);
+      keysByTemplate.set(item.templateId, list);
+      const ids = new Set([...candidateIds(item), ...(holdersByKey.get(item.key) ?? []).map(snap => snap.id)]);
+      for (const choreId of ids) {
+        const snap = choreById.get(choreId);
+        if (!snap?.exists || removed.some(entry => entry.id === snap.id)) continue;
+        const data = snap.data() ?? {};
+        // Only an open generated chore of that very occurrence; never a completion.
+        const same = data.isCompleted !== true && data.templateId === item.templateId &&
+          isGeneratedInstance({ id: snap.id, ...data }) && storedOccurrenceKey(snap.id, data) === item.key;
+        if (same) removed.push({ id: snap.id, key: item.key, data });
+        else if (choreId === item.choreId) kept += 1;
+      }
+    }
+    // Only keys this skip introduces are recorded for its Undo (review round 3): a day
+    // someone had already skipped stays skipped when this one is undone.
+    const introduced: { templateId: string; keys: string[] }[] = [];
+    const writes: (() => void)[] = [];
+    let skipped = 0;
+    templates.forEach((snap) => {
+      const keys = keysByTemplate.get(snap.id);
+      if (!snap.exists || !keys || keys.length === 0) return;
+      skipped += keys.length;
+      const already = skippedOccurrenceKeys(snap.data());
+      const added = keys.filter(key => !already.has(key));
+      if (added.length === 0) return;
+      introduced.push({ templateId: snap.id, keys: added });
+      writes.push(() => tx.update(snap.ref, { skippedOccurrences: withSkippedOccurrences(snap.get('skippedOccurrences'), added, today) }));
+    });
+    // Templates, a delete and a backup per chore, and the record: within one transaction.
+    if (writes.length + removed.length * 2 + 1 > MAX_WRITES) throw new ChoreSkipError('too-many');
+    writes.forEach(write => write());
+    const opId = randomUUID();
+    const opRef = house.collection(CALENDAR_OPS).doc(opId);
+    removed.forEach((entry, index) => {
+      tx.delete(house.collection('chores').doc(entry.id));
+      // Each backup is its own document, so a long range never nears the 1 MiB limit.
+      tx.create(opRef.collection(REMOVED).doc(String(index)), entry);
+    });
+    tx.create(opRef, {
+      kind: 'skip',
+      createdByUid: actorUid,
+      createdAt: Timestamp.fromDate(now),
+      expiresAt: Timestamp.fromMillis(now.getTime() + CALENDAR_OP_UNDO_MS),
+      keys: introduced,
+      removedCount: removed.length,
+    });
+    return { opId, skipped, deleted: removed.length, kept };
+  });
+}
+
+export type UnskipOutcome = { restored: number; regenerate: number };
+
+export async function undoSkipChoreDays(db: Firestore, householdId: string, input: { opId: unknown }, actorUid: string, now = new Date()): Promise<UnskipOutcome> {
+  if (!isDocId(householdId) || !actorUid) throw new ChoreSkipError('invalid');
+  const house = db.collection('households').doc(householdId);
+  return db.runTransaction(async (tx) => {
+    const op = await readCalendarOp(tx, house, input?.opId, 'skip', actorUid, now);
+    if (!op) throw new ChoreSkipError('invalid');
+    const keys = (op.get('keys') as { templateId: string; keys: string[] }[] | undefined) ?? [];
+    const backups = await tx.get(op.ref.collection(REMOVED));
+    const removed = backups.docs.map(doc => doc.data() as { id: string; key: string; data: FirebaseFirestore.DocumentData });
+    const templates = await Promise.all(keys.map(entry => tx.get(house.collection('chore-templates').doc(entry.templateId))));
+    // A day is free when neither its document nor any chore holding its key exists.
+    const checks = await Promise.all(removed.map(async (entry) => {
+      const [byId, byKey] = await Promise.all([
+        tx.get(house.collection('chores').doc(entry.id)),
+        tx.get(house.collection('chores').where('occurrenceKey', '==', entry.key).limit(1)),
+      ]);
+      return !byId.exists && byKey.empty;
+    }));
+    templates.forEach((snap, index) => {
+      if (!snap.exists) return;
+      tx.update(snap.ref, { skippedOccurrences: withoutSkippedOccurrences(snap.get('skippedOccurrences'), keys[index].keys) });
+    });
+    let restored = 0;
+    removed.forEach((entry, index) => {
+      if (!checks[index]) return;
+      tx.set(house.collection('chores').doc(entry.id), entry.data);
+      restored += 1;
+    });
+    backups.docs.forEach(doc => tx.delete(doc.ref));
+    tx.delete(op.ref);
+    return { restored, regenerate: removed.length - restored };
+  });
+}

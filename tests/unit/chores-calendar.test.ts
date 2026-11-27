@@ -89,7 +89,9 @@ describe('calendar events', () => {
   });
 
   it('the calendar has a phone day agenda that swipes and answers the arrow keys', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/components/chores/calendar/household-calendar.tsx'), 'utf8');
+    // The page and its chip (the chip and its peek moved to event-chip.tsx in audit section 6).
+    const source = ['household-calendar.tsx', 'event-chip.tsx']
+      .map(name => readFileSync(resolve(process.cwd(), 'src/components/chores/calendar', name), 'utf8')).join('\n');
     assert.match(source, /type View = 'day' \| 'week' \| 'month'/);
     assert.match(source, /matches \? 'day' : 'week'/);
     assert.match(source, /<ToggleGroupItem value="day"/);

@@ -71,10 +71,13 @@ export function completionInstant(chore: Pick<ChoreRecord, 'isCompleted' | 'comp
   return choreCompletionInstant(chore);
 }
 
-/** Monday of the week containing `key`. */
-export function weekStartKey(key: string): string {
+/**
+ * First day of the week containing `key`: Monday by default, Sunday when the
+ * household's week starts on Sunday (`weekStartsOn` 0, CA-16, `week-start.ts`).
+ */
+export function weekStartKey(key: string, weekStartsOn: 0 | 1 = 1): string {
   const date = dayFromKey(key);
-  const offset = (date.getDay() + 6) % 7; // Monday = 0
+  const offset = (date.getDay() - weekStartsOn + 7) % 7;
   return addDaysToKey(key, -offset);
 }
 

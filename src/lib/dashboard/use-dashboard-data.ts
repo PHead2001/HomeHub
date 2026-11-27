@@ -421,8 +421,8 @@ export function useDashboardData(enabled = true, options: { sections?: boolean }
     current.raw,
     failed,
     { chores: canChores, shopping: canShopping, pantry: canShopping, maintenance: canMaintenance, pets: canPets, notifications: canNotifications && Boolean(uid) },
-    { viewer: { uid, email }, now, timeZone: zone, recentFeedings: RECENT_FEEDINGS, canView },
-  ), [current.raw, failed, now, uid, email, zone, canChores, canShopping, canMaintenance, canPets, canNotifications, canView]);
+    { viewer: { uid, email }, now, timeZone: zone, weekStartsOn: scope.weekStartsOn, recentFeedings: RECENT_FEEDINGS, canView },
+  ), [current.raw, failed, now, uid, email, zone, scope.weekStartsOn, canChores, canShopping, canMaintenance, canPets, canNotifications, canView]);
 
   // A pet whose feeding history is stale says so wherever its count or fed state shows.
   const facts = useMemo(() => withFeedingHints(assembled, sections, zone), [assembled, sections, zone]);
@@ -432,8 +432,8 @@ export function useDashboardData(enabled = true, options: { sections?: boolean }
     current.raw,
     failed,
     { chores: canChores, shopping: canShopping, pantry: canShopping, maintenance: canMaintenance, pets: canPets, notifications: false },
-    { viewer: { uid, email }, now, timeZone: zone, recentFeedings: RECENT_FEEDINGS, canView, limits: SECTION_LIMITS },
-  ).facts, sections, zone) : null), [wantSections, current.raw, failed, now, uid, email, zone, canChores, canShopping, canMaintenance, canPets, canView, sections]);
+    { viewer: { uid, email }, now, timeZone: zone, weekStartsOn: scope.weekStartsOn, recentFeedings: RECENT_FEEDINGS, canView, limits: SECTION_LIMITS },
+  ).facts, sections, zone) : null), [wantSections, current.raw, failed, now, uid, email, zone, scope.weekStartsOn, canChores, canShopping, canMaintenance, canPets, canView, sections]);
   const { facts: shown, outline } = useHouseSnapshot(facts, canChores ? householdId : null, uid, today);
 
   return { facts: shown, sectionFacts, loading, failed, sections, retry, now, today, timeZone: zone, context, houseOutline: outline };

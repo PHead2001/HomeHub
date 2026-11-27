@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
@@ -33,12 +33,13 @@ import { auth, db } from '@/lib/firebase';
 import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
-import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
+import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, matchesWhoFilter, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel } from '@/lib/chores/completion';
 import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, statsMemberFrom } from '@/lib/chores/stats';
+import { readWeekStartsOn } from '@/lib/chores/week-start';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
@@ -64,7 +65,7 @@ import { morphStyle } from '@/lib/motion';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
-import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, parseChoresFilters, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
+import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, highlightPlacement, parseChoresFilters, parseHighlightChore, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
 import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, ownListCleared, personDoneStorageKey, personDoneTitle, type CleanRoom } from '@/lib/chores/house-clean';
 
 
@@ -134,6 +135,10 @@ export function ChoreChartClient() {
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
+  const [openSections, setOpenSections] = useState<string[]>(['todo']);
+  const [revealSection, setRevealSection] = useState<string | null>(null);
+  // The `?chore=` target already revealed (its section, range and scroll committed).
+  const [revealedId, setRevealedId] = useState<string | null>(null);
   // The filters live in the URL (`/chores?room=kitchen&due=overdue&who=me`), read on
   // every render so dashboard links, Back/Forward, reload and client navigation stay in sync.
   const searchParams = useSearchParams();
@@ -235,6 +240,15 @@ export function ChoreChartClient() {
   }, [live.state, currentUser, settleTick]);
 
   const loading = Boolean(liveKey) && live.status === 'loading';
+
+  // `?chore=<id>` from the calendar (CA-17; review finding 6): the target is revealed, not
+  // only looked for. Its section opens (Future, or Completed with its room groups), the
+  // range widens when it is beyond the first week or the last three days (Show All, History),
+  // and the page scrolls to the row and marks it once the row has rendered (rechecked while
+  // the listener's snapshots and the opened sections render). A missed day folded into a
+  // later day of its series ("+2 earlier missed") is shown through that row.
+  const highlightId = parseHighlightChore(searchParams);
+
 
   // Recurring chores, retention and reminders run on the server (hourly, and here on
   // demand) so every household member sees the same schedule. On demand means once on
@@ -644,6 +658,61 @@ export function ChoreChartClient() {
   // The household's day everywhere on the page, as the server generates and judges (CH-10).
   const today = householdDay;
 
+  // While a target is being revealed its section, range and room groups are derived open
+  // here (no state set during the effect); once its row is found (or the search gives up)
+  // the timer commits them to state, so the page stays as revealed and the person can
+  // close or narrow it again.
+  const pendingReveal = useMemo(() => {
+    if (!highlightId || loading || revealedId === highlightId) return null;
+    const chore = assignedChores.find(c => c.id === highlightId);
+    if (!chore) return null; // computed again when the listener delivers it
+    const instant = completionInstant(chore);
+    const place = highlightPlacement(
+      { isCompleted: chore.isCompleted, due: choreDueKey(chore), completedDay: instant ? localDay(instant, safeTimeZone(household?.timeZone)) : null },
+      { today, weekAhead: addDaysToKey(today, 7), recentFrom: addDaysToKey(today, -3) },
+    );
+    // A folded missed day shows through the latest open day of its series.
+    const series = place.section === 'todo' && chore.templateId
+      ? assignedChores.filter(c => c.id !== chore.id && !c.isCompleted && c.templateId === chore.templateId &&
+        (c.roomIds ?? []).join(',') === (chore.roomIds ?? []).join(',') && choreDueKey(c) <= today).map(c => c.id)
+      : [];
+    return { id: highlightId, ...place, series };
+  }, [highlightId, loading, revealedId, assignedChores, today, household?.timeZone]);
+  const sectionsOpen = pendingReveal && !openSections.includes(pendingReveal.section) ? [...openSections, pendingReveal.section] : openSections;
+  const fullFuture = showFullFuture || Boolean(pendingReveal?.widen && pendingReveal.section === 'future');
+  const fullHistory = showFullHistory || Boolean(pendingReveal?.widen && pendingReveal.section === 'completed');
+  const activeReveal = pendingReveal?.section ?? revealSection;
+
+  useEffect(() => {
+    if (!pendingReveal) return;
+    const { id, section, widen, series } = pendingReveal;
+    let tries = 0;
+    let clear: number | undefined;
+    let timer: number | undefined;
+    const commit = () => {
+      setOpenSections(previous => (previous.includes(section) ? previous : [...previous, section]));
+      if (widen && section === 'future') setShowFullFuture(true);
+      if (widen && section === 'completed') setShowFullHistory(true);
+      setRevealSection(section);
+      setRevealedId(id);
+    };
+    const look = () => {
+      const find = (choreId: string) => document.querySelector(`[data-chore-id="${CSS.escape(choreId)}"]`);
+      const row = find(id) ?? series.map(find).find(Boolean) ?? null;
+      if (!row) {
+        if (++tries < 40) timer = window.setTimeout(look, 100);
+        else commit();
+        return;
+      }
+      commit();
+      row.scrollIntoView({ block: 'center' });
+      row.setAttribute('data-highlight', 'true');
+      clear = window.setTimeout(() => row.removeAttribute('data-highlight'), 2500);
+    };
+    timer = window.setTimeout(look, 50);
+    return () => { window.clearTimeout(timer); window.clearTimeout(clear); };
+  }, [pendingReveal]);
+
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
     const hadDue = !isToDoClear(before, today);
@@ -937,11 +1006,13 @@ export function ChoreChartClient() {
   // Follows `today`, so the week, streaks and podium roll over at midnight.
   // On household days (D-6), like upkeep's weekly snapshot.
   const statsZone = householdDayZone(household?.timeZone);
+  // The household's week (CA-16): Monday unless it starts on Sunday.
+  const weekStartsOn = readWeekStartsOn(household?.weekStartsOn);
   // CH-7 expired missed days still break fair streaks (CH-19); one listener with "N missed".
   const missedEntries = useMissedEntries(currentUser?.householdId);
-  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(householdDay), { today: householdDay, timeZone: statsZone, missed: missedEntries }), [assignedChores, statsMembers, householdDay, statsZone, missedEntries]);
-  // CH-21, CH-29: the closed week's podium and payout on the first days of a new week.
-  const podium = useClosedWeekPodium({ householdId: currentUser?.householdId, today: householdDay, chores: assignedChores, members: statsMembers, centsPerPoint: settings.centsPerPoint, timeZone: statsZone });
+  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(householdDay), { today: householdDay, timeZone: statsZone, missed: missedEntries, weekStartsOn }), [assignedChores, statsMembers, householdDay, statsZone, missedEntries, weekStartsOn]);
+  // CH-21, CH-29: the closed week's podium and payout on the first days of a new week (the household's week, CA-16).
+  const podium = useClosedWeekPodium({ householdId: currentUser?.householdId, today: householdDay, chores: assignedChores, members: statsMembers, centsPerPoint: settings.centsPerPoint, timeZone: statsZone, weekStartsOn });
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
 
   // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.
@@ -993,12 +1064,12 @@ export function ChoreChartClient() {
     .filter(entry => filters.due !== 'overdue' || choreDueKey(entry.chore) < today || entry.missed.length > 0);
   const futureChores = filteredChores.filter(c => !c.isCompleted && choreDueKey(c) > today).sort(byDue);
   const weekAhead = addDaysToKey(today, 7);
-  const visibleFutureChores = showFullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);
+  const visibleFutureChores = fullFuture ? futureChores : futureChores.filter(c => choreDueKey(c) <= weekAhead);
   const recentFrom = addDaysToKey(today, -3);
   const completedChores = filteredChores
     .filter(c => c.isCompleted && completionInstant(c))
     .sort((a, b) => completionInstant(b)!.getTime() - completionInstant(a)!.getTime());
-  const visibleCompletedChores = showFullHistory ? completedChores : completedChores.filter(c => householdDayOf(completionInstant(c)!) >= recentFrom);
+  const visibleCompletedChores = fullHistory ? completedChores : completedChores.filter(c => householdDayOf(completionInstant(c)!) >= recentFrom);
   const completedToday = completedChores.filter(c => householdDayOf(completionInstant(c)!) === today).length;
   const recurringChores = choreTemplates.filter(t => !!normalizeRecurrence(t.recurrence));
   const isEmptyHousehold = assignedChores.length === 0 && choreTemplates.length === 0;
@@ -1048,18 +1119,21 @@ export function ChoreChartClient() {
     // who filter remounts the groups with each newly listed room open (clearing Mine
     // brings in housemates' rooms, which would otherwise stay collapsed).
     return (
-      <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.id}`) : []}>
-        {groups.map(group => (
-          <AccordionItem value={`${prefix}-${group.id}`} key={`${prefix}-${group.id}`} className="rounded-lg border bg-background px-2 md:px-3">
-            <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
-              <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /><span>{group.name} (<NumberTicker value={group.entries.length} animateOnMount={false} />)</span></span>
-            </AccordionTrigger>
-            <AccordionContent>
-              <ChoreList entries={group.entries} {...listProps} />
-            </AccordionContent>
-          </AccordionItem>
-        ))}
-      </Accordion>
+      // A revealed `?chore=` target (CA-17) remounts its section's groups, open.
+      <Fragment key={activeReveal === prefix ? `reveal-${highlightId ?? ''}` : 'groups'}>
+        <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault || activeReveal === prefix ? groups.map(g => `${prefix}-${g.id}`) : []}>
+          {groups.map(group => (
+            <AccordionItem value={`${prefix}-${group.id}`} key={`${prefix}-${group.id}`} className="rounded-lg border bg-background px-2 md:px-3">
+              <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
+                <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /><span>{group.name} (<NumberTicker value={group.entries.length} animateOnMount={false} />)</span></span>
+              </AccordionTrigger>
+              <AccordionContent>
+                <ChoreList entries={group.entries} {...listProps} />
+              </AccordionContent>
+            </AccordionItem>
+          ))}
+        </Accordion>
+      </Fragment>
     );
   };
 
@@ -1343,7 +1417,7 @@ export function ChoreChartClient() {
               </div>
             )}
 
-            <Accordion type="multiple" defaultValue={['todo']} className="w-full space-y-3 md:space-y-4">
+            <Accordion type="multiple" value={sectionsOpen} onValueChange={setOpenSections} className="w-full space-y-3 md:space-y-4">
               <AccordionItem value="todo" className="rounded-lg border bg-card px-3 shadow-raised md:px-4">
                 <AccordionTrigger className="py-2 font-headline text-base hover:no-underline md:py-3 md:text-xl"><span>To Do (<NumberTicker value={todoEntries.length} animateOnMount={false} />)</span></AccordionTrigger>
                 <AccordionContent className="pt-1">
@@ -1375,7 +1449,7 @@ export function ChoreChartClient() {
                     </AccordionPrimitive.Trigger>
                   </AccordionPrimitive.Header>
                   <div className="ml-4 mr-1 flex shrink-0 items-center gap-2">
-                    <Switch id="show-full-future" checked={showFullFuture} onCheckedChange={setShowFullFuture} />
+                    <Switch id="show-full-future" checked={fullFuture} onCheckedChange={setShowFullFuture} />
                     <Label htmlFor="show-full-future" className="cursor-pointer text-xs md:text-sm">Show All</Label>
                   </div>
                 </div>
@@ -1397,7 +1471,7 @@ export function ChoreChartClient() {
                     </AccordionPrimitive.Trigger>
                   </AccordionPrimitive.Header>
                   <div className="ml-4 mr-1 flex shrink-0 items-center gap-2">
-                    <Switch id="show-full-history" checked={showFullHistory} onCheckedChange={setShowFullHistory} />
+                    <Switch id="show-full-history" checked={fullHistory} onCheckedChange={setShowFullHistory} />
                     <Label htmlFor="show-full-history" className="cursor-pointer text-xs md:text-sm">History</Label>
                   </div>
                 </div>

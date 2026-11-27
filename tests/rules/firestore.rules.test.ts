@@ -404,6 +404,32 @@ describe('independent review regressions', () => {
     await assertSucceeds(updateDoc(doc(dbFor(users.member), 'users', users.member.email), { timeZone: 'America/Denver' }));
   });
 
+  test('owners and admins set the week start (CA-16); nobody else, and only Sunday or Monday', async () => {
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 0, updatedAt: 'x' }));
+    await assertSucceeds(updateDoc(doc(dbFor(users.admin), 'households', householdA), { weekStartsOn: 1 }));
+    await assertFails(updateDoc(doc(dbFor(users.member), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.child), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.guest), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.ownerB), 'households', householdA), { weekStartsOn: 0 }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 2 }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: '0' }));
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 0, name: 'Renamed' }));
+    // A week-start change never needs a time zone in the same write.
+    await assertSucceeds(updateDoc(doc(dbFor(users.owner), 'households', householdA), { weekStartsOn: 0 }));
+    // A write that changes neither setting is not a settings change (CI: the legacy inviteCode test).
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { updatedAt: 'y' }));
+  });
+
+  test('calendar Undo records are server-only (CA-15, CA-27)', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'calendar-ops', 'op1'), { kind: 'move', choreId: 'c', createdByUid: users.owner.uid });
+    });
+    for (const user of [users.owner, users.admin, users.member]) {
+      await assertFails(getDoc(doc(dbFor(user), 'households', householdA, 'calendar-ops', 'op1')));
+      await assertFails(setDoc(doc(dbFor(user), 'households', householdA, 'calendar-ops', 'forged'), { kind: 'move', choreId: 'c', createdByUid: user.uid }));
+    }
+  });
+
   test('households cannot be deleted from the client', async () => {
     await assertFails(deleteDoc(doc(dbFor(users.owner), 'households', householdA)));
   });
