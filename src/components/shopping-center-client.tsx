@@ -11,6 +11,8 @@ import { TabActivity } from '@/components/shopping/tab-activity';
 import { useAuth } from '@/hooks/use-auth';
 import { useLivePantry } from '@/lib/shopping/live';
 import { cn } from '@/lib/utils';
+import { useLibraryPhotos } from '@/lib/barcode/use-library-photos';
+import { LibraryFactsContext } from '@/components/barcode/nutrition-chips';
 
 /**
  * The Shopping Center: Shopping Lists and Pantry Inventory tabs. The open tab and
@@ -27,6 +29,8 @@ export function ShoppingCenterClient() {
   const pathname = usePathname() || '/shopping';
   const state = parseShoppingUrlState(searchParams);
   const { currentUser } = useAuth();
+  // BL-22: shopping rows show a saved product's allergen and Nutri-Score chips.
+  const libraryFacts = useLibraryPhotos(currentUser?.householdId ?? null);
   // One pantry listener for the page: the Pantry tab and the overview's expiring
   // chips (SH-11c) share it.
   const pantryState = useLivePantry(currentUser?.householdId);
@@ -82,35 +86,37 @@ export function ShoppingCenterClient() {
   }, [go]);
 
   return (
-    <Tabs value={state.tab} onValueChange={handleTabChange} className="w-full">
-      {/* Hidden while a list is open (SH-12a): the list's compact header takes the space. */}
-      <TabsList className={cn('grid w-full grid-cols-2', state.listId && 'hidden')}>
-        <TabsTrigger value="lists"><ClipboardList className="mr-2" aria-hidden /> Shopping Lists</TabsTrigger>
-        <TabsTrigger value="inventory"><Archive className="mr-2" aria-hidden /> Pantry Inventory</TabsTrigger>
-      </TabsList>
-      {/* Both tabs stay mounted (SH-25b): switching keeps their live listeners and
-          state instead of re-reading everything; the inactive one is hidden.
-          Each tab knows whether it is shown (TabActivity) and closes its portaled
-          dialogs, menus and peek cards when it is not, also after browser Back.
-          min-h keeps the page height steady while a tab's content loads. */}
-      <TabsContent value="lists" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
-        <TabActivity active={state.tab === 'lists'}>
-          <ShoppingListClient
-            selectedListId={state.listId}
-            onSelectList={handleSelectList}
-            onOpenPantry={openPantry}
-            quickAddRequested={state.quickAdd}
-            onQuickAddHandled={handleQuickAddHandled}
-            pantryItems={pantryState.value}
-            onOpenPantryItem={openPantryItem}
-          />
-        </TabActivity>
-      </TabsContent>
-      <TabsContent value="inventory" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
-        <TabActivity active={state.tab === 'inventory'}>
-          <PantryInventoryClient pantryState={pantryState} focusItemId={pantryFocus} onFocusHandled={clearPantryFocus} />
-        </TabActivity>
-      </TabsContent>
-    </Tabs>
+    <LibraryFactsContext.Provider value={libraryFacts}>
+      <Tabs value={state.tab} onValueChange={handleTabChange} className="w-full">
+        {/* Hidden while a list is open (SH-12a): the list's compact header takes the space. */}
+        <TabsList className={cn('grid w-full grid-cols-2', state.listId && 'hidden')}>
+          <TabsTrigger value="lists"><ClipboardList className="mr-2" aria-hidden /> Shopping Lists</TabsTrigger>
+          <TabsTrigger value="inventory"><Archive className="mr-2" aria-hidden /> Pantry Inventory</TabsTrigger>
+        </TabsList>
+        {/* Both tabs stay mounted (SH-25b): switching keeps their live listeners and
+            state instead of re-reading everything; the inactive one is hidden.
+            Each tab knows whether it is shown (TabActivity) and closes its portaled
+            dialogs, menus and peek cards when it is not, also after browser Back.
+            min-h keeps the page height steady while a tab's content loads. */}
+        <TabsContent value="lists" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
+          <TabActivity active={state.tab === 'lists'}>
+            <ShoppingListClient
+              selectedListId={state.listId}
+              onSelectList={handleSelectList}
+              onOpenPantry={openPantry}
+              quickAddRequested={state.quickAdd}
+              onQuickAddHandled={handleQuickAddHandled}
+              pantryItems={pantryState.value}
+              onOpenPantryItem={openPantryItem}
+            />
+          </TabActivity>
+        </TabsContent>
+        <TabsContent value="inventory" forceMount className="min-h-[24rem] data-[state=inactive]:hidden">
+          <TabActivity active={state.tab === 'inventory'}>
+            <PantryInventoryClient pantryState={pantryState} focusItemId={pantryFocus} onFocusHandled={clearPantryFocus} />
+          </TabActivity>
+        </TabsContent>
+      </Tabs>
+    </LibraryFactsContext.Provider>
   );
 }

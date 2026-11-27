@@ -240,3 +240,12 @@ describe('library search and sort (BL-13)', () => {
     assert.deepEqual(sortLibrary([oats, audit], 'name').map((item) => item.name), ['Audit test product', 'Oat milk']);
   });
 });
+
+describe('allergens and Nutri-Score survive a delete and its Undo (BL-22)', () => {
+  test('captured and restored', () => {
+    const captured = capturedProduct('4006381333931', { name: 'Peanut bar', imageUrl: '', createdAt: '2026-11-01T00:00:00.000Z', allergens: ['peanuts'], nutriScore: 'd' });
+    assert.deepEqual(captured, { id: '4006381333931', name: 'Peanut bar', imageUrl: '', createdAt: '2026-11-01T00:00:00.000Z', allergens: ['peanuts'], nutriScore: 'd' });
+    const restored = restoredProductData(captured!, { householdId: 'h', uid: 'u2', now });
+    assert.deepEqual(restored.data, { name: 'Peanut bar', imageUrl: '', createdAt: '2026-11-01T00:00:00.000Z', createdByUid: 'u2', allergens: ['peanuts'], nutriScore: 'd' });
+  });
+});

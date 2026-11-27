@@ -3001,6 +3001,14 @@ describe('content shapes: barcode library', () => {
     await assertFails(setDoc(item(users.member, '208'), saved({ name: 7 })));
     await assertFails(setDoc(item(users.member, 'x'.repeat(129)), saved()));
   });
+
+  test('allergens and Nutri-Score from Open Food Facts are bounded (BL-22)', async () => {
+    await assertSucceeds(setDoc(item(users.member, '301'), saved({ allergens: ['peanuts', 'milk'], nutriScore: 'd' })));
+    await assertSucceeds(updateDoc(item(users.member, '012345678905'), { nutriScore: 'a' }));
+    await assertFails(setDoc(item(users.member, '302'), saved({ nutriScore: 'f' })));
+    await assertFails(setDoc(item(users.member, '303'), saved({ allergens: 'peanuts' })));
+    await assertFails(setDoc(item(users.member, '304'), saved({ allergens: Array.from({ length: 21 }, (_, i) => `a${i}`) })));
+  });
 });
 
 // Member privacy release D: profiles and household documents are read only by

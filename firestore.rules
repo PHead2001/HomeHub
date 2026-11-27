@@ -1876,8 +1876,12 @@ service cloud.firestore {
     // create only; an update may neither change nor remove them. An edit keeps the
     // product's createdAt, while an Add written blindly over an existing product
     // carries a new createdAt (or none) and is refused (BL-3).
+    // allergens (at most 20 entries; the app writes plain English words) and
+    // nutriScore (a to e) come from Open Food Facts (BL-22).
     function validBarcodeItemFields(householdId, data, keys) {
-      return keys.hasOnly(['name', 'imageUrl', 'imagePath', 'createdAt', 'createdByUid']) &&
+      return keys.hasOnly(['name', 'imageUrl', 'imagePath', 'createdAt', 'createdByUid', 'allergens', 'nutriScore']) &&
+        (!('allergens' in keys) || (data.allergens is list && data.allergens.size() <= 20)) &&
+        (!('nutriScore' in keys) || data.nutriScore in ['a', 'b', 'c', 'd', 'e']) &&
         (!('name' in keys) || nonEmptyString(data.name, 200)) &&
         (!('imageUrl' in keys) || (boundedString(data.imageUrl, 2048) && validBarcodeImageUrl(householdId, data.imageUrl))) &&
         (!('imagePath' in keys) ||

@@ -1,6 +1,7 @@
 'use client';
 
 import { formatPackageSize } from '@/lib/shopping/scan';
+import { NutritionChips, useBarcodeChips } from '@/components/barcode/nutrition-chips';
 import { shownPhoto } from '@/lib/shopping/row-photo';
 import { forwardRef, memo, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import Image from 'next/image';
@@ -138,6 +139,8 @@ export const ShoppingItemRow = memo(forwardRef<HTMLDivElement, RowProps>(functio
 
   // A scanned package size is a note, never the count (BL-1).
   const packageNote = formatPackageSize(item.size, item.sizeUnit);
+  // BL-22: allergens and Nutri-Score of the saved product this item was scanned as.
+  const chips = useBarcodeChips(item.barcode);
   const text = (
     <span className="min-w-0 text-left">
       <span className={cn('relative block break-words text-sm font-medium leading-snug', trip && 'coarse:text-base')}>
@@ -156,6 +159,7 @@ export const ShoppingItemRow = memo(forwardRef<HTMLDivElement, RowProps>(functio
         )}
       </span>
       {attribution && <span className="block text-xs text-muted-foreground" data-testid="item-attribution">{attribution}</span>}
+      <NutritionChips chips={chips} className="mt-0.5" />
     </span>
   );
   const shown = shownPhoto(photo, failedPhoto);

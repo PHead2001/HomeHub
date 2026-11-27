@@ -11,6 +11,12 @@ describe('library that fills itself (BL-19)', () => {
     });
   });
 
+  test('allergens and Nutri-Score travel with the offer (BL-22)', () => {
+    assert.deepEqual(libraryOfferFor({ ...off, allergens: ['peanuts'], nutriScore: 'd' }, '4006381333931', 'h'), {
+      barcode: '4006381333931', name: 'Oat drink', imageUrl: off.imageUrl, allergens: ['peanuts'], nutriScore: 'd',
+    });
+  });
+
   test('a photo the rules would refuse is left out; the product is still offered', () => {
     assert.equal(libraryOfferFor({ ...off, imageUrl: 'https://evil.example/x.jpg' }, '4006381333931', 'h')?.imageUrl, '');
   });

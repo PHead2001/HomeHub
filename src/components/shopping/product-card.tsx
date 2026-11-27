@@ -6,6 +6,8 @@ import { format } from 'date-fns';
 import { Edit, Package, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { BarcodeLibraryItem } from '@/lib/types';
+import { nutritionChips } from '@/lib/barcode/nutrition';
+import { NutritionChips } from '@/components/barcode/nutrition-chips';
 
 function formatAdded(createdAt: string) {
   const date = new Date(createdAt);
@@ -70,6 +72,7 @@ export function ProductCard({
         <h3 className="line-clamp-2 break-words font-medium leading-snug">{item.name}</h3>
         <p className="font-mono text-xs text-muted-foreground">{item.id}</p>
         {added && <p className="text-xs text-muted-foreground">Added {added}</p>}
+        <NutritionChips chips={nutritionChips(item)} />
         {(onEdit || onDelete) && (
           <div className="mt-auto flex justify-end gap-2 pt-2">
             {onEdit && (

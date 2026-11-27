@@ -547,6 +547,9 @@ export type BarcodeLibraryItem = {
   createdAt: string; // ISO String
   /** Who saved the product (the writer of the create; immutable). Absent on older products. */
   createdByUid?: string;
+  /** BL-22: allergens from Open Food Facts (plain English words) and Nutri-Score, when known. */
+  allergens?: string[];
+  nutriScore?: 'a' | 'b' | 'c' | 'd' | 'e';
   /** BL-23: how often a scan found this product (absent: never counted). */
   scanCount?: number;
   /** BL-23: the latest counted scan, as an ISO string (the page converts the stored timestamp). */
