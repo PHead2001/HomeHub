@@ -2015,6 +2015,13 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // The phone calendar feed's secret (audit CA-25): written and read only by the
+      // server (src/lib/server/calendar-feed.ts, Admin SDK); owners and admins see the
+      // URL through a server action.
+      match /calendar-feed/{docId} {
+        allow read, write: if false;
+      }
+
       match /maintenance-attachments/{attachmentId} {
         allow read: if hasHouseholdPermission(householdId, 'maintenance.view') || sectionEnabled(householdId, 'maintenance');
         allow create: if validNewMaintenanceAttachment(householdId) && (
@@ -2407,6 +2414,11 @@ service cloud.firestore {
     // Device codes (wall-tablet pairing): created, revoked and redeemed only by the
     // server. Owners and admins (role, not a permission override) of the code's
     // household read them (the Devices tab and the creator's live "Paired" status).
+    // Phone calendar feed lookups (audit CA-25): sha256(token) -> householdId, server only.
+    match /calendarFeeds/{tokenHash} {
+      allow read, write: if false;
+    }
+
     match /deviceCodes/{code} {
       allow read: if resource.data.householdId is string && isOwnerOrAdmin(resource.data.householdId);
       allow write: if false;

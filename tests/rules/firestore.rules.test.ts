@@ -430,6 +430,19 @@ describe('independent review regressions', () => {
     }
   });
 
+  test('the phone calendar feed secret is server-only (CA-25)', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'calendar-feed', 'current'), { token: 't', tokenHash: 'h' });
+      await setDoc(doc(context.firestore(), 'calendarFeeds', 'h'), { householdId: householdA });
+    });
+    for (const user of [users.owner, users.admin, users.member]) {
+      await assertFails(getDoc(doc(dbFor(user), 'households', householdA, 'calendar-feed', 'current')));
+      await assertFails(setDoc(doc(dbFor(user), 'households', householdA, 'calendar-feed', 'current'), { token: 'mine' }));
+      await assertFails(getDoc(doc(dbFor(user), 'calendarFeeds', 'h')));
+      await assertFails(setDoc(doc(dbFor(user), 'calendarFeeds', 'forged'), { householdId: householdA }));
+    }
+  });
+
   test('households cannot be deleted from the client', async () => {
     await assertFails(deleteDoc(doc(dbFor(users.owner), 'households', householdA)));
   });

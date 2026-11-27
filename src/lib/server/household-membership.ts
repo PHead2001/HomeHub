@@ -46,6 +46,7 @@ import {
 import { isEmailFolderPhotoUrl } from '@/lib/member-directory';
 import { DEVICE_CODE_AS_INVITE_MESSAGE } from '@/lib/devices/device-codes';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
+import { deleteHouseholdCalendarFeeds } from '@/lib/server/calendar-feed';
 import {
   markHouseholdDevicesRemoved,
   readHouseholdDevicesForDeletion,
@@ -627,6 +628,8 @@ export const deleteHousehold = async (
   await revokeHouseholdDeviceUsers(deviceRecords.docs.map(d => d.id));
 
   await (steps.deleteFiles ?? deleteHouseholdFiles)(householdId);
+  // The phone calendar feed's lookups live outside the household (audit CA-25).
+  await deleteHouseholdCalendarFeeds(adminDb, householdId);
   const subcollections = await householdRef.listCollections();
   for (const collection of subcollections) {
     if (collection.id !== 'members') await adminDb.recursiveDelete(collection);

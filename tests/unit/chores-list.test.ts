@@ -136,6 +136,7 @@ describe('chore UI source checks', () => {
     'src/components/chores/calendar/event-chip.tsx',
     'src/components/chores/calendar/fair-share-strip.tsx',
     'src/components/chores/calendar/away-dialog.tsx',
+    'src/components/chores/calendar/calendar-feed-dialog.tsx',
   ];
 
   it('uses design tokens only (no raw hex or rgb colors)', () => {
