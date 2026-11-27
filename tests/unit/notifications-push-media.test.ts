@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { barcodeLibraryIds } from '../../functions/src/shared/barcode-ids';
+import { lookupIds } from '../../src/lib/barcode/gtin';
 import {
   PUSH_BADGE,
   PUSH_ICON,
@@ -90,6 +92,17 @@ describe('which record a notification points at', () => {
   });
 });
 
+describe('barcode IDs for the library photo (BL-12)', () => {
+  test('the normalised 13-digit ID first, then the code as stored; the same rule as the app', () => {
+    for (const code of ['012345678905', '0012345678905', '036000291452', '04252614', '042100005264', '01000054', '96385074', '000000000404', '0123', '4006381333931']) {
+      assert.deepEqual(barcodeLibraryIds(code), lookupIds(code).length > 0 ? lookupIds(code) : [code], code);
+    }
+    assert.deepEqual(imageSourceFor({ category: 'shopping', sourceType: 'product', sourceId: '012345678905' }), {
+      path: ['barcode-library', '0012345678905'], orPaths: [['barcode-library', '012345678905']], field: 'imageUrl', folders: ['barcode-library/'], permission: 'shopping.view',
+    });
+  });
+});
+
 describe('resolving the push image', () => {
   const PET_URL = storageUrl(`households/${HOUSE}/pets/maple.jpg`);
   const LIBRARY_URL = storageUrl(`households/${HOUSE}/barcode-library/oats.jpg`);
@@ -100,6 +113,10 @@ describe('resolving the push image', () => {
     [`households/${HOUSE}/shopping-lists/weekly/items/oats`]: { name: 'Oats', barcode: '0123' },
     [`households/${HOUSE}/shopping-lists/weekly/items/eggs`]: { name: 'Eggs', imageUrl: 'https://images.openfoodfacts.org/eggs.jpg' },
     [`households/${HOUSE}/barcode-library/0123`]: { name: 'Oats', imageUrl: LIBRARY_URL },
+    // BL-12: a 12-digit scan on the item, the product saved under its 13-digit ID (and the reverse).
+    [`households/${HOUSE}/shopping-lists/weekly/items/beans`]: { name: 'Beans', barcode: '036000291452' },
+    [`households/${HOUSE}/barcode-library/0036000291452`]: { name: 'Beans', imageUrl: LIBRARY_URL },
+    [`households/${HOUSE}/barcode-library/012345678905`]: { name: 'Old', imageUrl: LIBRARY_URL },
     'households/house-b/pets/maple': { name: 'Other Maple', photoUrl: storageUrl('households/house-b/pets/maple.jpg') },
   };
   const reads: string[] = [];
@@ -111,6 +128,13 @@ describe('resolving the push image', () => {
 
   test('a pet reminder carries the pet photo', async () => {
     assert.deepEqual(await resolvePushImage(read, HOUSE, pet('maple'), BUCKET), { url: PET_URL, permission: 'pets.view' });
+  });
+
+  test('a library photo is found under the 13-digit ID for a 12-digit scan, and under the older ID too (BL-12)', async () => {
+    const item = await resolvePushImage(read, HOUSE, { householdId: HOUSE, category: 'shopping', sourceType: 'shopping_item', sourceId: 'weekly:beans' }, BUCKET);
+    assert.deepEqual(item, { url: LIBRARY_URL, permission: 'shopping.view' });
+    const older = await resolvePushImage(read, HOUSE, { householdId: HOUSE, category: 'shopping', sourceType: 'product', sourceId: '012345678905' }, BUCKET);
+    assert.deepEqual(older, { url: LIBRARY_URL, permission: 'shopping.view' });
   });
 
   test('a shopping item without a photo falls back to its library image', async () => {
