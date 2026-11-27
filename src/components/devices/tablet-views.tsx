@@ -4,11 +4,11 @@
 // shell"). Home is the household resting view: the dashboard drawn for the household
 // (the house, the household brief with household totals and no greeting by name, the
 // tiles of the sections that are on; HP-3b, HP-21, HP-32b, WT-5a). The section views are
-// read-only (Calendar stays read-only on tablets) except Chores, whose rows have Done and Take
-// (device actions, F4a), Pets, whose rows have Feed (and hold) and Care (F4b-1), Maintenance
-// (M8b: tablet-maintenance.tsx, the personal page's Needs doing with Done, Snooze and Log
-// service) and Shopping (tablet-shopping.tsx, kitchen mode: tick and quick add, SH-11), built
-// from the same live household data, so they show only what the tablet's rules let it read.
+// read-only except Chores and Calendar, whose chore rows have Done and Take (device actions,
+// F4a), Pets, whose rows have Feed (and hold) and Care (F4b-1), Maintenance (M8b:
+// tablet-maintenance.tsx, the personal page's Needs doing with Done, Snooze and Log service)
+// and Shopping (tablet-shopping.tsx, kitchen mode: tick and quick add, SH-11), built from the
+// same live household data, so they show only what the tablet's rules let it read.
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
@@ -392,7 +392,11 @@ function CalendarView() {
   return (
     <Section title="Coming up" icon={CalendarDays} testId="tablet-view-calendar" empty={empty}>
       <ul className="space-y-2">
-        {chores.map((chore) => <Row key={`c-${chore.id}`} title={chore.task} detail={[chore.room, chore.dueLabel].filter(Boolean).join(' · ')} tone={chore.overdue ? 'warn' : null} />)}
+        {chores.map((chore) => (chore.due === 'overdue' || chore.due === 'today'
+          // Done (and Take) on what is due, through the device action ("Who's here?" first, CA-8, WT-6);
+          // a later chore cannot be completed yet (CH-2), so it stays a plain row.
+          ? <ChoreRow key={`c-${chore.id}`} chore={chore} detail={[chore.room, chore.assignee ?? (chore.assigneeKey ? null : 'Unassigned'), chore.dueLabel].filter(Boolean).join(' · ')} />
+          : <Row key={`c-${chore.id}`} title={chore.task} detail={[chore.room, chore.dueLabel].filter(Boolean).join(' · ')} tone={chore.overdue ? 'warn' : null} />))}
         {maintenance.map((item, index) => <Row key={`m-${index}`} title={item.label} detail={item.detail} tone={item.overdue ? 'warn' : null} />)}
       </ul>
     </Section>
