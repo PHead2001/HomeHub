@@ -42,8 +42,9 @@ describe('household streaks tile', () => {
     const model = streakTileModel(stats);
     assert.deepEqual(model.top.map((entry) => [entry.name, entry.streak, entry.activeToday]), [
       ['Alex', 3, true],
+      // Nothing is due today, so nobody is waiting on today (CH-19); ties by name.
+      ['Member', 1, true], // no display name: never the email
       ['Sam', 1, true],
-      ['Member', 1, false], // no display name: never the email
     ]);
     assert.equal(model.longest, 3);
     assert.equal(model.running, 3);
@@ -70,9 +71,19 @@ describe('assemble: streaks and home health', () => {
   const context = { viewer: { uid: 'a', email: 'alex@example.test' }, now, timeZone: 'America/Chicago', recentFeedings: 12 };
 
   it('builds streaks once completions and members have answered, and hides them on failure', () => {
-    const raw: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, members: memberRecords as never, leaderboard: 'on' };
+    const raw: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, openChores: [], missedRecent: [], members: memberRecords as never, leaderboard: 'on' };
     assert.equal(assembleDashboardFacts(raw, new Set(), access, context).facts.streaks?.longest, 1);
     assert.equal(assembleDashboardFacts({ completedChores: raw.completedChores }, new Set(), access, context).facts.streaks, undefined);
+    // Fair streaks (CH-19) wait for the open chores too: a missed day must count.
+    assert.equal(assembleDashboardFacts({ ...raw, openChores: undefined }, new Set(), access, context).facts.streaks, undefined);
+    // …and the expired missed days (CH-7): one for Alex on Aug 4 ends the streak there.
+    assert.equal(assembleDashboardFacts({ ...raw, missedRecent: undefined }, new Set(), access, context).facts.streaks, undefined);
+    const expired = [{ key: 'trash|general|2026-08-04', task: 'Trash', day: '2026-08-04', assignedToUid: 'a', assignedToDisplayName: 'Alex' }];
+    const threeDays = [done('a1', 'alex@example.test', 3), done('a2', 'alex@example.test', 4), done('a3', 'alex@example.test', 5)] as never;
+    assert.equal(assembleDashboardFacts({ ...raw, completedChores: threeDays }, new Set(), access, context).facts.streaks?.longest, 3);
+    assert.equal(assembleDashboardFacts({ ...raw, completedChores: threeDays, missedRecent: expired }, new Set(), access, context).facts.streaks?.longest, 1);
+    const missed = { id: 'a0', task: 'a0', assignedToUid: 'a', dueDate: '2026-08-04', originalDueDate: '2026-08-04', isCompleted: false };
+    assert.equal(assembleDashboardFacts({ ...raw, openChores: [missed] as never, completedChores: [done('a1', 'alex@example.test', 3), done('a2', 'alex@example.test', 5)] as never }, new Set(), access, context).facts.streaks?.longest, 1, 'the open Aug 4 chore ends the streak');
     assert.equal(assembleDashboardFacts(raw, new Set([STREAKS_FAILURE]), access, context).facts.streaks, undefined);
     assert.equal(assembleDashboardFacts(raw, new Set(), { ...access, chores: false }, context).facts.streaks, undefined);
   });
@@ -107,7 +118,7 @@ describe('assemble: streaks and home health', () => {
 describe('streaks follow the Chores leaderboard setting', () => {
   const access: DashboardAccess = { chores: true, shopping: false, pantry: false, maintenance: false, pets: false, notifications: false };
   const context = { viewer: { uid: 'a', email: 'alex@example.test' }, now, timeZone: 'America/Chicago', recentFeedings: 12 };
-  const base: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, members: memberRecords as never };
+  const base: DashboardRaw = { completedChores: [done('a1', 'alex@example.test', 5)] as never, openChores: [], missedRecent: [], members: memberRecords as never };
 
   it('reads the setting exactly like the Chores page: missing document or field means on', () => {
     assert.equal(leaderboardEnabledFrom(undefined), true);

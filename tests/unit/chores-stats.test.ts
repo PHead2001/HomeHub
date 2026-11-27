@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { addDaysToKey, choreDueKey, completionInstant, dayKey, diffDayKeys, weekStartKey, type ChoreRecord } from '../../src/lib/chores/dates';
-import { POINTS, chorePoints, computeChoreStats, isPodiumDay, weeklyPodium } from '../../src/lib/chores/stats';
+import { POINTS, chorePoints, closedWeekSummary, computeChoreStats, podiumWeekStart, weekPodium } from '../../src/lib/chores/stats';
 
 // Local times keep the tests independent of the machine's timezone.
 const at = (y: number, m: number, d: number, h = 12) => new Date(y, m - 1, d, h);
@@ -92,12 +92,13 @@ describe('computeChoreStats', () => {
     assert.equal(alex.totalPoints, 2 * (POINTS.base + POINTS.onTime));
   });
 
-  it('counts streaks ending today or yesterday', () => {
+  it('counts fair streaks over due days (CH-19)', () => {
     assert.equal(sam.streak, 3);
     assert.equal(sam.streakActiveToday, true);
-    // Alex's last completion was yesterday: the streak is still alive, waiting for today.
-    assert.equal(alex.streak, 1);
-    assert.equal(alex.streakActiveToday, false);
+    // Alex had chores due Jul 30 and Aug 5, both done on time; the days between had
+    // nothing due, so they neither break nor extend the streak. Nothing is due today.
+    assert.equal(alex.streak, 2);
+    assert.equal(alex.streakActiveToday, true);
   });
 
   it('gives child accounts stickers', () => {
@@ -105,29 +106,38 @@ describe('computeChoreStats', () => {
     assert.equal(kid.stickers, 1);
   });
 
-  it('computes fair share from chores due this week', () => {
-    assert.equal(stats.weekTotal, 8);
+  it('counts assigned chores of current members only and contribution from completions (CH-21)', () => {
+    // The chore assigned to someone who left is not part of the week.
+    assert.equal(stats.weekTotal, 7);
     assert.equal(sam.weekAssigned, 3);
-    assert.equal(sam.fairShare, 3 / 8);
+    assert.equal(sam.weekAssignedDone, 3);
+    assert.equal(stats.weekCompletedTotal, 5);
+    assert.equal(sam.contributionShare, 3 / 5);
+    const sum = stats.members.reduce((total, member) => total + member.contributionShare, 0);
+    assert.ok(Math.abs(sum - 1) < 1e-9, 'rings add up to 100%');
   });
 
-  it('ranks the podium by weekly points', () => {
-    const podium = weeklyPodium(stats);
+  it('ranks the closed week podium by points', () => {
+    const summary = closedWeekSummary(chores, members, '2026-08-03');
+    const podium = weekPodium(summary);
     assert.equal(podium[0].uid, 'sam');
     assert.ok(podium.length <= 3);
-    assert.ok(podium.every(member => member.weekPoints > 0));
+    assert.ok(podium.every(member => member.points > 0));
   });
 
   it('rolls the week and streaks over when today changes', () => {
     const nextMonday = computeChoreStats(chores, members, at(2026, 8, 10, 23));
     assert.equal(nextMonday.weekStart, '2026-08-10');
     assert.ok(nextMonday.members.every(member => member.weekPoints === 0));
-    // Sam's last completion was Aug 6 (or the skewed Aug 8 for Alex): streaks have lapsed by Monday.
-    assert.equal(nextMonday.members.find(m => m.uid === 'sam')!.streak, 0);
+    // Sam had nothing due after Aug 6, so the streak holds; Alex missed Aug 7.
+    assert.equal(nextMonday.members.find(m => m.uid === 'sam')!.streak, 3);
+    assert.equal(nextMonday.members.find(m => m.uid === 'alex')!.streak, 1);
   });
 
-  it('shows the podium on Sundays only', () => {
-    assert.equal(isPodiumDay(at(2026, 8, 9)), true);
-    assert.equal(isPodiumDay(at(2026, 8, 6)), false);
+  it('shows the podium for the closed week on Monday and Tuesday only (CH-21)', () => {
+    assert.equal(podiumWeekStart('2026-08-10'), '2026-08-03');
+    assert.equal(podiumWeekStart('2026-08-11'), '2026-08-03');
+    assert.equal(podiumWeekStart('2026-08-12'), null);
+    assert.equal(podiumWeekStart('2026-08-09'), null, 'never before the week ends');
   });
 });

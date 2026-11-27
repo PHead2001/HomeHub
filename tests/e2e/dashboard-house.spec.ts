@@ -5,6 +5,8 @@ import { fixedNow } from './test-helpers';
 import { computeChoreStats } from '../../src/lib/chores/stats';
 import type { ChoreRecord } from '../../src/lib/chores/dates';
 import { streakMembersFrom, streakTileModel } from '../../src/lib/dashboard/streaks';
+import { householdDayZone, householdToday } from '../../src/lib/household-zone';
+import { MISSED_DOC_ID, readMissedEntries } from '../../functions/src/shared/missed';
 import { FINAL_STAGE, LANDING_STEPS } from '../../src/lib/dashboard/landing-scene';
 
 const projectId = 'demo-homehub-e2e';
@@ -75,14 +77,19 @@ test.describe('dashboard house (H01, H02, H22, H03)', () => {
   });
 
   test('H22: the streaks tile shows Chores streak stats exactly', async ({ page }) => {
-    const [completed, members] = await Promise.all([
-      household.collection('chores').where('isCompleted', '==', true).get(),
+    // Fair streaks (CH-19) read open and completed chores on the household's day, as the tile does.
+    const [chores, members, home, missed] = await Promise.all([
+      household.collection('chores').get(),
       household.collection('members').get(),
+      household.get(),
+      household.collection('stats').doc(MISSED_DOC_ID).get(),
     ]);
+    const zone = householdDayZone(home.get('timeZone'));
     const model = streakTileModel(computeChoreStats(
-      completed.docs.map((d) => ({ id: d.id, ...d.data() }) as unknown as ChoreRecord),
+      chores.docs.map((d) => ({ id: d.id, ...d.data() }) as unknown as ChoreRecord),
       streakMembersFrom(members.docs.map((d) => d.data())),
       fixedNow,
+      { today: householdToday(zone, fixedNow), timeZone: zone, missed: readMissedEntries(missed.exists ? missed.data() : null) },
     ));
     await openDashboard(page);
     const tile = page.getByTestId('dashboard-tile-streaks');

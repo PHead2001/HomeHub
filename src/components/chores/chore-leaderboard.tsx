@@ -7,7 +7,7 @@ import { MemberAvatar } from '@/components/member-avatar';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { dayFromKey } from '@/lib/chores/dates';
-import { POINTS, weeklyPodium, type ChoreStats, type MemberChoreStats } from '@/lib/chores/stats';
+import { DAILY_POINT_CAP, POINTS, weekPodium, type ChoreStats, type MemberChoreStats, type WeekSummary } from '@/lib/chores/stats';
 import type { MemberColor } from '@/lib/member-colors';
 import { cn } from '@/lib/utils';
 
@@ -15,14 +15,20 @@ type LeaderboardProps = {
   stats: ChoreStats;
   colors: Map<string, MemberColor>;
   photos: Map<string, string | null | undefined>;
-  showPodium: boolean;
+  /** The week that just closed (CH-21), shown on the first days of a new week; null otherwise. */
+  podium: WeekSummary | null;
 };
 
-function FairShareRing({ member, color, total }: { member: MemberChoreStats; color?: MemberColor; total: number }) {
+/**
+ * Contribution (CH-21): this member's share of the chores current members completed
+ * this week, so the rings add up to 100%; the label also says how many of their own
+ * assigned chores are done.
+ */
+function ContributionRing({ member, color, total }: { member: MemberChoreStats; color?: MemberColor; total: number }) {
   const radius = 15;
   const circumference = 2 * Math.PI * radius;
-  const percent = Math.round(member.fairShare * 100);
-  const label = `${member.name} has ${member.weekAssigned} of ${total} chores this week (${percent}%)`;
+  const percent = Math.round(member.contributionShare * 100);
+  const label = `${member.name} did ${member.weekCompleted} of the ${total} chores done this week (${percent}%), and ${member.weekAssignedDone} of their ${member.weekAssigned} assigned are done`;
   return (
     <span role="img" aria-label={label} title={label} className="relative grid h-10 w-10 shrink-0 place-items-center">
       <svg viewBox="0 0 40 40" className="absolute inset-0 -rotate-90" aria-hidden>
@@ -30,7 +36,7 @@ function FairShareRing({ member, color, total }: { member: MemberChoreStats; col
         <circle
           cx="20" cy="20" r={radius} fill="none" strokeWidth={4} strokeLinecap="round"
           style={{ stroke: color?.color ?? 'hsl(var(--primary))' }}
-          strokeDasharray={`${circumference * member.fairShare} ${circumference}`}
+          strokeDasharray={`${circumference * member.contributionShare} ${circumference}`}
         />
       </svg>
       <span aria-hidden className="text-[10px] font-semibold tabular-nums text-foreground">{percent}%</span>
@@ -51,15 +57,18 @@ function Stickers({ count }: { count: number }) {
   );
 }
 
-function Podium({ podium, colors, photos }: { podium: MemberChoreStats[]; colors: LeaderboardProps['colors']; photos: LeaderboardProps['photos'] }) {
+function Podium({ summary, colors, photos }: { summary: WeekSummary; colors: LeaderboardProps['colors']; photos: LeaderboardProps['photos'] }) {
   const reduced = useReducedMotion();
+  const podium = weekPodium(summary);
+  const range = `${format(dayFromKey(summary.weekStart), 'MMM d')} - ${format(dayFromKey(summary.weekEnd), 'MMM d')}`;
   // Visual order: 2nd, 1st, 3rd. Heights are fixed so nothing shifts.
   const slots = [podium[1], podium[0], podium[2]];
   const heights = ['h-16', 'h-24', 'h-12'];
   const places = [2, 1, 3];
   return (
-    <div className="mb-4 rounded-xl border bg-background/60 p-4">
-      <p className="mb-3 text-center text-sm font-semibold text-foreground">This week&apos;s podium</p>
+    <div className="mb-4 rounded-xl border bg-background/60 p-4" data-testid="chore-podium">
+      <p className="text-center text-sm font-semibold text-foreground">Last week&apos;s podium</p>
+      <p className="mb-3 text-center text-xs text-muted-foreground">{range}</p>
       <ol className="grid grid-cols-3 items-end gap-3" aria-label="Weekly podium">
         {slots.map((member, i) => (
           <li key={member?.uid ?? `empty-${i}`} className="flex flex-col items-center gap-1" style={{ order: i }}>
@@ -80,7 +89,7 @@ function Podium({ podium, colors, photos }: { podium: MemberChoreStats[]; colors
                   <MemberAvatar uid={member.uid} name={member.name} photoUrl={photos.get(member.uid)} color={colors.get(member.uid)} size="md" ring decorative />
                 </span>
                 <span className="max-w-full truncate text-xs font-medium text-foreground">{member.name}</span>
-                <span className="sr-only">{`Place ${places[i]}${places[i] === 1 ? ', MVP' : ''}: ${member.weekPoints} points`}</span>
+                <span className="sr-only">{`Place ${places[i]}${places[i] === 1 ? ', MVP' : ''}: ${member.points} points`}</span>
                 <motion.div
                   aria-hidden
                   className={cn('flex w-full items-start justify-center rounded-t-lg pt-1 text-sm font-bold', heights[i], colors.get(member.uid)?.classes.chip ?? 'bg-primary text-primary-foreground')}
@@ -101,20 +110,20 @@ function Podium({ podium, colors, photos }: { podium: MemberChoreStats[]; colors
 }
 
 /**
- * Household leaderboard (H06): points (stickers for child accounts), a daily
- * streak flame and a fair-share ring per member, for the current Monday-Sunday
- * week. On Sundays the weekly podium rises with a crown for the MVP.
+ * Household leaderboard (H06): points (stickers for child accounts), a fair streak
+ * flame (CH-19), done and assigned counts and a contribution ring per member, for
+ * the current Monday-Sunday week. Once a week has closed, its podium rises with a
+ * crown for the MVP on the first days of the next week (CH-21).
  */
-export function ChoreLeaderboard({ stats, colors, photos, showPodium }: LeaderboardProps) {
-  const podium = weeklyPodium(stats);
+export function ChoreLeaderboard({ stats, colors, photos, podium }: LeaderboardProps) {
   const range = `${format(dayFromKey(stats.weekStart), 'MMM d')} - ${format(dayFromKey(stats.weekEnd), 'MMM d')}`;
   return (
     <section aria-labelledby="chore-leaderboard-title" className="rounded-xl border bg-card p-4 shadow-raised">
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="chore-leaderboard-title" className="font-headline text-lg font-semibold text-foreground">This week</h2>
-        <p className="text-xs text-muted-foreground">{range} · {POINTS.base} points a chore, +{POINTS.onTime} on time</p>
+        <p className="text-xs text-muted-foreground">{range}</p>
       </div>
-      {showPodium && podium.length > 0 && <Podium podium={podium} colors={colors} photos={photos} />}
+      {podium && weekPodium(podium).length > 0 && <Podium summary={podium} colors={colors} photos={photos} />}
       <ul className="space-y-2">
         {stats.members.map(member => (
           <li key={member.uid} className="flex items-center gap-3">
@@ -127,6 +136,7 @@ export function ChoreLeaderboard({ stats, colors, photos, showPodium }: Leaderbo
                   ? `${member.streak}-day streak${member.streakActiveToday ? '' : ' (keep it going today)'}`
                   : 'No streak yet'}
               </span>
+              <span className="block text-xs text-muted-foreground" data-testid="leaderboard-done-assigned">{member.weekCompleted} done · {member.weekAssignedDone} of {member.weekAssigned} assigned done</span>
             </span>
             {member.stickerMode ? (
               <Stickers count={member.stickers} />
@@ -136,10 +146,13 @@ export function ChoreLeaderboard({ stats, colors, photos, showPodium }: Leaderbo
                 <span className="text-xs text-muted-foreground">points</span>
               </span>
             )}
-            <FairShareRing member={member} color={colors.get(member.uid)} total={stats.weekTotal} />
+            <ContributionRing member={member} color={colors.get(member.uid)} total={stats.weekCompletedTotal} />
           </li>
         ))}
       </ul>
+      <p className="mt-3 text-xs text-muted-foreground" data-testid="leaderboard-rules">
+        {POINTS.base} points a chore, +{POINTS.perSubTask} a step, +{POINTS.onTime} on time, up to {DAILY_POINT_CAP} a day. One-time chores you add for yourself earn none. A streak counts the days you had chores and finished them all on time.
+      </p>
     </section>
   );
 }

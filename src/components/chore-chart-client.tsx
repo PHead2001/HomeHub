@@ -38,18 +38,20 @@ import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear,
 import { completerLabel } from '@/lib/chores/completion';
 import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
-import { computeChoreStats, isPodiumDay, statsMemberFrom } from '@/lib/chores/stats';
+import { closedWeekSummary, computeChoreStats, podiumWeekStart, statsMemberFrom } from '@/lib/chores/stats';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
 import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
+import { householdDayZone } from '@/lib/household-day';
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
 import { useChoreLiveData } from '@/components/chores/use-chore-live-data';
 import { mergeLiveRows } from '@/lib/chores/live';
 import { MissedRecently } from '@/components/chores/missed-recently';
+import { useMissedEntries } from '@/components/chores/use-missed-entries';
 import { useHouseholdToday } from '@/components/chores/use-today';
 import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
@@ -301,6 +303,8 @@ export function ChoreChartClient() {
           isCompleted: false,
           completedSubTasks: [],
           sourceType: 'temporary',
+          // CH-20: a one-time chore you add for yourself earns no points.
+          createdByUid: currentUser.uid,
         });
         if (shouldNotify(assignee.uid)) {
           const notificationId = getDeterministicNotificationId({ sourceType: 'chore-assignment', sourceId: choreRef.id, stateKey });
@@ -483,6 +487,7 @@ export function ChoreChartClient() {
             templateId: template.id,
             // One-time library assignment: never folded as a missed repeating instance.
             sourceType: 'template',
+            createdByUid: currentUser.uid,
             originalDueDate,
             roomIds: roomId === 'general' ? [] : [roomId],
           });
@@ -906,8 +911,14 @@ export function ChoreChartClient() {
   // matching key for older `completedByEmail` / `assignedToEmail` chores, never shown.
   const statsMembers = useMemo(() => householdUsers.map(statsMemberFrom), [householdUsers]);
   // Follows `today`, so the week, streaks and podium roll over at midnight.
-  const householdZone = household?.timeZone;
-  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(today), householdZone ? { today, timeZone: householdZone } : undefined), [assignedChores, statsMembers, today, householdZone]);
+  // On household days (D-6), like upkeep's weekly snapshot.
+  const statsZone = householdDayZone(household?.timeZone);
+  // CH-7 expired missed days still break fair streaks (CH-19); one listener with "N missed".
+  const missedEntries = useMissedEntries(currentUser?.householdId);
+  const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(householdDay), { today: householdDay, timeZone: statsZone, missed: missedEntries }), [assignedChores, statsMembers, householdDay, statsZone, missedEntries]);
+  // CH-21: the closed week's podium on the first days of a new week, never before it ends.
+  const podiumWeek = podiumWeekStart(householdDay);
+  const podium = useMemo(() => (podiumWeek ? closedWeekSummary(assignedChores, statsMembers, podiumWeek, statsZone) : null), [assignedChores, statsMembers, podiumWeek, statsZone]);
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
 
   // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.
@@ -1318,7 +1329,7 @@ export function ChoreChartClient() {
                       action={capabilities.canCreate ? { label: 'Add Chore', icon: <Plus className="h-4 w-4" />, onClick: openAdd } : undefined}
                     />
                   )}
-                  <MissedRecently householdId={currentUser?.householdId} today={householdDay} nameOf={entry => {
+                  <MissedRecently entries={missedEntries} today={householdDay} nameOf={entry => {
                     const user = entry.assignedToUid ? usersByUid.get(entry.assignedToUid) : undefined;
                     return user ? memberName(user) : entry.assignedToDisplayName || 'Unassigned';
                   }} />
@@ -1373,7 +1384,7 @@ export function ChoreChartClient() {
 
           {showLeaderboard && (
             <aside className="min-w-0 lg:sticky lg:top-20 lg:self-start">
-              <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} showPodium={isPodiumDay(statsNow(today))} />
+              <ChoreLeaderboard stats={stats} colors={memberColors} photos={photos} podium={podium} />
             </aside>
           )}
         </div>

@@ -13,10 +13,17 @@ import {addDays, isDayString, toDay} from "./calendar";
 
 /** Days a missed repeating day stays in To Do before upkeep expires it. */
 export const MISSED_EXPIRY_DAYS = 7;
-/** Days of missed entries `stats/missed-recent` keeps. */
-export const MISSED_KEEP_DAYS = 28;
-/** Most entries kept (latest days first). */
-export const MAX_MISSED_ENTRIES = 300;
+/**
+ * Days of missed entries `stats/missed-recent` keeps: as far back as fair
+ * streaks look (CH-19, 90 days), so a pruned missed day never joins two
+ * streaks.
+ */
+export const MISSED_KEEP_DAYS = 90;
+/**
+ * Most entries kept (latest days first). At the cap, days before the oldest
+ * kept day are unknown, and streaks end there.
+ */
+export const MAX_MISSED_ENTRIES = 1000;
 /** Days the page's summary counts ("missed in the last 2 weeks"). */
 export const MISSED_SUMMARY_DAYS = 14;
 export const MISSED_DOC_ID = "missed-recent";

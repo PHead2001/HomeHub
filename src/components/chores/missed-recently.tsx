@@ -1,31 +1,20 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import { MISSED_DOC_ID, MISSED_EXPIRY_DAYS, readMissedEntries, recentMissed, type MissedEntry } from '@functions/shared/missed';
+import { MISSED_EXPIRY_DAYS, recentMissed, type MissedEntry } from '@functions/shared/missed';
 import { format } from 'date-fns';
 import { dayFromKey } from '@/lib/chores/dates';
 
 /**
  * CH-7: what was not done stays visible after it leaves To Do. Missed days of a repeating
  * chore expire from To Do after a week (server upkeep, functions/src/shared/missed.ts) and
- * are listed here: "3 missed in the last 2 weeks", with what, whose and which day.
+ * are listed here: "3 missed in the last 2 weeks", with what, whose and which day. The
+ * page reads the entries once (`useMissedEntries`) for this list and for fair streaks.
  */
-export function MissedRecently({ householdId, today, nameOf }: {
-  householdId: string | null | undefined;
+export function MissedRecently({ entries, today, nameOf }: {
+  entries: readonly MissedEntry[];
   today: string;
   nameOf: (entry: MissedEntry) => string;
 }) {
-  const [entries, setEntries] = useState<MissedEntry[]>([]);
-  useEffect(() => {
-    if (!householdId) return;
-    return onSnapshot(
-      doc(db, 'households', householdId, 'stats', MISSED_DOC_ID),
-      snap => setEntries(readMissedEntries(snap.exists() ? snap.data() : null)),
-      () => setEntries([]),
-    );
-  }, [householdId]);
   const recent = recentMissed(entries, today);
   if (recent.length === 0) return null;
   return (

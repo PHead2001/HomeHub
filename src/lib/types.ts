@@ -455,6 +455,8 @@ export type Chore = {
   completedByName?: string | null;
   /** Random id of the current completion; Undo succeeds only while it still matches. */
   completionId?: string | null;
+  /** Who added a one-time chore (rules: the writer, immutable). CH-20: your own earn no points. */
+  createdByUid?: string;
 };
 
 export type UserRole = 'owner' | 'admin' | 'member' | 'child' | 'guest' | 'newuser' | 'super-admin' | 'user';
