@@ -243,7 +243,7 @@ export function pluralize(count: number, singular: string, plural = `${singular}
 }
 
 /** Fields a restore never writes back: stamps that only the writer of the moment may set (rules: request.time, own uid). */
-const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId', 'restoreOpId', 'restoredAt', 'pantryCreditedAt', 'creditTripId'] as const;
+const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt', 'undoOpId', 'restoreOpId', 'restoredAt', 'pantryCreditedAt', 'creditTripId', 'deviceAttribution', 'purchaseDeviceAttribution'] as const;
 
 /**
  * The document an Undo-after-delete writes back: the item as it was read,
@@ -255,7 +255,8 @@ const RESTORE_DROPS = ['purchasedByUid', 'purchasedAt', 'editedByUid', 'editedAt
  * rules accept them only as the writer's own uid and the server's time; a restore
  * keeps its status and purchaseOpId). The server-only put-away stamps
  * (`pantryCreditedAt`, `creditTripId`) are dropped too: the rules refuse a client
- * create that carries them. `restoreDocument` (item-writes.ts) adds `restoredAt`
+ * create that carries them, as are a wall tablet's `deviceAttribution` and
+ * `purchaseDeviceAttribution` (written only by the server's device actions). `restoreDocument` (item-writes.ts) adds `restoredAt`
  * at write time.
  * Without a signed-in uid the snapshot is returned as a copy, without the stamps.
  */

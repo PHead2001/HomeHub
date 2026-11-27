@@ -54,7 +54,8 @@ describe('what may queue (11.1, WT-19f)', () => {
     assert.equal(queueAllowed('pets.feed.backdated.old', ctx, proven), false, 'PIN class');
     assert.equal(queueAllowed('device.settings', ctx, proven), false);
     assert.equal(queueAllowed('device.exit.remove', ctx, proven), false);
-    assert.equal(queueAllowed('shopping.add', ctx, proven), false);
+    assert.equal(queueAllowed('shopping.add', ctx, proven), false, 'not proven in this set: PIN, never queued');
+    assert.equal(queueAllowed('shopping.remove', ctx, proven), false, 'not on tablets');
     assert.equal(queueAllowed('chores.complete', ctx, proven), true);
     assert.equal(queueAllowed('chores.complete', { pointsPin: 'everyone', actorRole: 'member' }, proven), false, 'points PIN on');
     assert.equal(queueAllowed('chores.complete', { pointsPin: 'kids', actorRole: 'child' }, proven), false);

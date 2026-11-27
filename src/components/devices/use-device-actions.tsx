@@ -85,6 +85,12 @@ import {
   undoLogFromTabletAction,
   undoSnoozeFromTabletAction,
 } from '@/app/maintenance/device-actions';
+import {
+  addShoppingItemsFromTabletAction,
+  tickShoppingItemFromTabletAction,
+  undoShoppingAddFromTabletAction,
+  undoShoppingTickFromTabletAction,
+} from '@/app/shopping/device-actions';
 import type { TabletActor } from './tablet-context';
 
 type Answer = { ok: true; data: unknown } | { ok: false; code: DeviceRefusal; retryAfterSec?: number };
@@ -139,6 +145,12 @@ const SENDERS: Partial<Record<DeviceCapability, (base: Base, intent: Readonly<Re
   'maintenance.editSchedules': (base, intent) => editSchedulesFromTabletAction({ ...(intentFields(intent) as unknown as Parameters<typeof editSchedulesFromTabletAction>[0]), ...base }),
   'maintenance.log.delete': (base, intent) => deleteMaintenanceLogFromTabletAction({ ...base, logId: String(intent.logId ?? '') }),
   'maintenance.record.delete': (base, intent) => deleteRecordFromTabletAction({ ...base, targetType: intent.targetType === 'vehicle' ? 'vehicle' : 'home_asset', targetId: String(intent.targetId ?? '') }),
+  // Shopping: the kitchen view's quick add and rows, and the dashboard's Shopping tile (tick).
+  // An Undo that finds the item changed since is refused `changed_since` by the server.
+  'shopping.add': (base, intent) => addShoppingItemsFromTabletAction({ ...base, listId: String(intent.listId ?? ''), entries: Array.isArray(intent.entries) ? intent.entries as Array<{ name: string; quantity: number }> : [] }),
+  'shopping.add.undo': (base) => undoShoppingAddFromTabletAction(base),
+  'shopping.tick': (base, intent) => tickShoppingItemFromTabletAction({ ...base, listId: String(intent.listId ?? ''), itemId: String(intent.itemId ?? '') }),
+  'shopping.tick.undo': (base) => undoShoppingTickFromTabletAction(base),
 };
 
 export const canSend = (capability: DeviceCapability): boolean => Boolean(SENDERS[capability]);

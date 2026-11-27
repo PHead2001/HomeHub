@@ -86,6 +86,9 @@ const M_DELETE = ['maintenance.delete'] as const satisfies readonly HouseholdPer
 /** Completing a cycle writes a log and advances the schedule: both permissions (all of them). */
 const M_COMPLETE = ['maintenance.edit', 'maintenance.createLogs'] as const satisfies readonly HouseholdPermission[];
 
+// Shopping: the permission the personal writes need (firestore.rules, shopping items).
+const SHOP_EDIT = ['shopping.edit'] as const satisfies readonly HouseholdPermission[];
+
 /** Face-level once proven (`face*`); queueable. */
 const faceStar = (section: DeviceSection, permissions: readonly HouseholdPermission[], extra: Partial<DeviceCapabilityPolicy> = {}): DeviceCapabilityPolicy => ({
   section, levelClass: 'face', permissions, faceNeedsUndoProof: true, queueable: true, ...extra,
@@ -157,9 +160,15 @@ export const DEVICE_ACTION_POLICY = {
   'notifications.dismiss': notOnTablets('home'),
   'notifications.dismiss.undo': notOnTablets('home'),
 
-  // --- Shopping: a read-only section in this goal (JC-24) -----------------------
-  'shopping.add': notOnTablets('shopping'),
-  'shopping.tick': notOnTablets('shopping'),
+  // --- Shopping (supersedes JC-24, which kept the section read-only) ------------
+  // Adding and ticking items are face* for the selected member with the personal path's
+  // permission (shopping.edit, as the rules ask of a phone) and a verified Undo (only the
+  // original person, as on a phone). Never subject to the points PIN (WT-22d). Removing an
+  // item, put-away, used-up and scanning stay off tablets for now (no device operation).
+  'shopping.add': faceStar('shopping', SHOP_EDIT),
+  'shopping.add.undo': faceStar('shopping', SHOP_EDIT, { actorRule: 'original-actor' }),
+  'shopping.tick': faceStar('shopping', SHOP_EDIT),
+  'shopping.tick.undo': faceStar('shopping', SHOP_EDIT, { actorRule: 'original-actor' }),
   'shopping.remove': notOnTablets('shopping'),
   'shopping.putAway': notOnTablets('shopping'),
   'shopping.usedUp': notOnTablets('shopping'),
@@ -255,6 +264,12 @@ export const UNDO_PROVEN: ReadonlySet<DeviceCapability> = new Set<DeviceCapabili
   'maintenance.log.undo',
   'maintenance.snooze',
   'maintenance.snooze.undo',
+  // Shopping on tablets: tests/server/device-shopping-undo.test.ts, the seven cases of 10.4
+  // for shopping.add (created and merged items) and shopping.tick.
+  'shopping.add',
+  'shopping.add.undo',
+  'shopping.tick',
+  'shopping.tick.undo',
 ]);
 
 export const isDeviceCapability = (value: unknown): value is DeviceCapability =>
@@ -292,6 +307,8 @@ export const UNDO_OF = {
   'maintenance.complete.undo': ['maintenance.complete'],
   'maintenance.log.undo': ['maintenance.log'],
   'maintenance.snooze.undo': ['maintenance.snooze'],
+  'shopping.add.undo': ['shopping.add'],
+  'shopping.tick.undo': ['shopping.tick'],
   'notifications.dismiss.undo': ['notifications.dismiss'],
 } as const satisfies Partial<Record<DeviceCapability, readonly DeviceCapability[]>>;
 
