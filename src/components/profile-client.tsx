@@ -22,10 +22,18 @@ import { AVATAR_MAX_EDGE, PROFILE_PHOTO_ACCEPT, avatarExtensionFor, ownAvatarPat
 import { NotificationSettings } from '@/components/profile/notification-settings';
 import { AppearanceSettings } from './appearance-settings';
 import { TabletPinCard } from '@/components/profile/tablet-pin-card';
+import { BirthdayField, MemberColorPicker } from '@/components/profile/member-extras';
+import { nicknameError } from '@/lib/profile/member-extras';
+import { memberColorFor } from '@/lib/member-colors';
 import { AccountCard } from '@/components/profile/account-card';
 
 const profileSchema = z.object({
   displayName: z.string().trim().min(2, 'Use at least 2 characters.').max(60, 'Keep it under 60 characters.'),
+  // PR-25: what the dashboard greeting calls you; one word, optional.
+  nickname: z.string().superRefine((value, ctx) => {
+    const error = nicknameError(value);
+    if (error) ctx.addIssue({ code: z.ZodIssueCode.custom, message: error });
+  }),
 });
 
 export function ProfileClient() {
@@ -43,6 +51,7 @@ export function ProfileClient() {
     resolver: zodResolver(profileSchema),
     defaultValues: {
       displayName: currentUser?.displayName || '',
+      nickname: currentUser?.nickname || '',
     },
   });
   // An edited name, a chosen photo or a save in progress keeps the shell from reloading on its own.
@@ -139,6 +148,7 @@ export function ProfileClient() {
       const newUrl = avatarUrl || null;
       const saved = await updateUser({
         displayName: values.displayName.trim(),
+        nickname: values.nickname.trim() || null,
         avatarUrl: newUrl,
       }, {
         // The old photo is deleted only once nothing housemates read can still point at
@@ -160,7 +170,7 @@ export function ProfileClient() {
         clearPhotoChoice();
         setRemovePhoto(false);
       }
-      form.reset({ displayName: values.displayName.trim() });
+      form.reset({ displayName: values.displayName.trim(), nickname: values.nickname.trim() });
     } catch (error) {
       console.error('Failed to update profile', error);
       toastError(error, 'Could not save your profile');
@@ -198,6 +208,7 @@ export function ProfileClient() {
                     uid={currentUser.uid || currentUser.email}
                     name={shownName}
                     photoUrl={shownPhoto}
+                    color={memberColorFor(currentUser.uid || currentUser.email, currentMember?.color)}
                     size="lg"
                     ring
                     className="h-20 w-20 text-2xl"
@@ -254,7 +265,7 @@ export function ProfileClient() {
                     <p id="profile-photo-hint" className="text-xs text-muted-foreground">
                       {photoChanged
                         ? 'Save changes to update your photo.'
-                        : 'JPG, PNG, GIF, WebP or HEIC. Photos are shrunk to 512 px and their location data is removed. Without a photo you get a gradient in your member color.'}
+                        : 'JPG, PNG, GIF, WebP or HEIC. Photos are shrunk to 512 px and their location data is removed. Without a photo you get a gradient in your colour, which you can choose below.'}
                     </p>
                   </div>
                 </div>
@@ -272,6 +283,21 @@ export function ProfileClient() {
                   )}
                 />
 
+                <FormField
+                  control={form.control}
+                  name="nickname"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>What should we call you? <span className="font-normal text-muted-foreground">(optional)</span></FormLabel>
+                      <FormControl>
+                        <Input placeholder="For example Mom or Grandpa" autoComplete="nickname" maxLength={20} {...field} />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">Used in your dashboard greeting. Only you see it.</p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
                 {/* PR-15: enabled only when something changed. */}
                 <Button type="submit" disabled={isSubmitting || preparingPhoto || !(form.formState.isDirty || photoChanged)}>
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -279,6 +305,12 @@ export function ProfileClient() {
                 </Button>
               </form>
             </Form>
+            {household && currentMember?.status === 'active' && (
+              <div className="mt-6 space-y-6 border-t pt-6">
+                <MemberColorPicker />
+                <BirthdayField />
+              </div>
+            )}
           </CardContent>
         </Card>
         <NotificationSettings />

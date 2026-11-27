@@ -662,6 +662,24 @@ describe('profiles', () => {
     assert.deepEqual(stored, { version: 2, mode: 'dark', darkPreset: 'hearth', lightPreset: 'light', reduceMotion: true });
   });
 
+  test('a person may set a short nickname on their own profile only (PR-25)', async () => {
+    const ref = (user: Identity, owner: Identity = user) => doc(dbFor(user), 'users', owner.email);
+    await assertSucceeds(updateDoc(ref(users.member), { nickname: 'Mom' }));
+    await assertSucceeds(updateDoc(ref(users.member), { nickname: null }));
+    await assertFails(updateDoc(ref(users.member), { nickname: 'x'.repeat(21) }));
+    await assertFails(updateDoc(ref(users.member), { nickname: 42 }));
+    await assertFails(updateDoc(ref(users.owner, users.member), { nickname: 'Boss' }));
+  });
+
+  test('member colours and birthdays are server-written: nobody writes them from a client (PR-24, PR-25)', async () => {
+    for (const actor of [users.member, users.owner]) {
+      const db = dbFor(actor);
+      await assertFails(updateDoc(doc(db, 'households', householdA, 'members', actor.uid), { color: 3 }));
+      await assertFails(updateDoc(doc(db, 'households', householdA, 'members', actor.uid), { birthday: { month: 5, day: 4 } }));
+    }
+    await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA, 'members', users.member.uid), { color: 2 }));
+  });
+
   test('per-user notification inboxes cannot be written by others', async () => {
     await assertFails(setDoc(doc(dbFor(users.owner), 'users', users.member.email, 'notifications', 'n'), { message: 'hi' }));
   });

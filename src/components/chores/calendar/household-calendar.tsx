@@ -75,7 +75,7 @@ function useIsPhone(): boolean {
 }
 
 const VIEW_NOUN: Record<View, string> = { day: 'day', week: 'week', month: 'month' };
-type Member = CalendarMember & { avatarUrl?: string | null; joinedAt?: string; role?: string };
+type Member = CalendarMember & { avatarUrl?: string | null; joinedAt?: string; role?: string; color?: number };
 
 const KIND_FILTERS: Record<CalendarEventKind, string> = { chore: 'Chores', maintenance: 'Maintenance', medication: 'Medication', care: 'Pet care', pantry: 'Pantry' };
 /** Week cells show this many items before "+N more" opens the day (CA-14). */
@@ -156,6 +156,7 @@ export function HouseholdCalendar() {
     name: person.displayName,
     avatarUrl: person.avatarUrl,
     joinedAt: person.joinedAt,
+    color: person.color,
     role: person.role,
     // Kid profiles take no rotation turns yet (CH-28, HO-15d), as on the server.
     ...(person.kind === 'identity' ? { kind: 'identity' } : {}),
@@ -312,7 +313,7 @@ export function HouseholdCalendar() {
   /* Events                                                                  */
   /* ---------------------------------------------------------------------- */
 
-  const colors = useMemo(() => memberColorMap(members.map(m => ({ uid: m.uid, joinedAt: m.joinedAt }))), [members]);
+  const colors = useMemo(() => memberColorMap(members.map(m => ({ uid: m.uid, joinedAt: m.joinedAt, color: m.color }))), [members]);
   const chipMembers = useMemo(() => new Map<string, ChipMember>(members.map(m => [m.uid, { uid: m.uid, name: m.name, avatarUrl: m.avatarUrl }])), [members]);
   // The whole visible range, so repeating chores beyond the server's 30-occurrence
   // lookahead still show.

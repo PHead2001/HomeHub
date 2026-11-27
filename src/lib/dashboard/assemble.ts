@@ -8,6 +8,7 @@
  * - a pet's feeding claim needs both feeding date-shape queries to have answered
  *   without error; otherwise the pet's `fed` is null ("unavailable").
  */
+import { birthdayNamesOn } from '@/lib/profile/member-extras';
 import { newestFirst } from '../pets/care';
 import type { MissedEntry } from '../../../functions/src/shared/missed';
 import { computeChoreStats } from '../chores/stats';
@@ -156,6 +157,12 @@ export function assembleDashboardFacts(
     const merged = new Map<string, RawDoc>();
     [...raw.openChores, ...raw.completedChores].forEach((chore) => merged.set(chore.id, chore));
     facts.streaks = streakTileModel(computeChoreStats([...merged.values()] as unknown as ChoreRecord[], streakMembersFrom(raw.members), context.now, { today, timeZone: zone, missed: raw.missedRecent, weekStartsOn: context.weekStartsOn ?? 1 }));
+  }
+
+  // PR-25: members whose opt-in birthday is today, on the household day (D-6).
+  if (access.chores && !failed.has(STREAKS_FAILURE) && raw.members) {
+    const names = birthdayNamesOn(raw.members as unknown as Array<Record<string, unknown>>, today);
+    if (names.length > 0) facts.birthdays = names;
   }
 
   // HP-11b: the golden roof counts the same completions listener, so it turns gold live.
