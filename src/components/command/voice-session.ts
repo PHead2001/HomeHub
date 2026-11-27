@@ -27,6 +27,11 @@ type Recognition = {
 type RecognitionConstructor = new () => Recognition;
 
 export type VoiceHandlers = {
+  /**
+   * Called first when attaching, before anything heard meanwhile is replayed, so an
+   * error or end that already happened is the state the listener is left in.
+   */
+  onAttach?: () => void;
   onText: (text: string, final: boolean) => void;
   onError: (message: string) => void;
   onEnd: () => void;
@@ -95,7 +100,9 @@ export type VoiceAttachment = { stop: () => void; detach: () => void };
 
 const bind = (session: Session, handlers: VoiceHandlers): VoiceAttachment => {
   session.handlers = handlers;
-  // Replay what happened before the palette attached.
+  handlers.onAttach?.();
+  // Replay what happened before the palette attached (after onAttach, so a denied
+  // microphone or a finished phrase is never overwritten by "listening").
   if (session.heard) handlers.onText(session.heard.text, session.heard.final);
   if (session.error) handlers.onError(session.error);
   if (session.ended) handlers.onEnd();

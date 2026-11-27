@@ -24,6 +24,11 @@ export function useVoiceInput() {
   }, []);
 
   const handlersFor = useCallback((onText: (text: string, final: boolean) => void) => ({
+    // Listening is set as the session is taken over, before its replayed error or end.
+    onAttach: () => {
+      setError(null);
+      setListening(true);
+    },
     onText,
     onError: (message: string) => {
       setError(message);
@@ -36,8 +41,6 @@ export function useVoiceInput() {
     if (!next) return false;
     attachment.current?.detach();
     attachment.current = next;
-    setError(null);
-    setListening(true);
     return true;
   }, []);
 

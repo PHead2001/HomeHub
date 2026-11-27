@@ -670,7 +670,9 @@ export function CommandPalette({
         // Feeding mode has no field: focus waits on the dialog until its pets have loaded,
         // and FeedingMode then puts it on the first pet (never on "Search or type instead").
         onOpenAutoFocus={(event) => {
-          if (mode !== 'feeding' || pending) return;
+          // Opened by voice on a touch screen, nothing takes focus either, so no keyboard rises (QA-14).
+          const holdFocus = (mode === 'feeding' && !pending) || (coarse && startVoice && !mode);
+          if (!holdFocus) return;
           event.preventDefault();
           (event.currentTarget as HTMLElement | null)?.focus();
         }}

@@ -599,6 +599,8 @@ export function parseQuickAdd(input: string, context: QuickAddContext): QuickAdd
 
   const shopping = parseShopping(text, context);
   if (!shopping || !shopping.list) return null;
+  // A sentence that named its list ("milk to my groceries") is explicit and kept as is.
+  if (shopping.explicit) return shopping;
   // Bare text is a grocery guess only when it reads like things to buy, and never
   // when it names a room or a member (QA-2).
   if (!looksLikeItems(text, shopping.items)) return null;

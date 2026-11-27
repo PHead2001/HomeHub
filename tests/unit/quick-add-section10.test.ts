@@ -154,3 +154,14 @@ describe('QA-16, QA-22: voice', () => {
     assert.equal(voiceAutoPreview(null), false);
   });
 });
+
+describe('QA-2: a sentence that names its list is never filtered as a guess', () => {
+  it('keeps "milk to my groceries" and "milk on our groceries"', () => {
+    for (const text of ['milk to my groceries', 'milk on our groceries']) {
+      const intent = parse(text);
+      assert.ok(intent?.kind === 'shopping' && intent.explicit && intent.list?.id === 'groceries' && intent.items[0].name === 'Milk', text);
+    }
+    // Without the list it is still a sentence, not a guess.
+    assert.equal(parse('gave Rex his pill'), null);
+  });
+});
