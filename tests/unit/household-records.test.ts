@@ -80,6 +80,11 @@ describe('pending-member reminder timing', () => {
   test('not due within 24 hours', () => {
     assert.equal(pendingReminderDue(hoursAgo(23.9), now), false);
     assert.equal(pendingReminderDue(hoursAgo(0), now), false);
+    // HO-7: never reminded, the join time is the baseline.
+    assert.equal(pendingReminderDue(undefined, now, hoursAgo(1)), false);
+    assert.equal(pendingReminderDue(undefined, now, hoursAgo(24)), true);
+    assert.equal(pendingReminderDue(hoursAgo(30), now, hoursAgo(1)), true, 'a stamp wins over the join time');
+    assert.equal(pendingReminderDue(undefined, now, 'garbage'), true);
   });
 
   test('never reminded: measured from when they asked to join, not "long ago" (HO-7)', () => {
