@@ -19,6 +19,7 @@ import { DeferredPushNotificationManager, DeferredToaster } from '@/components/d
 import { CommandCenter } from '@/components/command/command-center';
 import { TimeOfDayTint } from '@/components/dashboard/time-of-day';
 import { ROOT_TITLE } from '@/lib/shell/page-titles';
+import { RouteFocus } from '@/components/shell/route-focus';
 
 // Fonts are bundled from npm (Fontsource variable fonts, Latin subset), not fetched
 // from Google Fonts at build time: that download failed intermittently and broke
@@ -95,8 +96,17 @@ export default function RootLayout({
             <FirebaseErrorListener />
             <PasswordChangeHandler />
             <HouseholdManager>
+              {/* SL-18: the first Tab stop skips the header to the page. */}
+              <a
+                href="#main"
+                className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-2 focus:z-[60] focus:inline-flex focus:min-h-11 focus:items-center focus:rounded-md focus:bg-background focus:px-4 focus:text-foreground focus:shadow-lg focus:ring-2 focus:ring-ring coarse:focus:min-h-12"
+                data-testid="skip-link"
+              >
+                Skip to content
+              </a>
               <Header />
-              <main className="flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">{children}</main>
+              <main id="main" tabIndex={-1} className="flex-1 pb-[calc(4rem+env(safe-area-inset-bottom))] outline-none md:pb-0">{children}</main>
+              <RouteFocus />
               <MobileTabBar />
               <CommandCenter />
             </HouseholdManager>

@@ -11,6 +11,8 @@ import { SECTION_TITLES, documentTitle, ROOT_TITLE, TITLE_TEMPLATE } from '../..
 import { AUTO_DARK_QUARTERS, autoIsDark, nextAutoSwitch, parseAppearance, resolvePresetId, themeBootstrapScript, APPEARANCE_STORAGE_KEY } from '../../src/lib/theme/appearance';
 import { isThemeMode } from '../../src/lib/theme/tokens';
 
+import { shouldMoveRouteFocus } from '../../src/lib/shell/route-focus';
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('SL-1: section error boundaries', () => {
@@ -198,5 +200,36 @@ describe('SL-14: theme "Automatic by time of day"', () => {
     assert.match(provider, /useAutoClock\(preferences\.mode === 'auto'\)/);
     assert.match(provider, /nextAutoSwitch\(current\)/);
     assert.match(provider, /visibilitychange/);
+  });
+});
+
+describe('SL-18: skip link and focus after navigation', () => {
+  const focus = (patch: Partial<{ onBody: boolean; inShellNav: boolean; overlayOpen: boolean }> = {}) =>
+    ({ onBody: false, inShellNav: false, overlayOpen: false, ...patch });
+
+  it('moves focus only on a real page change, from the body or the shell navigation', () => {
+    assert.equal(shouldMoveRouteFocus({ previousPath: null, path: '/', focus: focus({ onBody: true }) }), false, 'first load');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/chores', path: '/chores', focus: focus({ onBody: true }) }), false, 'same page');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus({ inShellNav: true }) }), true, 'header link');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus({ onBody: true }) }), true, 'body');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus() }), false, 'a control in the page keeps focus');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus({ onBody: true, overlayOpen: true }) }), false, 'a dialog is open');
+  });
+
+  it('the layout has the skip link, main#main and the route focus; the tab bar counts as shell navigation', () => {
+    const layout = source('src/app/layout.tsx');
+    assert.match(layout, /href="#main"/);
+    assert.match(layout, /<main id="main" tabIndex=\{-1\}/);
+    assert.match(layout, /<RouteFocus \/>/);
+    assert.ok(layout.indexOf('href="#main"') < layout.indexOf('<Header />'), 'the skip link comes before the header');
+    assert.match(source('src/components/mobile-tab-bar.tsx'), /data-shell-nav/);
+    const component = source('src/components/shell/route-focus.tsx');
+    assert.match(component, /preventScroll: true/);
+    // Closed overlays that stay mounted (the force-mounted account menu, the tab bar's
+    // hidden quick-add fan) never block it: only a shown one counts.
+    assert.match(component, /overlayOpen: overlayShown\(\)/);
+    const rule = source('src/lib/shell/route-focus.ts');
+    assert.match(rule, /closest\('\[aria-hidden="true"\]'\)/);
+    assert.match(rule, /data-state'\) === 'closed'/);
   });
 });

@@ -178,4 +178,20 @@ test.describe('app shell, audit section 11', () => {
     await expect(page).toHaveURL(/\/chores\/?$/);
     await expect(page).toHaveTitle('Chores - HomeHub');
   });
+
+  test('SL-18: a skip link leads to the page, and a header link moves focus to the new heading', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/', 'Welcome Home');
+    await page.keyboard.press('Tab');
+    const skip = page.getByTestId('skip-link');
+    await expect(skip).toBeFocused();
+    await expect(skip).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('main#main')).toBeFocused();
+
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Chores' }).click();
+    await expect(page).toHaveURL(/\/chores\/?$/);
+    // The heading takes focus once it renders (main holds it meanwhile, for up to 6 s).
+    await expect(page.locator('main#main h1').first()).toBeFocused({ timeout: 10_000 });
+  });
 });
