@@ -109,9 +109,12 @@ function LibraryItemDialog({
     setExisting(null);
   }, [itemToEdit, isOpen, reset, prefillBarcode]);
 
+  // After a scan, focus moves on to the product name (BL-18), not back to the scan button.
+  const focusNameAfterScan = useRef(false);
   const handleBarcodeScan = (barcode: string) => {
     setValue('id', barcode, { shouldValidate: true });
     setExisting(null);
+    focusNameAfterScan.current = true;
     setIsScannerOpen(false);
   };
 
@@ -159,7 +162,14 @@ function LibraryItemDialog({
   return (
     <>
       <Dialog open={isScannerOpen} onOpenChange={setIsScannerOpen}>
-        <DialogContent>
+        <DialogContent
+          onCloseAutoFocus={(event) => {
+            if (!focusNameAfterScan.current) return;
+            focusNameAfterScan.current = false;
+            event.preventDefault();
+            form.setFocus('name');
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Scan Barcode</DialogTitle>
             <DialogDescription>Use your camera to fill the barcode field for this library item.</DialogDescription>

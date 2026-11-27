@@ -185,4 +185,24 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
       .map((document) => document.data().status), { timeout: 10_000 })
       .toEqual(['purchased']);
   });
+
+  test('a camera that cannot start says why over the camera area and moves focus to the number field (BL-6, BL-18)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // The test browser has no camera (or no permission): the denial or no-camera path.
+    await page.clock.setFixedTime(fixedNow);
+    await page.goto(`/library?add=${TIMEOUT}`);
+    await page.getByRole('dialog', { name: 'Add New Library Item' }).getByRole('button', { name: 'Scan product barcode' }).click();
+    const scanner = page.getByRole('dialog', { name: 'Scan Barcode' });
+    await expect(scanner.getByTestId('scanner-camera-error')).toBeVisible({ timeout: 15_000 });
+    // No aiming frame over an error, and the way on is the typed number.
+    await expect(scanner.getByTestId('scanner-frame')).toHaveCount(0);
+    await expect(scanner.getByLabel('Barcode number')).toBeFocused();
+    await expect(scanner.getByTestId('scanner-status')).toHaveText(/Type the barcode number instead/);
+    // A typed code fills the form and focus moves on to the product name (BL-18).
+    await scanner.getByLabel('Barcode number').fill(UNKNOWN);
+    await scanner.getByRole('button', { name: 'Use barcode' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
+    await expect(dialog.getByLabel('Barcode (UPC)')).toHaveValue(UNKNOWN);
+    await expect(dialog.getByLabel('Product Name')).toBeFocused();
+  });
 });

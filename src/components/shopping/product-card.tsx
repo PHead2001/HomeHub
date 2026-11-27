@@ -60,7 +60,7 @@ export function ProductCard({
         {photo && (
           <Image src={photo} alt="" aria-hidden fill unoptimized sizes="320px" className="-z-10 scale-150 object-cover opacity-15 blur-3xl" />
         )}
-        <h2 className="line-clamp-2 break-words font-medium leading-snug">{item.name}</h2>
+        <h3 className="line-clamp-2 break-words font-medium leading-snug">{item.name}</h3>
         <p className="font-mono text-xs text-muted-foreground">{item.id}</p>
         {added && <p className="text-xs text-muted-foreground">Added {added}</p>}
         {(onEdit || onDelete) && (
