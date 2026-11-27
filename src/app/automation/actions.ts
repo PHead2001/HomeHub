@@ -4,13 +4,15 @@ import { authorizeHouseholdAction, type AuthorizedHouseholdUser } from '@/ai/act
 import { HomeHubAiError } from '@/ai/errors';
 import {
   HomeAssistantError,
+  callHomeAssistantService,
   fetchHomeAssistantSnapshot,
   normalizeHomeAssistantUrl,
 } from '@/lib/server/home-assistant';
-import { changeConfig, deleteCredentials, persistCredentials, readConfig, readConnectedUrl, syncConnectedFlag } from '@/lib/server/home-assistant-store';
-import { forgetSnapshot, householdSnapshot } from '@/lib/server/home-assistant-snapshot';
+import { changeConfig, deleteCredentials, persistCredentials, readConfig, readConnectedUrl, readCredentials, syncConnectedFlag } from '@/lib/server/home-assistant-store';
+import { forgetSnapshot, householdSnapshot, takeControlSlot } from '@/lib/server/home-assistant-snapshot';
 import { maySeeSensitive, visibleEntities, type HomeAssistantEntitySummary } from '@/lib/automation/entities';
 import { configForViewer, type AutomationConfig } from '@/lib/automation/config';
+import { controlService, isSafeScene } from '@/lib/automation/controls';
 import { homeStatus, houseDevices, type HomeStatus, type RoomDevices } from '@/lib/automation/home-status';
 import type { HouseholdPermission } from '@/lib/types';
 
@@ -178,4 +180,29 @@ export async function setAutomationRoom(context: Context, input: { entityId: str
 export async function setMembersSeeSensitive(context: Context, input: { show: boolean }): Promise<Result<AutomationConfig>> {
   return run(context, 'automation.manage', (user) =>
     changeFor(user, { kind: 'showSensitiveToMembers', show: input?.show }));
+}
+
+/**
+ * AU-14: switch a light or fan on or off, or activate a scene. `automation.control`,
+ * checked here; anything else (locks, alarms, garage doors, covers, cameras, scripts) is
+ * refused before Home Assistant is contacted.
+ */
+export async function controlHomeAssistantEntity(context: Context, input: { entityId: string; desired: 'on' | 'off' }): Promise<Result<null>> {
+  return run(context, 'automation.control', async (user) => {
+    const call = controlService(input?.entityId, input?.desired);
+    if (!call) throw new HomeAssistantError('HomeHub can only switch lights, fans and scenes.');
+    if (!takeControlSlot(user.householdId)) throw new HomeAssistantError('Too many switches at once. Wait a few seconds and try again.');
+    const credentials = await readCredentials(user.householdId);
+    if (!credentials) throw new HomeAssistantError('Home Assistant is not connected yet.');
+    if (call.domain === 'scene') {
+      // A scene can set locks or garage doors too: only scenes of lights and fans run.
+      const snapshot = await householdSnapshot(user.householdId);
+      if (!isSafeScene(snapshot.entities.find((entity) => entity.entity_id === call.entityId))) {
+        throw new HomeAssistantError('HomeHub only runs scenes made of lights and fans.');
+      }
+    }
+    await callHomeAssistantService(credentials.url, credentials.token, call);
+    forgetSnapshot(user.householdId);
+    return null;
+  });
 }

@@ -12,6 +12,8 @@ export type HomeAssistantEntitySummary = {
     device_class?: string;
     /** Climate entities: the measured temperature (AU-15). */
     current_temperature?: number;
+    /** Scenes: the entities the scene sets (AU-14 refuses scenes that touch anything but lights and fans). */
+    entity_id?: string[];
   };
   /** ISO time the state last changed (AU-3), when Home Assistant sent one. */
   last_changed?: string;

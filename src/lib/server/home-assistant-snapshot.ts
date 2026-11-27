@@ -20,5 +20,22 @@ export const householdSnapshot = async (householdId: string): Promise<HouseholdS
   return { ...result.value, fetchedAt: result.fetchedAt };
 };
 
-/** After a new token or a disconnect: the next read asks Home Assistant again. */
+const CONTROL_WINDOW_MS = 10_000;
+const CONTROL_LIMIT = 20;
+const controlWindows = new Map<string, number[]>();
+
+/** AU-10 for writes: at most 20 switch requests per household every 10 s on an instance. */
+export const takeControlSlot = (householdId: string, now = Date.now()): boolean => {
+  const recent = (controlWindows.get(householdId) ?? []).filter((at) => now - at < CONTROL_WINDOW_MS);
+  if (recent.length >= CONTROL_LIMIT) {
+    controlWindows.set(householdId, recent);
+    return false;
+  }
+  recent.push(now);
+  controlWindows.set(householdId, recent);
+  if (controlWindows.size > 500) controlWindows.delete(controlWindows.keys().next().value as string);
+  return true;
+};
+
+/** After a control or a disconnect: the next read asks Home Assistant again. */
 export const forgetSnapshot = (householdId: string) => cache.invalidate(householdId);

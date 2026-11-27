@@ -5,6 +5,7 @@ import { Eye, EyeOff, KeyRound, RefreshCw, Search, Unplug } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { auth, db } from '@/lib/firebase';
 import {
+  controlHomeAssistantEntity,
   disconnectHomeAssistant,
   getHomeAssistantEntities,
   getHomeAssistantStatus,
@@ -72,6 +73,7 @@ export function AutomationClient() {
   const { currentUser, permissions, household } = useAuth();
   const { toast } = useToast();
   const canManage = Boolean(permissions['automation.manage']);
+  const canControl = Boolean(permissions['automation.control']);
   const timeZone = householdDayZone(household?.timeZone);
   const visible = useVisible();
   const [status, setStatus] = useState<HomeAssistantStatus | null>(null);
@@ -81,6 +83,7 @@ export function AutomationClient() {
   const [isDisconnectOpen, setIsDisconnectOpen] = useState(false);
   const [isReplaceOpen, setIsReplaceOpen] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [pending, setPending] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [rooms, setRooms] = useState<RoomOption[]>([]);
@@ -177,6 +180,22 @@ export function AutomationClient() {
     return true;
   }, [context, toast]);
 
+  const handleControl = async (entityId: string, desired: 'on' | 'off') => {
+    const ctx = await context();
+    if (!ctx) return;
+    setPending((current) => ({ ...current, [entityId]: true }));
+    const result = await controlHomeAssistantEntity(ctx, { entityId, desired }).catch(failure);
+    if (!result.ok) {
+      toast({ variant: 'destructive', title: 'Could not switch it', description: result.message });
+    } else {
+      // Show the change at once; the refresh just after confirms it.
+      setList((current) => current && ({ ...current, entities: current.entities.map((entity) => (entity.entity_id === entityId && !entityId.startsWith('scene.') ? { ...entity, state: desired, last_changed: new Date().toISOString() } : entity)) }));
+      lastAttempt.current = null;
+      window.setTimeout(() => void loadEntities(), 1_500);
+    }
+    setPending((current) => ({ ...current, [entityId]: false }));
+  };
+
   const handleReplace = async (token: string) => {
     const ctx = await context();
     if (!ctx) return 'Your sign-in has expired. Please sign in again.';
@@ -253,13 +272,16 @@ export function AutomationClient() {
       now={new Date(now)}
       favorite={Boolean(config?.favorites.includes(entity.entity_id))}
       canManage={canManage}
+      canControl={canControl}
       rooms={rooms}
       roomId={config?.rooms[entity.entity_id] ?? null}
+      pending={Boolean(pending[entity.entity_id])}
       onToggleFavorite={() => {
         if (!config) return;
         void changeSettings({ kind: 'favorite', entityId: entity.entity_id, pinned: !config.favorites.includes(entity.entity_id) });
       }}
       onRoomChange={(roomId) => void changeSettings({ kind: 'room', entityId: entity.entity_id, roomId })}
+      onControl={(desired) => void handleControl(entity.entity_id, desired)}
     />
   );
   const grid = 'grid gap-3 md:grid-cols-2 xl:grid-cols-3';

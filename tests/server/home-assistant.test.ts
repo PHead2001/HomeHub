@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   HomeAssistantError,
+  callHomeAssistantService,
   fetchHomeAssistantSnapshot,
   fetchHomeAssistantStates,
   isPublicAddress,
@@ -116,16 +117,51 @@ describe('AU-3, AU-2: the snapshot', () => {
 
   test('keeps the change time and a thermostat reading, and says when the list was cut off', async () => {
     const many = Array.from({ length: 1005 }, (_, i) => ({ entity_id: `sensor.s${i}`, state: '1', attributes: {} }));
+    many[1] = { entity_id: 'scene.movie', state: 'scening', attributes: { entity_id: ['light.a', 'lock.front', 7] } } as never;
     many[0] = { entity_id: 'climate.home', state: 'heat', attributes: { current_temperature: 21.5, hvac_modes: ['heat'] }, last_changed: '2026-11-27T10:00:00+00:00' } as never;
     const fetchImpl = (async () => response(many)) as unknown as typeof fetch;
     const snapshot = await fetchHomeAssistantSnapshot('https://h.example.com', 't'.repeat(30), { fetchImpl, resolve: publicResolver });
     assert.equal(snapshot.total, 1005);
     assert.equal(snapshot.truncated, true);
     assert.equal(snapshot.entities.length, 1000);
+    assert.deepEqual(snapshot.entities[1].attributes.entity_id, ['light.a', 'lock.front'], 'a scene keeps its members so unsafe scenes can be refused');
     assert.deepEqual(snapshot.entities[0], {
       entity_id: 'climate.home', state: 'heat', last_changed: '2026-11-27T10:00:00+00:00',
       attributes: { friendly_name: undefined, unit_of_measurement: undefined, device_class: undefined, current_temperature: 21.5 },
     });
+  });
+});
+
+describe('AU-14: service calls', () => {
+  test('posts the fixed service for one safe entity through the same safe transport', async () => {
+    let seen: { url: string; init: RequestInit } | null = null;
+    const fetchImpl = (async (url: string, init: RequestInit) => { seen = { url, init }; return new Response('[]', { status: 200 }); }) as unknown as typeof fetch;
+    await callHomeAssistantService('https://h.example.com/lovelace/0', 't'.repeat(30), { domain: 'light', service: 'turn_on', entityId: 'light.kitchen' }, { fetchImpl, resolve: publicResolver });
+    assert.equal(seen!.url, 'https://h.example.com/api/services/light/turn_on');
+    assert.equal(seen!.init.method, 'POST');
+    assert.equal(seen!.init.redirect, 'manual');
+    assert.equal(seen!.init.body, JSON.stringify({ entity_id: 'light.kitchen' }));
+  });
+
+  test('refuses anything but lights, fans and scenes before any request', async () => {
+    let called = false;
+    const fetchImpl = (async () => { called = true; return new Response('[]'); }) as unknown as typeof fetch;
+    for (const call of [
+      { domain: 'lock', service: 'turn_off', entityId: 'lock.front' },
+      { domain: 'light', service: 'turn_on', entityId: 'lock.front' },
+      { domain: 'light', service: 'toggle', entityId: 'light.k' },
+      { domain: 'homeassistant', service: 'turn_on', entityId: 'light.k' },
+    ]) {
+      await rejectsWith(callHomeAssistantService('https://h.example.com', 't'.repeat(30), call as never, { fetchImpl, resolve: publicResolver }), /only switch lights, fans and scenes/);
+    }
+    assert.equal(called, false);
+  });
+
+  test('a rejected token or a missing service says so', async () => {
+    const answer = (status: number) => (async () => new Response('{}', { status })) as unknown as typeof fetch;
+    const call = { domain: 'fan', service: 'turn_off', entityId: 'fan.bed' } as const;
+    await rejectsWith(callHomeAssistantService('https://h.example.com', 't'.repeat(30), call, { fetchImpl: answer(401), resolve: publicResolver }), /rejected the access token/);
+    await rejectsWith(callHomeAssistantService('https://h.example.com', 't'.repeat(30), call, { fetchImpl: answer(500), resolve: publicResolver }), /error \(500\)/);
   });
 });
 
