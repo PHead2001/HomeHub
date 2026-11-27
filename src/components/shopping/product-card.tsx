@@ -22,10 +22,13 @@ export function ProductCard({
   item,
   onEdit,
   onDelete,
+  onOpen,
 }: {
   item: BarcodeLibraryItem;
   onEdit?: () => void;
   onDelete?: () => void;
+  /** Tapping the photo opens the product's actions (BL-13). */
+  onOpen?: () => void;
 }) {
   const [failed, setFailed] = useState(false);
   const photo = item.imageUrl && !failed ? item.imageUrl : null;
@@ -35,6 +38,10 @@ export function ProductCard({
   return (
     <article className="glow-card flex flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-raised" aria-label={item.name}>
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
+        {onOpen && (
+          // The whole photo is the tap target (BL-13); its name is the product's.
+          <button type="button" className="absolute inset-0 z-10 rounded-t-xl outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`Open ${item.name}`} onClick={onOpen} />
+        )}
         {photo ? (
           <>
             {/* Blurred backdrop: the same photo, scaled and softened. Decorative. */}

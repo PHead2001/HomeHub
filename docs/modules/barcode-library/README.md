@@ -7,7 +7,9 @@ This module owns camera/manual barcode capture, household product mappings, prod
 ## User-Facing Capabilities
 
 - Manage household barcode mappings at `/library`, shown as a photo-first grid of product cards: the product photo sits on a soft blurred copy of itself that also runs behind the title. Products without a photo, or whose photo fails to load, show a package placeholder with the product's initial (announced as "No product image for <name>").
-- See how many products are saved ("1 product", "3 products") and search by name or barcode.
+- See how many products are saved ("1 product", "3 products"), search by word (every word typed must appear in the name or barcode, in any order, so "test audit" finds "Audit test product"), and sort by Newest or Name (BL-13).
+- Tap a product's photo ("Open <name>") for its actions in a bottom sheet, each a 48 px full-width button: **Add to list** (one onto the household's Grocery list through the list's merge path; with several Grocery lists the sheet asks "Which list?", with none it creates "Groceries"), **Add to pantry** (one more package of the product's stock, found by barcode then by name, or a new one-item batch on the Pantry shelf storing the barcode; an increment gets the pantry's 10 s Undo), **Edit** and **Delete** (BL-13). Add to list and Add to pantry need `shopping.edit`, Delete `shopping.delete`.
+- An empty library shows one button, the empty state's "Save a product"; the header's Add Item appears once a product exists. "Shopping" is a small link above the content (BL-15).
 - Scan or enter a barcode when adding shopping or pantry items.
 - Create, edit, and delete a barcode-to-product mapping; a delete can be undone for 10 seconds.
 - Store a product name, and optionally a photo ("Take photo" on touch devices, or "Choose photo"), for household reuse.
@@ -26,6 +28,10 @@ This module owns camera/manual barcode capture, household product mappings, prod
 - `src/components/barcode/use-lookup-feedback.tsx` (the shared "not found" / "unavailable" toasts with "Save to library")
 - `src/ai/flows/lookup-barcode-flow.ts`
 - `src/lib/barcode/lookup-outcome.ts` (pure: Open Food Facts reply classification, misses and their copy)
+- `src/components/barcode/product-sheet.tsx` (a product's actions, BL-13)
+- `src/lib/barcode/library-view.ts` (pure: search by word, sort)
+- `src/lib/barcode/pantry-by-barcode.ts` (pure: a scanned product's pantry stock, used up, restock)
+- `src/lib/barcode/product-stock.ts` (personal-account writes for Add to list, Add to pantry, Used up and Restock through the pantry's and list's own write paths)
 - `src/lib/barcode/library-writes.ts` (pure: create, edit, restore and photo-cleanup decisions, the `?add=` link)
 - `src/lib/images/downscale.ts` (the shared photo downscale)
 - Shared `BarcodeLibraryItem` type in `src/lib/types.ts`
@@ -113,6 +119,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 - `tests/e2e/tablet-pages.spec.ts` checks `/library` on the wall tablet (1263 × 818, touch): no sideways scroll, every control's hit area at least 48 × 48 and none overlapping (see [Application Shell](../application-shell/README.md)).
 - `tests/e2e/shopping-trip.spec.ts` covers the product count wording, product photos and the missing-photo placeholder, search, and saving a product without a photo; `tests/e2e/verification-findings.spec.ts` keeps covering prompt deletes and the add dialog; `tests/e2e/barcode-library-scan.spec.ts` covers "Save to library" from an unknown code (code prefilled, name required, saved without a photo with `createdByUid`, the next scan uses it), Add offering Edit for an existing code, the delete Undo, the "Lookup unavailable" copy and Scan to tick; `tests/e2e/ai-hardening.spec.ts` checks the `none` and `unavailable` sources of the fixtures.
 - `tests/unit/barcode-lookup.test.ts` (reply classification, misses, copy), `tests/unit/barcode-library.test.ts` (create, edit, restore, photo cleanup, `?add=`, the delayed photo-delete registry and a restore after the photo is gone, a restore that leaves out a photo, path or name length the create would refuse) and `tests/unit/images-downscale.test.ts` (sizes, ratio, format, quality steps, limits).
+- `tests/unit/barcode-pantry.test.ts` (found by barcode in either form, then name; used up takes one package from the soonest batch and asks at zero; restock) and the search and sort cases in `tests/unit/barcode-library.test.ts`; `tests/e2e/barcode-library-scan.spec.ts` opens a product's sheet (48 px buttons), adds it to the pantry and to a list.
 - `tests/unit/barcode-gtin.test.ts` covers check digits, the UPC-A/EAN-13/EAN-8/UPC-E forms (an 8-digit code valid as both UPC-E and EAN-8 resolves to one ID on every path; every UPC-E form of a UPC-A; a product saved under a legacy UPC-E, UPC-A or EAN-8 ID is still found), codes kept as typed, refusals, the lookup order, and that the migration (`scripts/ops/barcode-library-ids.mjs`) gives the same IDs and never moves onto a taken one.
 - `tests/unit/barcode-docs.test.ts` fails when this README calls the tablet camera used while no screen passes `deviceCamera`, or the other way round.
 - `tests/unit/barcode-scanner-camera.test.ts` covers the stored camera choice, constraints (never exact), switching, formats, the scanned-text check, repeat pacing and the status copy; `tests/e2e/barcode-library-scan.spec.ts` checks a camera that cannot start (the test browser has none) shows its message over the camera area without the aiming frame, focuses "Barcode number", and that focus moves to Product Name after a typed code.
