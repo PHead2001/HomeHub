@@ -86,7 +86,8 @@ export function TimeZoneSetting({
               </Select>
               <Button type="submit" disabled={saving || selected === current}>
                 {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Save
+                {/* Its own name: Overview also has the household name's Save. */}
+                Save time zone
               </Button>
             </div>
             {deviceZone && deviceZone !== current && (

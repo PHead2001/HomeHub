@@ -44,6 +44,14 @@ test.describe('household governance UX', () => {
     await expect(page.getByRole('region', { name: /notification/i }).getByText('Give your household a name.')).toHaveCount(0);
   });
 
+  test('HO-19: the time zone setting has its own Save, so Overview has one "Save" per form', async ({ page }) => {
+    await openHousehold(page);
+    await expect(page.getByLabel('Household time zone')).toBeVisible();
+    // Nothing to save until another zone is chosen.
+    await expect(page.getByRole('button', { name: 'Save time zone', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
+  });
+
   test('a long household name wraps inside its stat card', async ({ page }) => {
     const original = (await household.get()).data()?.name as string;
     const longName = 'The Auditors Big Test Residence With An Extremely Long Name That Goes On And On';
