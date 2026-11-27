@@ -27,6 +27,7 @@ import { Logo } from './brand/logo';
 import { openCommandPalette } from './command/events';
 import { ConnectionStatus } from './shell/connection-status';
 import { useSessionKnown } from '@/hooks/use-session-known';
+import { SignOutConfirmDialog } from './sign-out-confirm';
 
 // The bell reads notifications from Firestore; it loads as its own chunk once a
 // signed-in member with notifications.view is known, so signed-out pages never
@@ -177,8 +178,10 @@ function HeaderNav({ links, pathname }: { links: NavLink[]; pathname: string }) 
 }
 
 export function Header() {
-  const { currentUser, currentMember, permissions, logout, household } = useAuth();
+  const { currentUser, currentMember, permissions, household } = useAuth();
   const automationInNav = automationInHeader({ connected: household?.homeAssistant?.connected === true, canManage: Boolean(permissions['automation.manage']) });
+  // SL-6: Log out asks first; the dialog lives outside the menu (the menu unmounts on select).
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
   const pathname = usePathname() || '/';
   const isPendingNewUser = currentMember?.role === 'newuser';
   // No Login button before Auth has answered (SL-11): a signed-in member would see it flash.
@@ -265,12 +268,14 @@ export function Header() {
                        </Link>
                     </DropdownMenuItem>
                     )}
-                    <DropdownMenuItem onClick={logout}>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => setConfirmSignOut(true)} data-testid="header-sign-out">
                       <LogOut className="mr-2" />
-                      <span>Log out</span>
+                      <span>Sign out…</span>
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
+                <SignOutConfirmDialog open={confirmSignOut} onOpenChange={setConfirmSignOut} />
               </>
             ) : pathname === '/' ? null : sessionKnown ? (
                 // The signed-out landing has one call to action of its own ("Sign in with

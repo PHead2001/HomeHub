@@ -130,3 +130,26 @@ test.describe('navigation and layout regressions', () => {
     await expect(page).toHaveURL(/\/$/);
   });
 });
+
+test.describe('app shell, audit section 11', () => {
+  test('SL-6: Sign out in the account menu asks first, and Stay signed in keeps the session', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await open(page, '/', 'Welcome Home');
+    await page.getByRole('button', { name: 'Account menu' }).click();
+    await page.getByTestId('header-sign-out').click();
+    const confirm = page.getByRole('alertdialog', { name: 'Sign out on this device?' });
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByRole('button', { name: 'Sign out' })).toBeVisible();
+    await confirm.getByRole('button', { name: 'Stay signed in' }).click();
+    await expect(confirm).toHaveCount(0);
+    // The page still takes clicks after the dialog (opened from a menu item) closed.
+    await page.getByTestId('header-search').click();
+    const palette = page.getByRole('dialog', { name: 'Search or quick add' });
+    await expect(palette).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(palette).toHaveCount(0);
+    // Still signed in: the header keeps its signed-in controls after a reload.
+    await page.reload();
+    await expect(page.getByTestId('header-search')).toBeVisible();
+  });
+});
