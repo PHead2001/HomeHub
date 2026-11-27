@@ -4,7 +4,10 @@
  *
  * `normalizeGtin` keeps digits only (spaces and hyphens dropped; anything else is
  * refused) and, for a retail code whose check digit is right, gives one ID:
- * - UPC-E (8 digits, number system 0 or 1) is expanded to its UPC-A;
+ * - UPC-E (8 digits, number system 0 or 1) is expanded to its UPC-A whenever
+ *   that expansion has a valid check digit, also when the same 8 digits would
+ *   pass as an EAN-8: typed, scanned (the scanner sends the 8 digits it read)
+ *   and migrated codes all resolve the same way, so one product has one ID;
  * - EAN-8, UPC-A (12) and EAN-13 are padded with leading zeros to 13 digits, so
  *   the UPC-A "012345678905" and the EAN-13 "0012345678905" are one product;
  * - a GTIN-14 with a leading 0 drops it (13 digits).
@@ -48,20 +51,32 @@ export function expandUpcE(code: string): string | null {
 }
 
 /**
- * The one ID of a barcode. `format` is the decoder's format name when known
- * (`UPC_E` expands even when the 8 digits would also pass as an EAN-8).
+ * The 8-digit UPC-E forms of a 12-digit UPC-A (none, one, or rarely two that
+ * expand to the same UPC-A, such as 01000054 and 01000504).
  */
-export function normalizeGtin(raw: unknown, format?: string | null): GtinResult {
+export function upcEForms(upcA: string): string[] {
+  if (!/^[01]\d{11}$/.test(upcA)) return [];
+  const a = upcA;
+  const candidates: string[] = [];
+  if ('012'.includes(a[3]) && a.slice(4, 8) === '0000') candidates.push(`${a[0]}${a[1]}${a[2]}${a[8]}${a[9]}${a[10]}${a[3]}${a[11]}`);
+  if (a.slice(4, 9) === '00000') candidates.push(`${a[0]}${a[1]}${a[2]}${a[3]}${a[9]}${a[10]}3${a[11]}`);
+  if (a.slice(5, 10) === '00000') candidates.push(`${a[0]}${a[1]}${a[2]}${a[3]}${a[4]}${a[10]}4${a[11]}`);
+  if (a.slice(6, 10) === '0000' && '56789'.includes(a[10])) candidates.push(`${a[0]}${a.slice(1, 6)}${a[10]}${a[11]}`);
+  return [...new Set(candidates.filter((code) => expandUpcE(code) === a))];
+}
+
+/** The one ID of a barcode. */
+export function normalizeGtin(raw: unknown): GtinResult {
   if (typeof raw !== 'string') return { ok: false, reason: 'empty' };
   const compact = raw.replace(/[\s-]+/g, '');
   if (!compact) return { ok: false, reason: 'empty' };
   if (!/^\d+$/.test(compact)) return { ok: false, reason: 'not-digits' };
   if (compact.length < MIN_BARCODE_DIGITS || compact.length > MAX_BARCODE_DIGITS) return { ok: false, reason: 'length' };
   if (compact.length === 8) {
+    // UPC-E first, whatever the entry path (the camera, a typed number, the migration).
     const upcA = expandUpcE(compact);
-    const ean8 = gtinCheckDigitValid(compact);
-    if (upcA && (format === 'UPC_E' || !ean8)) return { ok: true, id: upcA.padStart(13, '0'), checked: true };
-    if (ean8) return { ok: true, id: compact.padStart(13, '0'), checked: true };
+    if (upcA) return { ok: true, id: upcA.padStart(13, '0'), checked: true };
+    if (gtinCheckDigitValid(compact)) return { ok: true, id: compact.padStart(13, '0'), checked: true };
     return { ok: true, id: compact, checked: false };
   }
   if ((compact.length === 12 || compact.length === 13) && gtinCheckDigitValid(compact)) {
@@ -83,8 +98,8 @@ export function addBarcodeProblem(raw: string): string | null {
 }
 
 /** The ID for a code, or its trimmed text when it is not a barcode (never throws). */
-export const barcodeId = (raw: string, format?: string | null): string => {
-  const result = normalizeGtin(raw, format);
+export const barcodeId = (raw: string): string => {
+  const result = normalizeGtin(raw);
   return result.ok ? result.id : raw.trim();
 };
 
@@ -98,13 +113,25 @@ export function sameBarcode(a: unknown, b: unknown): boolean {
 }
 
 /**
- * The document IDs a lookup tries, in order: the normalised ID, then the code
- * as given when it differs (a product saved before normalisation and not yet
- * migrated by scripts/ops/normalize-barcode-library.mjs).
+ * The document IDs a lookup (or Add's "already saved" check) tries, in order: the
+ * normalised ID, the code as given, then the product's other retail forms (its
+ * 12-digit UPC-A, 8-digit EAN-8, or 8-digit UPC-E). A product saved under any of
+ * them before normalisation, and not yet moved by
+ * scripts/ops/normalize-barcode-library.mjs, is still found: a scan of
+ * "04252614" finds one saved as "042100005264", and the other way round.
  */
 export function lookupIds(raw: string): string[] {
   const digits = raw.replace(/[\s-]+/g, '');
   const result = normalizeGtin(raw);
   if (!result.ok) return digits ? [digits] : [];
-  return result.id === digits ? [digits] : [result.id, digits];
+  const ids = [result.id, digits];
+  if (result.checked && result.id.length === 13) {
+    if (result.id.startsWith('0')) {
+      const upcA = result.id.slice(1);
+      ids.push(upcA);
+      ids.push(...upcEForms(upcA));
+    }
+    if (result.id.startsWith('00000')) ids.push(result.id.slice(5));
+  }
+  return [...new Set(ids)];
 }

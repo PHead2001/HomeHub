@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { barcodeMoveDecision, normalizedBarcodeId } from '../../scripts/ops/barcode-library-ids.mjs';
-import { barcodeId, expandUpcE, gtinCheckDigitValid, lookupIds, normalizeGtin, sameBarcode } from '../../src/lib/barcode/gtin';
+import { barcodeId, upcEForms, expandUpcE, gtinCheckDigitValid, lookupIds, normalizeGtin, sameBarcode } from '../../src/lib/barcode/gtin';
 
 describe('barcode normalisation (BL-12)', () => {
   test('check digits', () => {
@@ -26,7 +26,7 @@ describe('barcode normalisation (BL-12)', () => {
     assert.deepEqual(normalizeGtin('96385074'), { ok: true, id: '0000096385074', checked: true });
     // UPC-E 04252614 is UPC-A 042100005264.
     assert.equal(expandUpcE('04252614'), '042100005264');
-    assert.deepEqual(normalizeGtin('04252614', 'UPC_E'), { ok: true, id: '0042100005264', checked: true });
+    assert.deepEqual(normalizeGtin('04252614'), { ok: true, id: '0042100005264', checked: true });
     assert.equal(sameBarcode('04252614', '042100005264'), true);
     assert.equal(expandUpcE('24252614'), null);
   });
@@ -66,5 +66,36 @@ describe('barcode normalisation (BL-12)', () => {
     assert.deepEqual(barcodeMoveDecision('012345678905', new Set(['012345678905', '0012345678905'])), { kind: 'collision', to: '0012345678905' });
     assert.deepEqual(barcodeMoveDecision('store-code', new Set()), { kind: 'current' });
     assert.deepEqual(barcodeMoveDecision('000000000404', new Set()), { kind: 'current' });
+  });
+
+  test('an 8-digit code that is both a valid UPC-E and a valid EAN-8 gets one ID on every path (typed, scanned, migrated)', () => {
+    // 01000054 passes as an EAN-8 and expands as a UPC-E to 010000000054.
+    assert.equal(gtinCheckDigitValid('01000054'), true);
+    assert.equal(expandUpcE('01000054'), '010000000054');
+    const typed = normalizeGtin('01000054');
+    assert.deepEqual(typed, { ok: true, id: '0010000000054', checked: true });
+    assert.deepEqual(normalizeGtin('010000000054'), typed);
+    assert.equal(sameBarcode('01000054', '010000000054'), true);
+    assert.equal(normalizedBarcodeId('01000054'), '0010000000054');
+  });
+
+  test('UPC-A and UPC-E forms compress and expand both ways', () => {
+    for (const upcE of ['04252614', '01000054', '01234533', '01234565', '01234574']) {
+      const upcA = expandUpcE(upcE);
+      if (!upcA) continue;
+      assert.ok(upcEForms(upcA).includes(upcE), upcE);
+      for (const form of upcEForms(upcA)) assert.equal(expandUpcE(form), upcA, form);
+    }
+    assert.deepEqual(upcEForms('012345678905'), []);
+  });
+
+  test('a product saved under any older form is still found (legacy UPC-E, UPC-A and EAN-8 IDs)', () => {
+    // A scan of the UPC-E finds a product saved as the 8 digits or as its UPC-A.
+    assert.deepEqual(lookupIds('04252614'), ['0042100005264', '04252614', '042100005264']);
+    // A scan or typed UPC-A finds one saved as the UPC-E.
+    assert.ok(lookupIds('042100005264').includes('04252614'));
+    assert.ok(lookupIds('0042100005264').includes('04252614'));
+    // An EAN-8 saved as its 8 digits.
+    assert.ok(lookupIds('0000096385074').includes('96385074'));
   });
 });

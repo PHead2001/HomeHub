@@ -33,9 +33,10 @@ export function normalizedBarcodeId(raw) {
   const compact = raw.replace(/[\s-]+/g, '');
   if (!/^\d{6,32}$/.test(compact)) return null;
   if (compact.length === 8) {
+    // UPC-E first, as the app (one ID whatever the entry path).
     const upcA = expandUpcE(compact);
-    if (checkDigitValid(compact)) return compact.padStart(13, '0');
-    return upcA ? upcA.padStart(13, '0') : compact;
+    if (upcA) return upcA.padStart(13, '0');
+    return checkDigitValid(compact) ? compact.padStart(13, '0') : compact;
   }
   if ((compact.length === 12 || compact.length === 13) && checkDigitValid(compact)) return compact.padStart(13, '0');
   if (compact.length === 14 && checkDigitValid(compact)) return compact.startsWith('0') ? compact.slice(1) : compact;
