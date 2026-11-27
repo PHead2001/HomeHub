@@ -22,7 +22,11 @@ const chore = (id: string, task: string, day: string, fields: Record<string, unk
 const choreReminders = async () =>
   (await notes().where('sourceType', '==', 'chore-reminder').get()).docs.map(d => d.id).sort();
 // Chicago is UTC-6 in November.
-const at = (day: string, hour: number) => new Date(`${day}T${String(hour + 6).padStart(2, '0')}:00:00Z`);
+// Date.UTC carries hours past 23 into the next UTC day (20:00 Chicago is 02:00Z the next day).
+const at = (day: string, hour: number) => {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d, hour + 6));
+};
 
 beforeEach(async () => {
   await adminDb.recursiveDelete(house());

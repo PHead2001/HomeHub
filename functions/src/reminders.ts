@@ -228,6 +228,11 @@ export const runHouseholdReminders = async (
   now: Date,
   ts: (d: Date) => Timestamp,
 ): Promise<HouseholdRunResult> => {
+  // Every day and reminder time is derived from `now`; an invalid instant
+  // would make localDay throw deep inside the run, so refuse it up front.
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new RangeError("runHouseholdReminders needs a valid instant.");
+  }
   const result: HouseholdRunResult = {
     householdId, generatedChores: 0, purgedChores: 0, expiredChores: 0,
     createdNotifications: 0, refreshedNotifications: 0,

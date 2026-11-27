@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { decideOverdue } from '../../functions/src/shared/overdue-notification';
+import { runHouseholdReminders } from '../../functions/src/reminders';
 import { choreNotificationsFor, dailyReminderTitle, overdueChoresFor, overdueTitle } from '../../functions/src/shared/chore-reminders';
 
 // Section 7 "stop the noise": NO-4 (overdue pushes respect a setting) and NO-19 (specific titles).
@@ -63,5 +64,11 @@ describe('NO-19: specific titles', () => {
     assert.equal(notes.length, 1);
     assert.equal(notes[0].title, '1 chore due today');
     assert.equal(notes[0].message, '1 chore due today and 1 overdue.');
+  });
+});
+
+describe('upkeep refuses an invalid instant', () => {
+  test('a bad Date is rejected before any read, never reaching localDay', async () => {
+    await assert.rejects(runHouseholdReminders(null as never, 'h', new Date('2026-11-05T26:00:00Z'), (d) => d as never), RangeError);
   });
 });
