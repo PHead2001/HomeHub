@@ -50,7 +50,12 @@ before(async () => {
     const db = context.firestore();
     await setDoc(doc(db, 'households', HOUSE), { name: 'Shopping devices', ownerUid: 'nobody', memberEmails: [] });
     for (const user of [users.member, users.other]) {
-      await setDoc(doc(db, 'households', HOUSE, 'members', user.uid), { uid: user.uid, role: 'member', status: 'active', displayName: user.uid });
+      // The phone may also delete items (a member's default does not include it), so the
+      // delete-and-Undo case runs as it does for someone allowed to delete.
+      await setDoc(doc(db, 'households', HOUSE, 'members', user.uid), {
+        uid: user.uid, role: 'member', status: 'active', displayName: user.uid,
+        ...(user === users.member ? { permissions: { 'shopping.delete': true } } : {}),
+      });
     }
     await setDoc(doc(db, 'households', HOUSE, 'shopping-lists', LIST), { name: 'Groceries', type: 'Grocery' });
   });
