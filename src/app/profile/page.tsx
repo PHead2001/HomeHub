@@ -6,6 +6,7 @@ import Loading from './loading';
 import { ProfileClient } from "@/components/profile-client";
 import { SignInPrompt } from "@/components/profile/sign-in-prompt";
 import { CardSkeleton } from "@/components/route-skeletons";
+import { InstallAppCard } from "@/components/profile/install-app-card";
 
 export default function ProfilePage() {
     const { currentUser, profileConfirmed } = useAuth();
@@ -18,6 +19,9 @@ export default function ProfilePage() {
                 <h1 className="font-headline text-3xl font-bold tracking-tight">Your Profile</h1>
                 <p className="text-muted-foreground">Manage your personal information and settings.</p>
             </div>
+
+            {/* SL-19: only while the browser offers to install the app. */}
+            {currentUser && <InstallAppCard className="mx-auto mb-8 max-w-6xl" />}
 
             {/* The forms take their starting values from the profile once, so they wait for the
                 server-confirmed copy: a provisional cached one may predate an edit made on

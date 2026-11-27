@@ -20,6 +20,7 @@ import { CommandCenter } from '@/components/command/command-center';
 import { TimeOfDayTint } from '@/components/dashboard/time-of-day';
 import { ROOT_TITLE } from '@/lib/shell/page-titles';
 import { RouteFocus } from '@/components/shell/route-focus';
+import { InstallPromptCapture } from '@/components/shell/install-prompt-capture';
 
 // Fonts are bundled from npm (Fontsource variable fonts, Latin subset), not fetched
 // from Google Fonts at build time: that download failed intermittently and broke
@@ -93,6 +94,7 @@ export default function RootLayout({
             <GlowPointerTracker />
             <MorphRouteListener />
             <DeferredPushNotificationManager />
+            <InstallPromptCapture />
             <FirebaseErrorListener />
             <PasswordChangeHandler />
             <HouseholdManager>

@@ -58,6 +58,13 @@ test.describe('installable app manifest', () => {
       { name: 'Log feeding', url: '/pets?feed=1' },
       { name: 'My chores', url: '/chores' },
     ]);
+    // SL-19: each shortcut has its own icon, and the manifest colour matches the page's theme-color.
+    const shortcutIcons = (manifest.shortcuts as { icons: { src: string }[] }[]).map((shortcut) => shortcut.icons[0].src);
+    expect(new Set(shortcutIcons).size).toBe(3);
+    for (const src of shortcutIcons) expect((await request.get(src)).ok(), `${src} should be served`).toBe(true);
+    const page = await (await request.get('/offline')).text();
+    const metaColor = /<meta name="theme-color" content="(#[0-9a-f]{6})"/i.exec(page)?.[1];
+    expect(metaColor?.toLowerCase()).toBe(String(manifest.theme_color).toLowerCase());
   });
 });
 

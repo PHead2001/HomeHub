@@ -13,6 +13,11 @@ import { isThemeMode } from '../../src/lib/theme/tokens';
 
 import { shouldMoveRouteFocus } from '../../src/lib/shell/route-focus';
 
+import { installPromptSnapshot, installState, promptInstall, captureInstallPrompt, resetInstallPromptForTests } from '../../src/lib/shell/install-prompt';
+import manifest from '../../src/app/manifest';
+import { THEME_COLORS as PAGE_COLORS } from '../../src/lib/theme/appearance';
+import { existsSync } from 'node:fs';
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('SL-1: section error boundaries', () => {
@@ -231,5 +236,44 @@ describe('SL-18: skip link and focus after navigation', () => {
     const rule = source('src/lib/shell/route-focus.ts');
     assert.match(rule, /closest\('\[aria-hidden="true"\]'\)/);
     assert.match(rule, /data-state'\) === 'closed'/);
+  });
+});
+
+describe('SL-19: manifest polish and the install offer', () => {
+  it('matches the page colour and gives each shortcut its own icon', () => {
+    const m = manifest();
+    assert.equal(m.theme_color, PAGE_COLORS.midnight);
+    assert.equal(m.background_color, PAGE_COLORS.midnight);
+    const icons = (m.shortcuts ?? []).map((shortcut) => shortcut.icons?.[0]?.src);
+    assert.equal(new Set(icons).size, 3);
+    for (const src of icons) assert.ok(existsSync(resolve(process.cwd(), 'public' + src)), `${src} exists`);
+  });
+
+  it('shows Install only while the browser offers it and the app is not installed', () => {
+    assert.equal(installState({ hasPrompt: true, standalone: false, installed: false }), 'available');
+    assert.equal(installState({ hasPrompt: false, standalone: false, installed: false }), 'unavailable');
+    assert.equal(installState({ hasPrompt: true, standalone: true, installed: false }), 'installed');
+    assert.equal(installState({ hasPrompt: false, standalone: false, installed: true }), 'installed');
+  });
+
+  it('keeps the browser event, replays it once and forgets it', async () => {
+    resetInstallPromptForTests();
+    const target = new EventTarget() as unknown as Window;
+    captureInstallPrompt(target);
+    let prompted = 0;
+    const event = Object.assign(new Event('beforeinstallprompt', { cancelable: true }), {
+      prompt: async () => { prompted += 1; },
+      userChoice: Promise.resolve({ outcome: 'accepted' as const }),
+    });
+    target.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true, "Chrome's own mini-infobar is held back");
+    assert.equal(installPromptSnapshot().hasPrompt, true);
+    assert.equal(await promptInstall(), 'accepted');
+    assert.equal(prompted, 1);
+    assert.equal(installPromptSnapshot().hasPrompt, false);
+    assert.equal(await promptInstall(), 'unavailable');
+    target.dispatchEvent(new Event('appinstalled'));
+    assert.equal(installPromptSnapshot().installed, true);
+    resetInstallPromptForTests();
   });
 });
