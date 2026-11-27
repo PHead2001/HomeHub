@@ -28,7 +28,7 @@ import { categoriesKey, notificationWindowQuery, viewableNotificationCategories 
 import { useAppBadge } from "@/hooks/use-app-badge";
 import { NumberTicker } from "@/components/motion/number-ticker";
 import { EmptyState } from "@/components/empty-state";
-import { activeBellNotifications, caughtUpLine, groupNotifications } from "@/lib/dashboard/notification-display";
+import { BELL_LIMIT, activeNotifications as activeFor, caughtUpLine, groupNotifications, unreadCount as countUnread } from "@/lib/dashboard/notification-display";
 import styles from "@/components/dashboard/dashboard.module.css";
 import {
   createNotificationAction,
@@ -171,19 +171,18 @@ export function NotificationBell() {
     return () => unsubscribe();
   }, [currentUser?.householdId, currentUser?.uid, viewKey]);
 
-  const activeNotifications = useMemo(() => {
+  // NO-7: every active notification is counted and dismissed; the list shows the newest BELL_LIMIT.
+  const allActive = useMemo(() => {
     if (!currentUser?.uid || !currentUser.email) return [];
-    return activeBellNotifications(notifications, {
+    return activeFor(notifications, {
       uid: currentUser.uid,
       email: currentUser.email,
       canView: (permission) => Boolean(permissions[permission]),
     });
   }, [currentUser, notifications, permissions]);
+  const activeNotifications = useMemo(() => allActive.slice(0, BELL_LIMIT), [allActive]);
 
-  const unreadCount = useMemo(() => {
-    if (!currentUser?.uid) return 0;
-    return activeNotifications.filter((notification) => !isNotificationReadBy(notification, currentUser.uid)).length;
-  }, [activeNotifications, currentUser?.uid]);
+  const unreadCount = useMemo(() => (currentUser?.uid ? countUnread(allActive, currentUser.uid) : 0), [allActive, currentUser?.uid]);
 
   // Mirror the unread count on the installed app icon (Badging API).
   useAppBadge(isLoading || hasError ? null : unreadCount);
@@ -237,7 +236,7 @@ export function NotificationBell() {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => dismissNotifications(activeNotifications.map((notification) => notification.id))}
+                onClick={() => dismissNotifications(allActive.map((notification) => notification.id))}
                 className="h-auto px-2 py-1 text-xs"
               >
                 <CheckCheck className="mr-1 h-3 w-3" />

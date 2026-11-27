@@ -926,6 +926,8 @@ export const remindPendingMembers = async (caller: VerifiedCaller, householdId: 
           sourceType: PENDING_REMINDER_SOURCE_TYPE,
           sourceId: person.id,
           stateKey,
+          // Whoever opened the page that sent it is not pushed about it (NO-11).
+          createdByUid: caller.uid,
           // Only the people who may approve (HO-7).
           targetUserUid: recipient,
           audience: notificationAudience({ targetUserUid: recipient }),
@@ -1378,6 +1380,8 @@ export const transferOwnership = async (caller: VerifiedCaller, householdId: str
       sourceType: 'household-ownership-transfer',
       sourceId: target.uid,
       stateKey: String(now.getTime()),
+      // The owner who tapped it is not pushed about it (NO-11).
+      createdByUid: caller.uid,
       audience: notificationAudience({}),
       readBy: {},
       dismissedBy: {},

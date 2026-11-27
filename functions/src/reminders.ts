@@ -142,6 +142,9 @@ const notificationBody = (
 ) => ({
   householdId,
   createdAt: ts(now),
+  // When it was first written: a refresh moves createdAt (to stay listed),
+  // the app shows the age from this (NO-11).
+  firstCreatedAt: ts(now),
   expiresAt: ts(new Date(now.getTime() + NOTIFICATION_TTL_DAYS * 86400000)),
   readBy: {},
   dismissedBy: {},
@@ -631,7 +634,8 @@ export const runHouseholdReminders = async (
       // resolution written while the run was in flight may reflect data the
       // run has not seen. It is an update, so no new push is sent; members
       // already had one for this same reminder, and it is visible in the
-      // bell again. Read and dismissed state is kept, as on refresh.
+      // bell again. It is actionable again, so it is new again for everyone
+      // (NO-11): read and dismissed entries are cleared and its age restarts.
       if (snap.get("resolvedAt")) {
         if (!shouldReopen(snap.updateTime, sourcesReadAt)) {
           return "unchanged";
@@ -641,7 +645,10 @@ export const runHouseholdReminders = async (
           audience,
           resolvedAt: null,
           resolvedBy: null,
+          readBy: {},
+          dismissedBy: {},
           createdAt: ts(now),
+          firstCreatedAt: ts(now),
           expiresAt: freshExpiry,
         });
         return "reopened";

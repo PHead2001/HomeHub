@@ -43,7 +43,7 @@ import type { FoodType, PortionUnit } from '@/lib/pets/types';
 import type { QuickAddEntry } from '@/lib/shopping/items';
 import { addItemsToList } from '@/lib/shopping/add-items';
 import { shoppingAddOutcome, type ShoppingAddOutcome } from '@/lib/dashboard/quick-add';
-import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
+import { assignmentNotificationId, buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { DEFAULT_SHOPPING_CATEGORIES, normalizeStoredCategories } from '@/lib/shopping-items';
 import { assigneeFields } from '@functions/shared/assignee';
 import { publicDisplayName } from '@/lib/member-directory';
@@ -260,6 +260,7 @@ export async function createOneTimeChore({
       sourceId: choreRef.id,
       stateKey,
       targetUser: { uid: assignee.uid },
+      createdBy: { uid: viewer.uid },
     }));
   }
   // Like the other quick-add writes: offline, the batch stays queued (it syncs on
@@ -311,7 +312,8 @@ export async function createRepeatingChore({
 
   if (assignee.uid !== viewer.uid) {
     // As in Chores: the notification is best effort and never undoes the chore.
-    void awaitWriteUnlessOffline(setDoc(doc(collection(db, 'households', householdId, 'notifications')), buildNotificationDocument({
+    // A fixed ID (NO-11): a retried write can never add a second notification.
+    void awaitWriteUnlessOffline(setDoc(doc(db, 'households', householdId, 'notifications', assignmentNotificationId(templateId, assignee.uid)), buildNotificationDocument({
       householdId,
       category: 'chores',
       title: 'New chore assigned',
@@ -320,6 +322,7 @@ export async function createRepeatingChore({
       sourceType: 'chore-assignment',
       sourceId: templateId,
       targetUser: { uid: assignee.uid },
+      createdBy: { uid: viewer.uid },
     })), onLateError).catch((error) => console.warn('Chore saved, but the notification failed:', error instanceof Error ? error.message : String(error)));
   }
 

@@ -243,7 +243,8 @@ export function NotificationCenterClient() {
       const isDismissed = isNotificationDismissedBy(notification, currentUser.uid);
       const isRead = isNotificationReadBy(notification, currentUser.uid);
 
-      if (activeFilter === "unread") return !isRead && !isDismissed;
+      // NO-7: a resolved notification (a dose already given) is not unread.
+      if (activeFilter === "unread") return !isRead && !isDismissed && !notification.resolvedAt;
       if (activeFilter === "all") return true;
       if (activeFilter === "dismissed") return isDismissed;
       return notification.category === activeFilter;
@@ -281,6 +282,7 @@ export function NotificationCenterClient() {
       isNotificationVisibleToUser(notification, currentUser)
       && canSeeCategory(notification.category, (permission) => Boolean(permissions[permission]))
       && !isNotificationDismissedBy(notification, currentUser.uid)
+      && !notification.resolvedAt
       && !isNotificationReadBy(notification, currentUser.uid)).length;
   }, [currentUser, permissions, validNotifications]);
 

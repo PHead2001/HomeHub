@@ -128,6 +128,25 @@ export const pushHoldUntil = (input: HoldInput): Date | null => {
   return at.getTime() === input.now.getTime() ? null : at;
 };
 
+/**
+ * How long FCM keeps a push for a device that is off (NO-11): a day-based
+ * reminder only until the household's midnight (a phone off for two days
+ * never gets yesterday's "due today"), anything else a day. At least an hour.
+ * @param {boolean} dayBased The notification has `holdUntilMorning`.
+ * @param {Date} now Instant.
+ * @param {string} timeZone Household zone.
+ * @return {number} Seconds.
+ */
+export const pushTtlSeconds = (
+  dayBased: boolean, now: Date, timeZone: string,
+): number => {
+  const day = 24 * 60 * 60;
+  if (!dayBased) return day;
+  const midnight = nextLocalTime(now, timeZone, 24 * 60 - 1).getTime() + 60000;
+  return Math.max(60 * 60,
+    Math.min(day, Math.round((midnight - now.getTime()) / 1000)));
+};
+
 /** What upkeep does with a notification's held pushes. */
 export type HeldRelease = {
   /** Send to these now. */

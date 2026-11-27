@@ -179,6 +179,8 @@ export const syncOverdueNotification = async (
       ...(decision.fresh || decision.redate ? {
         createdAt: ts(now), expiresAt: ctx.freshExpiry(),
       } : {}),
+      // News restarts its age in the app (NO-11); a plain re-date keeps it.
+      ...(decision.fresh ? {firstCreatedAt: ts(now)} : {}),
       // An update sends no push by itself; the update trigger sends one when
       // this field changes.
       ...(decision.push ? {renotifyAt: ts(now)} : {}),
