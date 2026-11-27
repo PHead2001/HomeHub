@@ -1,8 +1,10 @@
 import type { Metadata } from 'next';
+import { SECTION_TITLES } from '@/lib/shell/page-titles';
 import { EmptyState } from '@/components/empty-state';
 
 export const metadata: Metadata = {
-  title: 'Page not found - HomeHub',
+  // SL-13: the root template adds " - HomeHub".
+  title: SECTION_TITLES.notFound,
   robots: { index: false },
 };
 

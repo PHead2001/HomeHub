@@ -47,3 +47,28 @@ test.describe('appearance settings', () => {
     }
   });
 });
+
+test.describe('SL-14: theme by time of day', () => {
+  test.use({ timezoneId: 'UTC' });
+
+  test('"By time" is light at midday and dark in the evening, from the first paint', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop-chromium', 'one browser covers the appearance contract');
+    const original = (await ownerProfile.get()).data()?.theme;
+    try {
+      await page.clock.setFixedTime(new Date('2026-08-01T13:00:00.000Z'));
+      await page.goto('/profile');
+      await expect(page.getByText('Appearance', { exact: true })).toBeVisible();
+      await page.getByLabel('By time', { exact: true }).click();
+      await expect(page.getByTestId('appearance-auto-note')).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+      await expect.poll(async () => (await ownerProfile.get()).data()?.theme).toMatchObject({ version: 2, mode: 'auto' });
+
+      // Evening: the pre-paint script already picks the dark preset (no flash).
+      await page.clock.setFixedTime(new Date('2026-08-01T21:00:00.000Z'));
+      await page.reload();
+      expect(await page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('midnight');
+    } finally {
+      await ownerProfile.update({ theme: original ?? FieldValue.delete() });
+    }
+  });
+});

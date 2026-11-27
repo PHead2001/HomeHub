@@ -6,6 +6,13 @@ import { describe, it } from 'node:test';
 import { AUTO_RETRY_DELAYS_MS, autoRetryDelay, retryUntil } from '../../src/lib/shell/auto-retry';
 import { membershipPhase, membershipReducer, initialMembershipState } from '../../src/lib/auth/live-membership';
 
+import { SECTION_TITLES, documentTitle, ROOT_TITLE, TITLE_TEMPLATE } from '../../src/lib/shell/page-titles';
+
+import { AUTO_DARK_QUARTERS, autoIsDark, nextAutoSwitch, parseAppearance, resolvePresetId, themeBootstrapScript, APPEARANCE_STORAGE_KEY } from '../../src/lib/theme/appearance';
+import { isThemeMode } from '../../src/lib/theme/tokens';
+
+import { shouldMoveRouteFocus } from '../../src/lib/shell/route-focus';
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('SL-1: section error boundaries', () => {
@@ -99,5 +106,130 @@ describe('SL-12: loads retry on their own', () => {
     assert.equal(membershipPhase(state), 'failed');
     state = membershipReducer(state, { type: 'member', householdId: 'h1', uid: 'u1', exists: true, data: { role: 'member', status: 'approved' }, fromCache: false, offline: false });
     assert.notEqual(membershipPhase(state), 'failed');
+  });
+});
+
+describe('SL-13: every page has its own title', () => {
+  it('the root template suffixes each section name', () => {
+    assert.deepEqual(ROOT_TITLE, { default: 'HomeHub', template: TITLE_TEMPLATE });
+    assert.equal(documentTitle('chores'), 'Chores - HomeHub');
+    assert.equal(documentTitle('library'), 'Barcode Library - HomeHub');
+    assert.equal(documentTitle(null), 'HomeHub');
+  });
+
+  it('each section segment sets its own name, and no title doubles the suffix', () => {
+    const segments: Array<[string, keyof typeof SECTION_TITLES]> = [
+      ['src/app/shopping/layout.tsx', 'shopping'],
+      ['src/app/pets/layout.tsx', 'pets'],
+      ['src/app/maintenance/layout.tsx', 'maintenance'],
+      ['src/app/chores/layout.tsx', 'chores'],
+      ['src/app/calendar/layout.tsx', 'calendar'],
+      ['src/app/automation/layout.tsx', 'automation'],
+      ['src/app/library/layout.tsx', 'library'],
+      ['src/app/profile/layout.tsx', 'profile'],
+      ['src/app/household/page.tsx', 'household'],
+      ['src/app/notifications/page.tsx', 'notifications'],
+      ['src/app/setup/page.tsx', 'setup'],
+    ];
+    for (const [file, key] of segments) {
+      assert.match(source(file), new RegExp(`export const metadata = sectionMetadata\\('${key}'\\)`), file);
+    }
+    assert.match(source('src/app/layout.tsx'), /title: ROOT_TITLE/);
+    for (const file of ['src/app/offline/page.tsx', 'src/app/not-found.tsx', 'src/app/share/page.tsx']) {
+      assert.doesNotMatch(source(file), /title: '[^']*- HomeHub'/, file);
+    }
+    assert.match(source('src/app/share/page.tsx'), /absolute: 'Add to HomeHub'/);
+  });
+});
+
+describe('SL-14: theme "Automatic by time of day"', () => {
+  const at = (h: number, m = 0) => new Date(2026, 10, 27, h, m);
+
+  it('is a valid, synced mode; old values still parse', () => {
+    assert.equal(isThemeMode('auto'), true);
+    assert.equal(parseAppearance({ mode: 'auto' }).mode, 'auto');
+    assert.equal(parseAppearance({ mode: 'sometimes' }).mode, 'dark');
+  });
+
+  it('is light from 7:00 and dark from 19:00, from the day phases', () => {
+    assert.equal(AUTO_DARK_QUARTERS.length, 96);
+    assert.equal(autoIsDark(at(6, 59)), true);
+    assert.equal(autoIsDark(at(7, 0)), false);
+    assert.equal(autoIsDark(at(12)), false);
+    assert.equal(autoIsDark(at(18, 59)), false);
+    assert.equal(autoIsDark(at(19, 0)), true);
+    assert.equal(autoIsDark(at(0, 30)), true);
+    const prefs = { mode: 'auto', darkPreset: 'hearth', lightPreset: 'sunrise' } as const;
+    assert.equal(resolvePresetId(prefs, false, at(13)), 'sunrise');
+    assert.equal(resolvePresetId(prefs, false, at(22)), 'hearth');
+    // The system preference plays no part in Automatic.
+    assert.equal(resolvePresetId(prefs, true, at(13)), 'sunrise');
+  });
+
+  it('knows its next switch', () => {
+    assert.equal(nextAutoSwitch(at(13, 20)).getHours(), 19);
+    assert.equal(nextAutoSwitch(at(13, 20)).getMinutes(), 0);
+    const morning = nextAutoSwitch(at(23, 50));
+    assert.deepEqual([morning.getDate(), morning.getHours(), morning.getMinutes()], [28, 7, 0]);
+  });
+
+  it('the pre-paint script picks the same preset as the provider (no flash)', () => {
+    const script = themeBootstrapScript();
+    for (const hour of [0, 6, 7, 12, 18, 19, 23]) {
+      const attrs = new Map<string, string>();
+      const classes = new Set<string>();
+      const root = {
+        setAttribute: (k: string, v: string) => attrs.set(k, v),
+        removeAttribute: (k: string) => attrs.delete(k),
+        classList: { add: (c: string) => classes.add(c), remove: (c: string) => classes.delete(c) },
+      };
+      const fakeDocument = { documentElement: root, querySelector: () => null };
+      const stored = JSON.stringify({ mode: 'auto', darkPreset: 'forest', lightPreset: 'light' });
+      const fakeStorage = { getItem: (key: string) => (key === APPEARANCE_STORAGE_KEY ? stored : null) };
+      const fakeWindow = { matchMedia: () => ({ matches: true }) };
+      const FixedDate = class extends Date { constructor() { super(2026, 10, 27, hour, 30); } };
+      new Function('document', 'window', 'localStorage', 'Date', script)(fakeDocument, fakeWindow, fakeStorage, FixedDate);
+      const expected = resolvePresetId({ mode: 'auto', darkPreset: 'forest', lightPreset: 'light' }, true, at(hour, 30));
+      assert.equal(attrs.get('data-theme'), expected, `at ${hour}:30`);
+    }
+  });
+
+  it('Profile offers it; the provider re-checks at the switch and on wake', () => {
+    assert.match(source('src/components/appearance-settings.tsx'), /value: 'auto', label: 'By time'/);
+    const provider = source('src/components/appearance-provider.tsx');
+    assert.match(provider, /useAutoClock\(preferences\.mode === 'auto'\)/);
+    assert.match(provider, /nextAutoSwitch\(current\)/);
+    assert.match(provider, /visibilitychange/);
+  });
+});
+
+describe('SL-18: skip link and focus after navigation', () => {
+  const focus = (patch: Partial<{ onBody: boolean; inShellNav: boolean; overlayOpen: boolean }> = {}) =>
+    ({ onBody: false, inShellNav: false, overlayOpen: false, ...patch });
+
+  it('moves focus only on a real page change, from the body or the shell navigation', () => {
+    assert.equal(shouldMoveRouteFocus({ previousPath: null, path: '/', focus: focus({ onBody: true }) }), false, 'first load');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/chores', path: '/chores', focus: focus({ onBody: true }) }), false, 'same page');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus({ inShellNav: true }) }), true, 'header link');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus({ onBody: true }) }), true, 'body');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus() }), false, 'a control in the page keeps focus');
+    assert.equal(shouldMoveRouteFocus({ previousPath: '/', path: '/chores', focus: focus({ onBody: true, overlayOpen: true }) }), false, 'a dialog is open');
+  });
+
+  it('the layout has the skip link, main#main and the route focus; the tab bar counts as shell navigation', () => {
+    const layout = source('src/app/layout.tsx');
+    assert.match(layout, /href="#main"/);
+    assert.match(layout, /<main id="main" tabIndex=\{-1\}/);
+    assert.match(layout, /<RouteFocus \/>/);
+    assert.ok(layout.indexOf('href="#main"') < layout.indexOf('<Header />'), 'the skip link comes before the header');
+    assert.match(source('src/components/mobile-tab-bar.tsx'), /data-shell-nav/);
+    const component = source('src/components/shell/route-focus.tsx');
+    assert.match(component, /preventScroll: true/);
+    // Closed overlays that stay mounted (the force-mounted account menu, the tab bar's
+    // hidden quick-add fan) never block it: only a shown one counts.
+    assert.match(component, /overlayOpen: overlayShown\(\)/);
+    const rule = source('src/lib/shell/route-focus.ts');
+    assert.match(rule, /closest\('\[aria-hidden="true"\]'\)/);
+    assert.match(rule, /data-state'\) === 'closed'/);
   });
 });

@@ -96,6 +96,13 @@
     outline: var(--focus-ring-width) solid hsl(var(--ring));
     outline-offset: var(--focus-ring-offset);
   }
+
+  /* SL-18: <main> and a page heading take focus after navigation only to be announced;
+     they are not controls, so they draw no ring. */
+  #main:focus-visible,
+  #main h1[tabindex='-1']:focus-visible {
+    outline: none;
+  }
 }
 
 @layer components {

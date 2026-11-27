@@ -3,7 +3,8 @@ import { ShareTargetClient } from '@/components/share-target-client';
 import { parseSharedContent } from '@/lib/share-target';
 
 export const metadata: Metadata = {
-  title: 'Add to HomeHub',
+  // Already names the app: no " - HomeHub" suffix (SL-13).
+  title: { absolute: 'Add to HomeHub' },
   robots: { index: false },
 };
 

@@ -1,4 +1,5 @@
 import { hslTokenToHex } from './contrast';
+import { phaseWeights } from '../dashboard/ambience';
 import {
   DEFAULT_DARK_PRESET,
   DEFAULT_LIGHT_PRESET,
@@ -130,8 +131,44 @@ export function profileAppearance(prefs: AppearancePreferences): ProfileAppearan
   };
 }
 
-export function resolvePresetId(prefs: Pick<AppearancePreferences, 'mode' | 'darkPreset' | 'lightPreset'>, systemPrefersDark: boolean): PresetId {
-  const dark = prefs.mode === 'dark' || (prefs.mode === 'system' && systemPrefersDark);
+/**
+ * "Automatic by time of day" (SL-14): dark while night outweighs day in the
+ * dashboard's day phases (`phaseWeights`: night, plus half of dawn and dusk, above
+ * one half), which is 19:00 to 7:00; light otherwise. Kept
+ * as one flag per quarter hour so the pre-paint script, which cannot import code, uses
+ * exactly the same table. Read on this device's clock: the theme is per device and the
+ * pre-paint script runs before anything knows the household's time zone, and the
+ * time-of-day tint it matches uses the device clock too.
+ */
+export const AUTO_DARK_QUARTERS: string = Array.from({ length: 96 }, (_, quarter) => {
+  const at = new Date(2000, 0, 1, Math.floor(quarter / 4), (quarter % 4) * 15 + 7);
+  const weight = phaseWeights(at);
+  return weight.night + 0.5 * weight.dawn + 0.5 * weight.dusk > 0.5 ? '1' : '0';
+}).join('');
+
+export function autoIsDark(date: Date): boolean {
+  return AUTO_DARK_QUARTERS.charAt(date.getHours() * 4 + Math.floor(date.getMinutes() / 15)) === '1';
+}
+
+/** The next time "Automatic" switches between dark and light after `date` (a quarter-hour boundary). */
+export function nextAutoSwitch(date: Date): Date {
+  const dark = autoIsDark(date);
+  const probe = new Date(date);
+  probe.setSeconds(0, 0);
+  probe.setMinutes(Math.floor(probe.getMinutes() / 15) * 15);
+  for (let step = 0; step < 96; step += 1) {
+    probe.setMinutes(probe.getMinutes() + 15);
+    if (autoIsDark(probe) !== dark) return probe;
+  }
+  return probe;
+}
+
+export function resolvePresetId(
+  prefs: Pick<AppearancePreferences, 'mode' | 'darkPreset' | 'lightPreset'>,
+  systemPrefersDark: boolean,
+  now: Date = new Date(),
+): PresetId {
+  const dark = prefs.mode === 'dark' || (prefs.mode === 'system' && systemPrefersDark) || (prefs.mode === 'auto' && autoIsDark(now));
   return dark ? prefs.darkPreset : prefs.lightPreset;
 }
 
@@ -183,7 +220,7 @@ export function themeBootstrapScript(): string {
     DEFAULT_DARK_PRESET,
   )};var lt=k[p.lightPreset]==="light"?p.lightPreset:${scriptLiteral(
     DEFAULT_LIGHT_PRESET,
-  )};var m=p.mode==="light"||p.mode==="system"?p.mode:"dark";var mq=function(q){return window.matchMedia&&window.matchMedia(q).matches};var id=(m==="dark"||(m==="system"&&mq("(prefers-color-scheme: dark)")))?dk:lt;d.setAttribute("data-theme",id);d.classList.remove(k[id]==="dark"?"light":"dark");d.classList.add(k[id]);if(p.reduceMotion===true||mq("(prefers-reduced-motion: reduce)")){d.setAttribute("data-motion","reduce")}else{d.removeAttribute("data-motion")}var t=document.querySelector('meta[name="theme-color"]');if(t)t.setAttribute("content",c[id]);var S=${scriptLiteral(
+  )};var m=p.mode==="light"||p.mode==="system"||p.mode==="auto"?p.mode:"dark";var mq=function(q){return window.matchMedia&&window.matchMedia(q).matches};var nw=new Date(),aq=${scriptLiteral(AUTO_DARK_QUARTERS)};var id=(m==="dark"||(m==="system"&&mq("(prefers-color-scheme: dark)"))||(m==="auto"&&aq.charAt(nw.getHours()*4+Math.floor(nw.getMinutes()/15))==="1"))?dk:lt;d.setAttribute("data-theme",id);d.classList.remove(k[id]==="dark"?"light":"dark");d.classList.add(k[id]);if(p.reduceMotion===true||mq("(prefers-reduced-motion: reduce)")){d.setAttribute("data-motion","reduce")}else{d.removeAttribute("data-motion")}var t=document.querySelector('meta[name="theme-color"]');if(t)t.setAttribute("content",c[id]);var S=${scriptLiteral(
     TEXT_SCALES,
   )},v=p.textScale,n=typeof v==="number"?v:(typeof v==="string"&&v.trim()!==""?Number(v):NaN),ts=${scriptLiteral(
     DEFAULT_TEXT_SCALE,

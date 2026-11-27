@@ -282,6 +282,7 @@ export function MobileTabBar() {
   return (
     <nav
       aria-label="Primary"
+      data-shell-nav
       className="surface-glass fixed inset-x-0 bottom-0 z-50 border-t border-border-subtle md:hidden"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
