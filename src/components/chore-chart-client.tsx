@@ -33,7 +33,8 @@ import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, matchesWhoFilter, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
-import { completerLabel } from '@/lib/chores/completion';
+import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
+import { tickCompletesChore } from '@/lib/chores/steps';
 import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, statsMemberFrom } from '@/lib/chores/stats';
@@ -958,6 +959,15 @@ export function ChoreChartClient() {
   const handleSubTaskToggle = useCallback(async (chore: ChoreRecord, subTask: string) => {
     const choresCollection = getCollectionRef('chores');
     if (!choresCollection || !capabilities.canComplete) return;
+    // CH-33: ticking the last open step of a chore that is due completes it, on the
+    // server like every completion (points, completer), with the usual Undo, which puts
+    // the steps back as they were before this tick. Only this device's tick does this,
+    // never a snapshot. A chore not due yet just records the step.
+    if (tickCompletesChore(chore, subTask) && !isDueAfterHouseholdDay(chore, householdDay, household?.timeZone)) {
+      const check = document.querySelector<HTMLElement>(`[data-chore-id="${CSS.escape(chore.id)}"] button[role="checkbox"]`);
+      void completeChores([chore], check?.getBoundingClientRect() ?? null);
+      return;
+    }
     const current = chore.completedSubTasks || [];
     const next = current.includes(subTask) ? current.filter(st => st !== subTask) : [...current, subTask];
     const release = hold([chore.id]);
@@ -971,7 +981,7 @@ export function ChoreChartClient() {
     } finally {
       release();
     }
-  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError, hold]);
+  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError, hold, completeChores, householdDay, household?.timeZone]);
 
   const deleteChores = async (ids: string[], title: string) => {
     const choresCollection = getCollectionRef('chores');
