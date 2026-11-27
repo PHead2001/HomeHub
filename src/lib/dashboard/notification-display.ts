@@ -47,6 +47,51 @@ export function activeBellNotifications(
 export const unreadCount = (active: Notification[], uid: string): number =>
   active.filter((notification) => !isNotificationReadBy(notification, uid)).length;
 
+/**
+ * Addressed to the whole household (`['*']`, or a legacy untargeted document) rather
+ * than to one member: the center's Household filter (NO-13).
+ */
+export const isHouseholdWide = (notification: Notification): boolean =>
+  notification.audience ? notification.audience.includes('*') : !notification.targetUserUid && !notification.targetUserEmail;
+
+export type NotificationFilter = 'unread' | 'all' | 'household' | 'dismissed' | Notification['category'];
+
+const CATEGORY_FILTERS: Array<{ value: Notification['category']; label: string }> = [
+  { value: 'chores', label: 'Chores' },
+  { value: 'pets', label: 'Pets' },
+  { value: 'shopping', label: 'Shopping' },
+  { value: 'maintenance', label: 'Maintenance' },
+  { value: 'automation', label: 'Automation' },
+];
+
+/**
+ * The center's filter chips (NO-18, NO-13): Unread, All, Household, Dismissed, then
+ * only the module categories this member may see (a child never gets an always-empty
+ * Shopping chip).
+ */
+export function notificationFilterOptions(canView: (permission: ViewPermission) => boolean): Array<{ value: NotificationFilter; label: string }> {
+  return [
+    { value: 'unread', label: 'Unread' },
+    { value: 'all', label: 'All' },
+    { value: 'household', label: 'Household' },
+    { value: 'dismissed', label: 'Dismissed' },
+    ...CATEGORY_FILTERS.filter((option) => canSeeCategory(option.value, canView)),
+  ];
+}
+
+/** Whether a notification (already visible to the member) belongs under a filter. */
+export function matchesNotificationFilter(notification: Notification, filter: NotificationFilter, uid: string): boolean {
+  const dismissed = isNotificationDismissedBy(notification, uid);
+  if (filter === 'unread') return !isNotificationReadBy(notification, uid) && !dismissed && !notification.resolvedAt;
+  if (filter === 'all') return true;
+  if (filter === 'dismissed') return dismissed;
+  if (filter === 'household') return isHouseholdWide(notification);
+  return notification.category === filter;
+}
+
+/** The center's page size (NO-21): it reads this many at a time, with Load more. */
+export const CENTER_PAGE_SIZE = 100;
+
 /** The bell's (and the dashboard's) notification window. */
 export const NOTIFICATION_WINDOW_DAYS = 7;
 
