@@ -14,6 +14,7 @@ import { temperatureLabel } from '@/lib/dashboard/weather';
 import { safeTimeZone } from '@functions/shared/calendar';
 import { currentActor } from '@/lib/devices/shell-state';
 import { NOTICES_PATH } from '@/lib/devices/start-page';
+import { useOfflineSince } from '@/lib/devices/offline-since';
 import { useTablet } from './tablet-context';
 
 export const clockLabel = (now: Date, timeZone: string) =>
@@ -27,6 +28,7 @@ export function TabletTopBar({ now }: { now: Date }) {
   const zone = household?.timeZone ?? 'America/Chicago';
   const acting = currentActor(shell);
   const actor = acting ? person(acting.memberUid) : null;
+  const offlineSince = useOfflineSince();
 
   return (
     <header className="relative flex h-14 shrink-0 items-center gap-4 border-b border-border bg-card px-4" data-testid="tablet-top-bar">
@@ -41,6 +43,10 @@ export function TabletTopBar({ now }: { now: Date }) {
         </p>
       )}
       <div className="flex-1" />
+      {offlineSince !== null && (
+        // HP-17: how old the screen may be while offline; the Offline pill below says the rest.
+        <p className="text-sm text-muted-foreground" data-testid="tablet-offline-since">Offline since {clockLabel(new Date(offlineSince), zone)}</p>
+      )}
       {actor && <ActingPill label={`${actor.name}${acting?.level === 'pin' ? ' (PIN)' : ''}`} onDone={done} />}
       <button
         type="button"
