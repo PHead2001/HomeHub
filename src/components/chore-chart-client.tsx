@@ -38,9 +38,12 @@ import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, statsMemberFrom } from '@/lib/chores/stats';
 import { readWeekStartsOn } from '@/lib/chores/week-start';
-import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
+import { AddChoreDialog, AssignChoresDialog, ChoreTemplateEditDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
+import { ChoreDetailSheet } from '@/components/chores/chore-detail-sheet';
+import type { DetailEdit } from '@/lib/chores/detail';
+import { rescheduleFields } from '@/lib/chores/calendar';
 import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { PersonDoneMoment } from '@/components/chores/person-done-moment';
@@ -127,7 +130,9 @@ export function ChoreChartClient() {
   const [templatesToAssign, setTemplatesToAssign] = useState<ChoreTemplate[]>([]);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedChoreIds, setSelectedChoreIds] = useState<string[]>([]);
-  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  // CH-15: the chore whose detail sheet is open (by id, so the sheet shows its live version).
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [seriesToEdit, setSeriesToEdit] = useState<ChoreTemplate | null>(null);
   const [choresPendingCompletion, setChoresPendingCompletion] = useState<ChoreRecord[] | null>(null);
   const [choreToDelete, setChoreToDelete] = useState<ChoreRecord | null>(null);
   // CH-6: reopening asks first; it takes the completer's points away.
@@ -989,14 +994,27 @@ export function ChoreChartClient() {
   const closeHouseClean = useCallback(() => setHouseClean(null), []);
   const closePersonDone = useCallback(() => setPersonDone(null), []);
 
-  const toggleOpen = useCallback((id: string) => {
-    setOpenIds(previous => {
-      const next = new Set(previous);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  // CH-15: Edit in the detail sheet. Name and notes; the day only for a chore that is
+  // not a generated day of a repeat (the sheet offers it only then).
+  const handleEditChore = useCallback(async (chore: ChoreRecord, edit: DetailEdit) => {
+    const choresCollection = getCollectionRef('chores');
+    if (!choresCollection || !capabilities.canEdit) return false;
+    const update: Partial<ChoreRecord> = { task: edit.task, notes: edit.notes, ...(edit.dueDay && edit.dueDay !== choreDueKey(chore) ? rescheduleFields(edit.dueDay) : {}) };
+    const previous: Partial<ChoreRecord> = { task: chore.task, notes: chore.notes, dueDate: chore.dueDate, originalDueDate: chore.originalDueDate };
+    const release = hold([chore.id]);
+    patchChores([chore.id], c => ({ ...c, ...update }));
+    try {
+      await updateDoc(doc(choresCollection, chore.id), update);
+      toast({ title: 'Chore updated' });
+      return true;
+    } catch (error) {
+      patchChores([chore.id], c => ({ ...c, ...previous }));
+      toastError(error, "Couldn't save the chore");
+      return false;
+    } finally {
+      release();
+    }
+  }, [getCollectionRef, capabilities.canEdit, hold, patchChores, toast, toastError]);
 
   const toggleSelect = useCallback((chore: ChoreRecord) => {
     if (chore.isCompleted) return;
@@ -1080,6 +1098,8 @@ export function ChoreChartClient() {
     return user ? memberName(user) : undefined;
   }).map(entry => ({ ...entry, photoUrl: entry.byUid ? usersByUid.get(entry.byUid)?.avatarUrl : null })) : [];
   const compactHeader = 'px-3 sm:px-4';
+  const detailChore = detailId ? assignedChores.find(chore => chore.id === detailId) ?? null : null;
+  const detailTemplate = detailChore?.templateId ? choreTemplates.find(template => template.id === detailChore.templateId) ?? null : null;
 
   const groupByRoom = (entries: ToDoEntry[]) => {
     // Keyed by room id, never by name: a room someone named "General" or "Around the house"
@@ -1110,8 +1130,7 @@ export function ChoreChartClient() {
     capabilities,
     selectMode,
     selectedIds: new Set(selectedChoreIds),
-    openIds,
-    onToggleOpen: toggleOpen,
+    onOpenDetails: (chore: ChoreRecord) => setDetailId(chore.id),
     onToggleDone: handleToggleDone,
     onToggleSelect: toggleSelect,
     onSubTaskToggle: (chore: ChoreRecord, subTask: string) => void handleSubTaskToggle(chore, subTask),
@@ -1236,6 +1255,28 @@ export function ChoreChartClient() {
         </AlertDialogContent>
       </AlertDialog>
 
+      <ChoreDetailSheet
+        chore={detailChore}
+        onClose={() => setDetailId(null)}
+        chores={assignedChores}
+        template={detailTemplate}
+        roomNames={(detailChore?.roomIds ?? []).map(roomId => roomsById.get(roomId)?.name ?? REMOVED_ROOM)}
+        usersByUid={usersByUid}
+        colors={memberColors}
+        capabilities={capabilities}
+        onSubTaskToggle={(chore, subTask) => void handleSubTaskToggle(chore, subTask)}
+        onSave={handleEditChore}
+        onEditSeries={template => { setDetailId(null); setSeriesToEdit(template); }}
+      />
+      <ChoreTemplateEditDialog
+        chore={seriesToEdit}
+        isNew={false}
+        isOpen={seriesToEdit !== null}
+        onOpenChange={open => { if (!open) setSeriesToEdit(null); }}
+        rooms={rooms}
+        capabilities={capabilities}
+        onSave={handleSaveChoreTemplate}
+      />
       <AddChoreDialog
         isOpen={isAddOpen}
         onOpenChange={setIsAddOpen}

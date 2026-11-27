@@ -1,8 +1,8 @@
 'use client';
 
-import { memo, useEffect, useId, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { AnimatePresence, useIsPresent } from 'motion/react';
-import { ChevronDown, MoreHorizontal, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, MoreHorizontal, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { assignablePeople, publicDisplayName, type HouseholdPerson } from '@/lib/member-directory';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -28,6 +28,8 @@ export type ChoreListHandlers = {
   onReassign: (chore: ChoreRecord, uid: string) => void;
   onDelete: (chore: ChoreRecord) => void;
   onClearMissed: (entry: ToDoEntry) => void;
+  /** CH-15: tapping a chore's name opens its detail sheet. */
+  onOpenDetails: (chore: ChoreRecord) => void;
 };
 
 type ChoreListProps = ChoreListHandlers & {
@@ -43,13 +45,11 @@ type ChoreListProps = ChoreListHandlers & {
   capabilities: ChoreCapabilities;
   selectMode: boolean;
   selectedIds: ReadonlySet<string>;
-  openIds: ReadonlySet<string>;
-  onToggleOpen: (id: string) => void;
   /** CH-13: the room view's large cards (bigger name, the assignee's avatar and name always shown). */
   large?: boolean;
 };
 
-type RowHandlers = ChoreListHandlers & { onToggleOpen: (id: string) => void };
+type RowHandlers = ChoreListHandlers;
 
 /** What one row needs. Everything but `entry` is a primitive or a reference the page keeps stable (CH-26). */
 type RowProps = {
@@ -63,7 +63,6 @@ type RowProps = {
   capabilities: ChoreCapabilities;
   selectMode: boolean;
   selected: boolean;
-  open: boolean;
   large: boolean;
   /** Changes only when this list's rows change, so only that group animates its layout (CH-26). */
   layoutKey: string;
@@ -87,7 +86,6 @@ function ChoreRow(props: RowProps) {
   // echo during its exit slide: hidden from assistive tech and inert, so each
   // chore has exactly one actionable row across To Do, Future and Completed.
   const leaving = !useIsPresent();
-  const detailsId = useId();
   const checkRef = useRef<HTMLButtonElement>(null);
   const due = choreDueKey(chore);
   const isCompleted = chore.isCompleted;
@@ -95,8 +93,6 @@ function ChoreRow(props: RowProps) {
   // Chores can be completed from their due day on, judged in the household's
   // timezone exactly as the server judges it (it refuses earlier ones, CH-2).
   const isFuture = !isCompleted && isDueAfterHouseholdDay(chore, props.householdToday, props.timeZone);
-  const hasDetails = Boolean(chore.notes || (chore.subTasks && chore.subTasks.length > 0));
-  const isOpen = props.open;
   // `assignedToUid` was resolved when the page loaded (functions/src/shared/assignee.ts).
   const user = chore.assignedToUid ? props.usersByUid.get(chore.assignedToUid) : undefined;
   const name = user ? memberName(user) : publicDisplayName(chore.assignedToDisplayName, 'Unassigned');
@@ -169,25 +165,18 @@ function ChoreRow(props: RowProps) {
         )}
 
         <div className="min-w-0 flex-1 py-1.5">
-          {hasDetails ? (
-            <button
-              type="button"
-              className="group flex min-h-[var(--target-min)] w-full items-center gap-1 rounded-sm text-left"
-              aria-expanded={isOpen}
-              aria-controls={detailsId}
-              onClick={() => handlers.onToggleOpen(chore.id)}
-            >
-              <span className={cn('line-clamp-2 min-w-0 flex-1 break-words font-medium', nameSize, isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
-                {chore.task}
-              </span>
-              <ChevronDown aria-hidden className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-150', isOpen && 'rotate-180')} />
-              <span className="sr-only">{isOpen ? 'Hide details' : 'Show details'}</span>
-            </button>
-          ) : (
-            <span className={cn('line-clamp-2 break-words font-medium', nameSize, isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
+          <button
+            type="button"
+            className="group flex min-h-[var(--target-min)] w-full items-center gap-1 rounded-sm text-left"
+            aria-haspopup="dialog"
+            onClick={() => handlers.onOpenDetails(chore)}
+          >
+            <span className={cn('line-clamp-2 min-w-0 flex-1 break-words font-medium group-hover:underline', nameSize, isCompleted ? 'text-muted-foreground line-through' : 'text-foreground')}>
               {chore.task}
             </span>
-          )}
+            <ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="sr-only">Show details</span>
+          </button>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground coarse:text-sm">
             {isCompleted && completedAt
               ? <span>{completedBy ? `Done by ${completedBy} · ${format(completedAt, 'MMM d')}` : `Done ${format(completedAt, 'MMM d')}`}</span>
@@ -269,19 +258,6 @@ function ChoreRow(props: RowProps) {
         )}
       </div>
 
-      {hasDetails && isOpen && (
-        <div id={detailsId} className="space-y-3 border-t px-4 pb-3 pt-2 md:pl-14">
-          {chore.notes && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{chore.notes}</p>}
-          {total > 0 && (
-            <div className="space-y-0.5">
-              <h4 className="text-xs font-semibold text-foreground">Steps</h4>
-              {chore.subTasks!.map(subTask => (
-                <StepRow key={subTask} chore={chore} subTask={subTask} disabled={isCompleted || !capabilities.canComplete} onToggle={handlers.onSubTaskToggle} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </StaggerItem>
   );
 }
@@ -325,7 +301,7 @@ export function ChoreList(props: ChoreListProps) {
     onReassign: (chore, uid) => latest.current.onReassign(chore, uid),
     onDelete: chore => latest.current.onDelete(chore),
     onClearMissed: entry => latest.current.onClearMissed(entry),
-    onToggleOpen: id => latest.current.onToggleOpen(id),
+    onOpenDetails: chore => latest.current.onOpenDetails(chore),
   }), []);
   const layoutKey = props.entries.map(entry => entry.chore.id).join('|');
   const reduced = useReducedMotion();
@@ -345,7 +321,6 @@ export function ChoreList(props: ChoreListProps) {
             capabilities={props.capabilities}
             selectMode={props.selectMode}
             selected={props.selectedIds.has(entry.chore.id)}
-            open={props.openIds.has(entry.chore.id)}
             large={props.large === true}
             layoutKey={layoutKey}
             reduced={reduced}
