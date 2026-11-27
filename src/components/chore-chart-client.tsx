@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, RotateCw, Trophy, User as UserIcon } from 'lucide-react';
+import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, PiggyBank, Plus, Repeat, RotateCw, Trophy, User as UserIcon } from 'lucide-react';
 import { type DocumentData, type DocumentReference, type Transaction, arrayRemove, arrayUnion, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { localDay, safeTimeZone } from '@functions/shared/calendar';
@@ -38,13 +38,15 @@ import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear,
 import { completerLabel } from '@/lib/chores/completion';
 import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
-import { closedWeekSummary, computeChoreStats, podiumWeekStart, statsMemberFrom } from '@/lib/chores/stats';
+import { computeChoreStats, statsMemberFrom } from '@/lib/chores/stats';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
 import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
 import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
 import { PersonDoneMoment } from '@/components/chores/person-done-moment';
+import { AllowanceDialog } from '@/components/chores/allowance-dialog';
+import { useClosedWeekPodium } from '@/components/chores/use-closed-week-podium';
 import { householdDayZone } from '@/lib/household-day';
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
@@ -104,7 +106,7 @@ export function ChoreChartClient() {
   const { toast, toastError } = useToast();
   const capabilities = useMemo(() => choreCapabilities(permissions), [permissions]);
   const isManager = currentMember?.role === 'owner' || currentMember?.role === 'admin';
-  const { settings, setLeaderboardEnabled } = useChoreSettings(currentUser?.householdId);
+  const { settings, setLeaderboardEnabled, setCentsPerPoint } = useChoreSettings(currentUser?.householdId);
   const { burst, layer: confettiLayer } = useConfetti();
 
   const [assignedChores, setAssignedChores] = useState<ChoreRecord[]>([]);
@@ -128,6 +130,7 @@ export function ChoreChartClient() {
   const [choreToReopen, setChoreToReopen] = useState<ChoreRecord | null>(null);
   const [houseClean, setHouseClean] = useState<CleanRoom[] | null>(null);
   const [personDone, setPersonDone] = useState<string | null>(null);
+  const [isAllowanceOpen, setIsAllowanceOpen] = useState(false);
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -937,9 +940,8 @@ export function ChoreChartClient() {
   // CH-7 expired missed days still break fair streaks (CH-19); one listener with "N missed".
   const missedEntries = useMissedEntries(currentUser?.householdId);
   const stats = useMemo(() => computeChoreStats(assignedChores, statsMembers, statsNow(householdDay), { today: householdDay, timeZone: statsZone, missed: missedEntries }), [assignedChores, statsMembers, householdDay, statsZone, missedEntries]);
-  // CH-21: the closed week's podium on the first days of a new week, never before it ends.
-  const podiumWeek = podiumWeekStart(householdDay);
-  const podium = useMemo(() => (podiumWeek ? closedWeekSummary(assignedChores, statsMembers, podiumWeek, statsZone) : null), [assignedChores, statsMembers, podiumWeek, statsZone]);
+  // CH-21, CH-29: the closed week's podium and payout on the first days of a new week.
+  const podium = useClosedWeekPodium({ householdId: currentUser?.householdId, today: householdDay, chores: assignedChores, members: statsMembers, centsPerPoint: settings.centsPerPoint, timeZone: statsZone });
   const photos = useMemo(() => new Map(householdUsers.map(user => [user.uid, user.avatarUrl])), [householdUsers]);
 
   // Before rooms load the requested room is kept; afterwards an unknown id means All Rooms.
@@ -1071,6 +1073,7 @@ export function ChoreChartClient() {
       {confettiLayer}
       <HouseCleanMoment open={!!houseClean} rooms={houseClean || []} onDone={closeHouseClean} />
       <PersonDoneMoment title={personDone} onDone={closePersonDone} />
+      {isManager && <AllowanceDialog open={isAllowanceOpen} onOpenChange={setIsAllowanceOpen} centsPerPoint={settings.centsPerPoint} onSave={setCentsPerPoint} />}
 
       <AlertDialog open={!!choreToDelete} onOpenChange={(open) => !open && setChoreToDelete(null)}>
         <AlertDialogContent>
@@ -1241,6 +1244,9 @@ export function ChoreChartClient() {
                   >
                     <Trophy className="mr-2 h-4 w-4" /> Show leaderboard
                   </DropdownMenuCheckboxItem>
+                  <DropdownMenuItem onSelect={() => setIsAllowanceOpen(true)}>
+                    <PiggyBank className="mr-2 h-4 w-4" /> Allowance
+                  </DropdownMenuItem>
                 </>
               )}
             </DropdownMenuContent>

@@ -2056,14 +2056,17 @@ service cloud.firestore {
           request.resource.data.get('completedAtServer', null) == request.time;
       }
 
-      // Household chore display preferences (leaderboard on/off). Owners and
-      // admins change them; everyone who sees chores reads them.
+      // Household chore preferences: leaderboard on/off and the allowance rate in
+      // whole cents per point (CH-29, 0-100). Owners and admins change them;
+      // everyone who sees chores reads them.
       match /chore-settings/{settingId} {
         allow read: if hasHouseholdPermission(householdId, 'chores.view') || sectionEnabled(householdId, 'chores');
         allow create, update: if settingId == 'preferences' &&
           isOwnerOrAdmin(householdId) &&
-          request.resource.data.keys().hasOnly(['leaderboardEnabled', 'updatedAt']) &&
-          request.resource.data.leaderboardEnabled is bool &&
+          request.resource.data.keys().hasOnly(['leaderboardEnabled', 'centsPerPoint', 'updatedAt']) &&
+          request.resource.data.get('leaderboardEnabled', true) is bool &&
+          (!('centsPerPoint' in request.resource.data) ||
+            (request.resource.data.centsPerPoint is int && boundedNumber(request.resource.data.centsPerPoint, 0, 100))) &&
           request.resource.data.get('updatedAt', '') is string;
         allow delete: if false;
       }

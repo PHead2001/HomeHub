@@ -7,7 +7,7 @@ import { MemberAvatar } from '@/components/member-avatar';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { dayFromKey } from '@/lib/chores/dates';
-import { DAILY_POINT_CAP, POINTS, weekPodium, type ChoreStats, type MemberChoreStats, type WeekSummary } from '@/lib/chores/stats';
+import { DAILY_POINT_CAP, POINTS, formatPayout, weekPodium, type ChoreStats, type MemberChoreStats, type WeekSummary } from '@/lib/chores/stats';
 import type { MemberColor } from '@/lib/member-colors';
 import { cn } from '@/lib/utils';
 
@@ -15,7 +15,7 @@ type LeaderboardProps = {
   stats: ChoreStats;
   colors: Map<string, MemberColor>;
   photos: Map<string, string | null | undefined>;
-  /** The week that just closed (CH-21), shown on the first days of a new week; null otherwise. */
+  /** The week that just closed (CH-21, CH-29), shown on the first days of a new week; null otherwise. */
   podium: WeekSummary | null;
 };
 
@@ -105,6 +105,26 @@ function Podium({ summary, colors, photos }: { summary: WeekSummary; colors: Lea
           </li>
         ))}
       </ol>
+      {summary.centsPerPoint > 0 && <Payouts summary={summary} />}
+    </div>
+  );
+}
+
+/** The closed week's allowance (CH-29): everyone who earned points, at the rate recorded when the week closed. */
+function Payouts({ summary }: { summary: WeekSummary }) {
+  return (
+    <div className="mt-4 border-t pt-3" data-testid="chore-payouts">
+      <p className="mb-1 text-xs font-medium text-muted-foreground">Allowance at {summary.centsPerPoint}¢ a point</p>
+      <ul className="space-y-1">
+        {summary.members.map(member => (
+          <li key={member.uid} className="flex items-baseline justify-between gap-2 text-sm">
+            <span className="min-w-0 truncate text-foreground">{member.name}</span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">
+              {member.points} points · <span className="font-semibold text-foreground">{formatPayout(member.payoutCents)}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -113,7 +133,8 @@ function Podium({ summary, colors, photos }: { summary: WeekSummary; colors: Lea
  * Household leaderboard (H06): points (stickers for child accounts), a fair streak
  * flame (CH-19), done and assigned counts and a contribution ring per member, for
  * the current Monday-Sunday week. Once a week has closed, its podium rises with a
- * crown for the MVP on the first days of the next week (CH-21).
+ * crown for the MVP on the first days of the next week, with the allowance payout
+ * when the household set a rate (CH-21, CH-29).
  */
 export function ChoreLeaderboard({ stats, colors, photos, podium }: LeaderboardProps) {
   const range = `${format(dayFromKey(stats.weekStart), 'MMM d')} - ${format(dayFromKey(stats.weekEnd), 'MMM d')}`;

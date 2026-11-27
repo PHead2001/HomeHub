@@ -39,6 +39,9 @@ import {
   occurrenceNumber, rotationAnchor, rotationOf, rotationTurn,
 } from "./shared/rotation";
 import {
+  centsPerPointFrom, weekSnapshotDocId, weekStartDay, weekSummary,
+} from "./shared/chore-points";
+import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
 } from "./shared/maintenance-reminders";
@@ -585,6 +588,22 @@ export const runHouseholdReminders = async (
     result.expiredChores = done.expired;
   }
 
+  // The week that just closed (Monday to Sunday, household days) is
+  // snapshotted once into stats/week-{weekStart} (CH-29): points, completions
+  // and the allowance payout at the rate set then, so later retention, undo
+  // or a rate change never alters what the podium showed.
+  const roleByUid = new Map(membersSnap.docs.map((d) =>
+    [d.id, String(d.get("role") ?? "")]));
+  const weekStatus = await snapshotClosedWeek(db, house, {
+    today, timeZone, now, ts,
+    chores: choresSnap.docs.map((d) => d.data()),
+    members: members.map((m) => ({
+      uid: m.uid, name: m.displayName, email: m.email,
+      role: roleByUid.get(m.uid),
+    })),
+  });
+  if (weekStatus === "stopped") return result;
+
   // Returns false when the household disappeared or started deleting,
   // otherwise what was written.
   // `refreshCopy`: an open reminder whose title, message or link no longer
@@ -880,6 +899,67 @@ export const runHouseholdReminders = async (
     if (status === "resolved") result.resolvedNotifications++;
   }
   return result;
+};
+
+/** Closed-week snapshots older than this many weeks are deleted. */
+export const WEEK_SNAPSHOT_KEEP_WEEKS = 26;
+
+export type WeekSnapshotInput = {
+  today: string;
+  timeZone: string;
+  now: Date;
+  ts: (d: Date) => Timestamp;
+  chores: Array<Record<string, unknown>>;
+  members: Array<{
+    uid: string; name?: string; email?: string | null; role?: string;
+  }>;
+};
+
+/**
+ * Writes the snapshot of the last closed week (CH-29) unless it exists:
+ * each member's capped points, completions and payout at the household's
+ * current allowance rate (chore-settings/preferences `centsPerPoint`).
+ * Create-only, in a transaction that re-reads the household (a household
+ * being deleted gets nothing). A week where nobody earned points writes
+ * nothing. Writing one also deletes snapshots older than
+ * WEEK_SNAPSHOT_KEEP_WEEKS weeks.
+ * @param {Db} db Firestore (Admin SDK).
+ * @param {DocumentReference} house Household document.
+ * @param {WeekSnapshotInput} input Today, zone, chores and members.
+ * @return {Promise<string>} "written", "kept", "empty" or "stopped".
+ */
+export const snapshotClosedWeek = async (
+  db: Db,
+  house: DocumentReference,
+  input: WeekSnapshotInput,
+): Promise<"written" | "kept" | "empty" | "stopped"> => {
+  const weekStart = addDays(weekStartDay(input.today), -7);
+  const ref = house.collection("stats").doc(weekSnapshotDocId(weekStart));
+  if ((await ref.get()).exists) return "kept";
+  const prefs = await house.collection("chore-settings").doc("preferences")
+    .get();
+  const summary = weekSummary(input.chores, input.members, weekStart,
+    (instant) => localDay(instant, input.timeZone),
+    centsPerPointFrom(prefs.data()));
+  if (summary.members.length === 0) return "empty";
+  const status = await db.runTransaction(async (tx) => {
+    const [home, existing] = await Promise.all([tx.get(house), tx.get(ref)]);
+    if (!home.exists || home.get("deletingAt")) return "stopped" as const;
+    if (existing.exists) return "kept" as const;
+    tx.create(ref, {kind: "week", ...summary, createdAt: input.ts(input.now)});
+    return "written" as const;
+  });
+  if (status === "written") {
+    const cutoff = addDays(weekStart, -7 * WEEK_SNAPSHOT_KEEP_WEEKS);
+    const old = await house.collection("stats")
+      .where("weekStart", "<", cutoff).limit(50).get();
+    if (!old.empty) {
+      const batch = db.batch();
+      old.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  }
+  return status;
 };
 
 /** The UTC hour of the daily wall-tablet sign-out sweep (hourly upkeep). */
