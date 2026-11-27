@@ -13,8 +13,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadio
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/components/empty-state';
@@ -22,6 +20,17 @@ import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { MemberAvatar } from '@/components/member-avatar';
 import type { ChoreCapabilities } from '@/lib/chores/list';
 import { cn } from '@/lib/utils';
+import { chosenRoomIds } from '@/lib/chores/add-chore';
+
+/**
+ * CH-25: every chore dialog with a long body is a flex column. The dialog itself is
+ * already capped above the on-screen keyboard (`--keyboard-inset`); its body takes
+ * what is left and scrolls, so the footer buttons stay on screen with the keyboard up
+ * (no fixed `60-65vh` boxes inside a centred dialog).
+ */
+const SHEET = 'flex flex-col overflow-hidden';
+const SHEET_FORM = 'flex min-h-0 flex-1 flex-col';
+const SHEET_BODY = 'min-h-0 flex-1 overflow-y-auto overscroll-contain';
 import { AssigneeSelect, memberName } from './assignee-select';
 import { RecurrenceFields, buildRecurrence, defaultRecurrenceState, recurrenceStateFrom, scheduleText, useRecurrenceState, type RecurrenceErrors } from './recurrence-fields';
 import { RoomIcon, roomIcons } from './room-icons';
@@ -99,12 +108,12 @@ export function ManageRoomsDialog({
         </AlertDialogContent>
       </AlertDialog>
       <Dialog open={isOpen} onOpenChange={onOpenChange}>
-        <DialogContent>
+        <DialogContent className={SHEET}>
           <DialogHeader>
             <DialogTitle>Rooms</DialogTitle>
             <DialogDescription>Rooms group chores on the chart. Every room is optional.</DialogDescription>
           </DialogHeader>
-          <ScrollArea className="max-h-[60vh] pr-4">
+          <div className={cn(SHEET_BODY, 'pr-4')}>
             <div className="space-y-4 py-2">
               {editingRoom ? (
                 <form onSubmit={handleSave} className="space-y-4 rounded-lg border p-4" noValidate>
@@ -182,7 +191,7 @@ export function ManageRoomsDialog({
                 </>
               )}
             </div>
-          </ScrollArea>
+          </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => onOpenChange(false)}>Done</Button>
           </DialogFooter>
@@ -297,13 +306,13 @@ export function ChoreTemplateEditDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className={cn('max-w-2xl', SHEET)}>
         <DialogHeader>
           <DialogTitle>{isNew ? 'New library chore' : 'Edit chore'}</DialogTitle>
           <DialogDescription>{isNew ? 'Save a chore you do often, then assign it whenever you need it.' : `Changes apply to ${chore?.task || 'this chore'} and its open chores.`}</DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSave} noValidate>
-          <div className="grid max-h-[65vh] gap-4 overflow-y-auto py-2 pr-2">
+        <form onSubmit={handleSave} className={SHEET_FORM} noValidate>
+          <div className={cn('grid gap-4 py-2 pr-2', SHEET_BODY)}>
             <div className="space-y-2">
               <Label htmlFor="task-edit">Chore name</Label>
               <Input {...fieldErrorProps('task-edit', errors.task)} maxLength={MAX_NAME} value={task} onChange={e => { setTask(e.target.value); setErrors(p => ({ ...p, task: undefined })); }} />
@@ -448,13 +457,13 @@ export function AssignChoresDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className={SHEET}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>Choose who does it and when.</DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleAssign} noValidate>
-          <div className="grid max-h-[65vh] gap-4 overflow-y-auto py-2 pr-2">
+        <form onSubmit={handleAssign} className={SHEET_FORM} noValidate>
+          <div className={cn('grid gap-4 py-2 pr-2', SHEET_BODY)}>
             <div className="space-y-2">
               <Label htmlFor="assign-assignee">Assign to</Label>
               <AssigneeSelect
@@ -586,7 +595,7 @@ export function ChoreLibraryDialog({
       </AlertDialog>
 
       <Dialog open={isOpen} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className={cn('max-w-3xl', SHEET)}>
           <DialogHeader className="pr-10 sm:pr-12">
             <div className="flex flex-col items-start justify-between gap-3 md:flex-row md:items-center">
               <div>
@@ -626,7 +635,7 @@ export function ChoreLibraryDialog({
               action={capabilities.canCreate ? { label: 'New library chore', icon: <PlusCircle className="h-4 w-4" />, onClick: () => setEditing({ template: null }) } : undefined}
             />
           ) : (
-            <ScrollArea className="max-h-[55vh]">
+            <div className={SHEET_BODY}>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -671,7 +680,7 @@ export function ChoreLibraryDialog({
                   )}
                 </TableBody>
               </Table>
-            </ScrollArea>
+            </div>
           )}
           <DialogFooter className="flex-col justify-between gap-2 pt-4 sm:flex-row">
             {capabilities.canCreate && choreTemplates.length > 0 ? (
@@ -764,13 +773,13 @@ function EditRecurringTaskDialog({
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className={SHEET}>
         <DialogHeader>
           <DialogTitle>Edit repeating chore</DialogTitle>
           <DialogDescription>{chore?.task}. Open chores from the old schedule are replaced.</DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSave} noValidate>
-          <div className="grid max-h-[65vh] gap-4 overflow-y-auto py-2 pr-2">
+        <form onSubmit={handleSave} className={SHEET_FORM} noValidate>
+          <div className={cn('grid gap-4 py-2 pr-2', SHEET_BODY)}>
             {capabilities.canAssign && rotationUsers.length >= 2 && (
               <div className="flex min-h-[var(--target-min)] items-center gap-2">
                 <Checkbox id="recurring-takes-turns" checked={takesTurns} onCheckedChange={(checked) => { setTakesTurns(checked === true); setErrors(p => ({ ...p, rotation: undefined, assignee: undefined })); }} />
@@ -854,7 +863,7 @@ export function RecurringChoresDialog({
         </AlertDialogContent>
       </AlertDialog>
       <Dialog open={isOpen} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className={cn('max-w-3xl', SHEET)}>
           <DialogHeader>
             <DialogTitle>Repeating chores</DialogTitle>
             <DialogDescription>Who does what, and how often.</DialogDescription>
@@ -862,7 +871,7 @@ export function RecurringChoresDialog({
           {recurringChores.length === 0 ? (
             <EmptyState kind="chores" compact headingLevel={3} title="Nothing repeats yet" description="Choose Repeats when you add a chore and it shows up on schedule by itself." />
           ) : (
-            <ScrollArea className="mt-2 max-h-[60vh]">
+            <div className={cn(SHEET_BODY, 'mt-2')}>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -901,7 +910,7 @@ export function RecurringChoresDialog({
                   })}
                 </TableBody>
               </Table>
-            </ScrollArea>
+            </div>
           )}
           <DialogFooter>
             <Button variant="secondary" onClick={() => onOpenChange(false)}>Close</Button>
@@ -919,7 +928,8 @@ export function RecurringChoresDialog({
 export type AddChoreInput = {
   task: string;
   notes: string;
-  roomId: string;
+  /** CH-25: every room the chore is in (none: Around the house). */
+  roomIds: string[];
   assigneeUid: string;
 } & ({ repeat: false; dueDate: string } | { repeat: true; recurrence: Omit<Recurrence, 'assignedToEmail'> });
 
@@ -949,7 +959,7 @@ export function AddChoreDialog({
 }) {
   const [task, setTask] = useState('');
   const [notes, setNotes] = useState('');
-  const [roomId, setRoomId] = useState('general');
+  const [roomIds, setRoomIds] = useState<string[]>([]);
   const [assigneeUid, setAssigneeUid] = useState('');
   const [repeat, setRepeat] = useState(false);
   const [dueDate, setDueDate] = useState('');
@@ -966,7 +976,7 @@ export function AddChoreDialog({
     if (isOpen) {
       setTask('');
       setNotes('');
-      setRoomId('general');
+      setRoomIds([]);
       setAssigneeUid(assignableUsers.some(u => u.uid === currentUserUid) ? currentUserUid : '');
       setRepeat(false);
       setDueDate(format(new Date(), 'yyyy-MM-dd'));
@@ -975,8 +985,9 @@ export function AddChoreDialog({
       setIsSubmitting(false);
     }
   }
-  // A room that no longer exists falls back to "Around the house".
-  const effectiveRoomId = roomId !== 'general' && !rooms.some(room => room.id === roomId) ? 'general' : roomId;
+  // Rooms that no longer exist drop out; none left means "Around the house".
+  const effectiveRoomIds = chosenRoomIds(roomIds, rooms);
+  const toggleRoom = (id: string) => setRoomIds(previous => (previous.includes(id) ? previous.filter(roomId => roomId !== id) : [...previous, id]));
 
   const clear = (key: keyof typeof errors) => setErrors(previous => ({ ...previous, [key]: undefined }));
 
@@ -987,7 +998,7 @@ export function AddChoreDialog({
     if (!task.trim()) nextErrors.task = 'Give the chore a name.';
     if (!assigneeUid) nextErrors.assignee = 'Choose who does it.';
     let input: AddChoreInput | null = null;
-    const base = { task: task.trim(), notes: notes.trim(), roomId: effectiveRoomId, assigneeUid };
+    const base = { task: task.trim(), notes: notes.trim(), roomIds: effectiveRoomIds, assigneeUid };
     if (repeat) {
       const built = buildRecurrence(recurrence);
       if ('errors' in built) Object.assign(nextErrors, built.errors);
@@ -1044,15 +1055,33 @@ export function AddChoreDialog({
                 />
                 <FieldError id="add-chore-assignee">{errors.assignee}</FieldError>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="add-chore-room">Room <span className="text-muted-foreground">(optional)</span></Label>
-                <Select value={effectiveRoomId} onValueChange={setRoomId}>
-                  <SelectTrigger id="add-chore-room"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="general">Around the house</SelectItem>
-                    {rooms.map(room => <SelectItem key={room.id} value={room.id}>{room.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+              <div className="space-y-2 sm:col-span-2">
+                <span id="add-chore-rooms-label" className="text-sm font-medium leading-none">Rooms <span className="text-muted-foreground">(optional, one or more)</span></span>
+                {/* CH-25: one chore can be in several rooms; none chosen is Around the house. */}
+                <div role="group" aria-labelledby="add-chore-rooms-label" className="flex flex-wrap gap-2" data-testid="add-chore-rooms">
+                  <button
+                    type="button"
+                    aria-pressed={effectiveRoomIds.length === 0}
+                    onClick={() => setRoomIds([])}
+                    className={cn('min-h-[var(--target-min)] rounded-full border px-3 text-sm', effectiveRoomIds.length === 0 ? 'border-primary bg-primary/10 font-medium' : 'hover:bg-accent')}
+                  >
+                    Around the house
+                  </button>
+                  {rooms.map(room => {
+                    const on = effectiveRoomIds.includes(room.id);
+                    return (
+                      <button
+                        key={room.id}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => toggleRoom(room.id)}
+                        className={cn('flex min-h-[var(--target-min)] items-center gap-1.5 rounded-full border px-3 text-sm', on ? 'border-primary bg-primary/10 font-medium' : 'hover:bg-accent')}
+                      >
+                        <RoomIcon name={room.icon} className="h-3.5 w-3.5" />{room.name}
+                      </button>
+                    );
+                  })}
+                </div>
                 {rooms.length === 0 && (
                   <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                     No rooms yet.
