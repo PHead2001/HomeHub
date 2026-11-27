@@ -8,6 +8,7 @@ import { MembershipError, type VerifiedCaller } from '../../src/lib/server/house
 // Account controls (audit PR-26) against the Firestore emulator.
 const NOW = new Date('2026-08-01T12:00:00.000Z');
 const HOUSE = 'server-account-house';
+const SECOND = 'server-account-second';
 const me: VerifiedCaller = { uid: 'account-me', email: 'account.me@example.test', displayName: 'Me' };
 const other: VerifiedCaller = { uid: 'account-other', email: 'account.other@example.test' };
 
@@ -16,6 +17,7 @@ const profile = (user: VerifiedCaller) => adminDb.collection('users').doc(user.e
 
 const clear = async () => {
   await adminDb.recursiveDelete(house());
+  await adminDb.recursiveDelete(adminDb.collection('households').doc(SECOND));
   await adminDb.recursiveDelete(profile(me));
   await adminDb.recursiveDelete(profile(other));
 };
@@ -121,13 +123,57 @@ describe('delete my account (PR-26)', () => {
     await adminAuth.deleteUser(other.uid);
   });
 
-  test('someone without a household just loses their profile and sign-in', async () => {
+  test('a cleared household pointer does not hide a membership: it is found by uid and left', async () => {
     await ensureAuthUser(me);
     await profile(me).update({ householdId: null });
     const result = await deleteMyAccount(me, NOW);
-    assert.equal(result.leftHousehold, false);
+    assert.equal(result.householdsLeft, 1);
     assert.equal((await profile(me).get()).exists, false);
-    // Their membership record (not pointed at) is left for the household to manage.
+    assert.equal((await house().collection('members').doc(me.uid).get()).exists, false);
+  });
+
+  test('an owner who cleared their own household pointer is still refused (security review)', async () => {
+    await ensureAuthUser(other);
+    // The rules let a person set their own users/{email}.householdId to null.
+    await profile(other).update({ householdId: null, role: 'member', permissions: {} });
+    await assert.rejects(deleteMyAccount(other, NOW), (error: unknown) => {
+      assert.ok(error instanceof MembershipError);
+      assert.equal(error.code, 'conflict');
+      assert.match(error.userMessage, /Make someone else the owner first/);
+      return true;
+    });
+    assert.equal((await house().collection('members').doc(other.uid).get()).get('role'), 'owner');
+    assert.equal((await profile(other).get()).exists, true);
+    assert.equal(await authUserExists(other.uid), true);
+    await adminDb.recursiveDelete(profile(other));
+    await assert.rejects(deleteMyAccount(other, NOW), /Make someone else the owner first/);
+    assert.equal(await authUserExists(other.uid), true);
+    await adminAuth.deleteUser(other.uid);
+  });
+
+  test('owning a second household the profile does not point at refuses deletion and changes nothing', async () => {
+    await ensureAuthUser(me);
+    const second = adminDb.collection('households').doc(SECOND);
+    await second.set({ name: 'Second', ownerUid: me.uid });
+    await second.collection('members').doc(me.uid).set({ uid: me.uid, role: 'owner', status: 'active' });
+    await second.collection('members').doc(other.uid).set({ uid: other.uid, role: 'member', status: 'active' });
+    await assert.rejects(deleteMyAccount(me, NOW), /Make someone else the owner first/);
+    // Nothing was left first: the pointed-at membership is untouched.
     assert.equal((await house().collection('members').doc(me.uid).get()).exists, true);
+    assert.equal((await profile(me).get()).exists, true);
+    await adminAuth.deleteUser(me.uid);
+  });
+
+  test('every household that lists the caller as a member is left, not only the pointed-at one', async () => {
+    await ensureAuthUser(me);
+    const second = adminDb.collection('households').doc(SECOND);
+    await second.set({ name: 'Second', ownerUid: other.uid });
+    await second.collection('members').doc(other.uid).set({ uid: other.uid, role: 'owner', status: 'active' });
+    await second.collection('members').doc(me.uid).set({ uid: me.uid, role: 'member', status: 'active' });
+    const result = await deleteMyAccount(me, NOW);
+    assert.equal(result.householdsLeft, 2);
+    assert.equal((await house().collection('members').doc(me.uid).get()).exists, false);
+    assert.equal((await second.collection('members').doc(me.uid).get()).exists, false);
+    assert.equal(await authUserExists(me.uid), false);
   });
 });

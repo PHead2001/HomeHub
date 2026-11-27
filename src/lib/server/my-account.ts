@@ -101,15 +101,40 @@ export async function verifyRecentCaller(idToken: unknown, nowMs = Date.now()): 
   return { uid: decoded.uid, email: decoded.email, displayName: typeof decoded.name === 'string' ? decoded.name : undefined };
 }
 
-export type AccountDeletion = { leftHousehold: boolean; filesDeleted: number };
+export type AccountDeletion = { leftHousehold: boolean; householdsLeft: number; filesDeleted: number };
 
 /**
- * "Delete my account" (audit PR-26). Refused for a household owner (hand the
- * household on, or delete it, first). Otherwise, in an order that can be run again
- * after a partial failure:
- * 1. leave the household with the existing `leaveHousehold` (membership record,
- *    contact document, tablet PINs and sessions, open chores unassigned, stats kept
- *    under a former-member key, owners and admins notified);
+ * Every household that lists the caller as a member, found by account ID (not by
+ * the profile's `householdId` pointer, which the person may clear themselves): a
+ * collection-group query on `members` where `uid == caller.uid` (single-field
+ * collection-group index in firestore.indexes.json), restricted to
+ * `households/{id}/members/{uid}`, plus the pointed-at household read by document
+ * id for records written before `uid` was stored.
+ */
+async function callerMemberships(caller: VerifiedCaller, pointedHouseholdId: string) {
+  const found = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+  const byUid = await adminDb.collectionGroup('members').where('uid', '==', caller.uid).get();
+  for (const snap of byUid.docs) {
+    const household = snap.ref.parent.parent;
+    if (snap.id !== caller.uid || !household || household.parent.id !== 'households') continue;
+    found.set(household.id, snap);
+  }
+  if (pointedHouseholdId && !found.has(pointedHouseholdId)) {
+    const snap = await adminDb.collection('households').doc(pointedHouseholdId).collection('members').doc(caller.uid).get();
+    if (snap.exists) found.set(pointedHouseholdId, snap);
+  }
+  return found;
+}
+
+/**
+ * "Delete my account" (audit PR-26). Refused while ANY household lists the caller
+ * as its owner (hand the household on, or delete it, first), whatever the profile's
+ * household pointer says. Otherwise, in an order that can be run again after a
+ * partial failure:
+ * 1. leave every household found with the existing `leaveHousehold` (membership
+ *    record, contact document, tablet PINs and sessions, open chores unassigned,
+ *    stats kept under a former-member key, owners and admins notified); a household
+ *    already being deleted is left to its deletion;
  * 2. delete the profile `users/{email}` with its subcollections (private push
  *    tokens, the legacy inbox);
  * 3. delete the person's profile photos (`users/{uid}/avatars/` and the older
@@ -120,20 +145,21 @@ export type AccountDeletion = { leftHousehold: boolean; filesDeleted: number };
 export async function deleteMyAccount(caller: VerifiedCaller, now = new Date()): Promise<AccountDeletion> {
   const profileRef = adminDb.collection('users').doc(caller.email);
   const profileSnap = await profileRef.get();
-  const householdId = profileSnap.exists && typeof profileSnap.get('householdId') === 'string' ? profileSnap.get('householdId') as string : '';
+  const pointed = profileSnap.exists && typeof profileSnap.get('householdId') === 'string' ? profileSnap.get('householdId') as string : '';
+  const memberships = await callerMemberships(caller, pointed);
 
-  let leftHousehold = false;
-  if (householdId) {
-    const members = await adminDb.collection('households').doc(householdId).collection('members').get();
-    const mine = members.docs.find((d) => d.id === caller.uid);
-    if (mine) {
-      const others = members.docs.filter((d) => d.id !== caller.uid).map((d) => d.data());
-      const blocker = accountDeletionBlocker(mine.data(), others);
-      if (blocker) throw new MembershipError(DELETION_BLOCKER_COPY[blocker], 'conflict');
-      await leaveHousehold(caller, householdId, now);
-      leftHousehold = true;
-    }
+  // Every ownership is checked before anything is changed.
+  const toLeave: string[] = [];
+  for (const [householdId, mine] of memberships) {
+    const householdRef = adminDb.collection('households').doc(householdId);
+    const [householdSnap, members] = await Promise.all([householdRef.get(), householdRef.collection('members').get()]);
+    const others = members.docs.filter((d) => d.id !== caller.uid).map((d) => d.data());
+    const blocker = accountDeletionBlocker(mine.data(), others) ?? (householdSnap.get('ownerUid') === caller.uid ? accountDeletionBlocker({ role: 'owner' }, others) : null);
+    if (blocker) throw new MembershipError(DELETION_BLOCKER_COPY[blocker], 'conflict');
+    if (householdSnap.exists && !householdSnap.get('deletingAt')) toLeave.push(householdId);
   }
+  for (const householdId of toLeave) await leaveHousehold(caller, householdId, now);
+  const leftHousehold = toLeave.length > 0;
 
   await adminDb.recursiveDelete(profileRef);
 
@@ -152,5 +178,5 @@ export async function deleteMyAccount(caller: VerifiedCaller, now = new Date()):
   } catch (error) {
     if ((error as { code?: string })?.code !== 'auth/user-not-found') throw error;
   }
-  return { leftHousehold, filesDeleted };
+  return { leftHousehold, householdsLeft: toLeave.length, filesDeleted };
 }
