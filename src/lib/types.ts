@@ -575,14 +575,13 @@ export type User = {
   avatarUrl: string | null;
   role: UserRole;
   permissions?: PermissionOverrides;
-  forcePasswordChange?: boolean;
   householdId: string | null;
   /**
    * Appearance (Profile → Appearance). Version 2 stores curated preset choices;
    * the legacy free-color shape `{ background, accent, backgroundHex, accentHex }`
    * may still exist on old profiles and is ignored.
    */
-  theme?: ProfileAppearance | LegacyProfileTheme | null;
+  theme?: ProfileAppearance | Partial<ProfileAppearance> | LegacyProfileTheme | null;
   choreSettings?: {
     reminderTime: string; // e.g. "17:00"
     reminderEnabled: boolean;

@@ -6,7 +6,7 @@ import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { BellRing, Camera, Loader2, Trash2 } from 'lucide-react';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { deleteObject, getStorage, ref, uploadBytes, getDownloadURL, type StorageReference } from 'firebase/storage';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -42,9 +42,9 @@ function ChoreReminderSettings() {
     setIsSaving(true);
     try {
       // Silent: one outcome toast here instead of the generic "Profile Updated".
-      // A failed write still shows updateUser's error toast.
-      await updateUser({ choreSettings: { reminderEnabled: enabled, reminderTime: time, overdueAlerts } }, undefined, { silent: true });
-      toast({ title: 'Reminder saved', description: enabled ? `We'll remind you at ${time} each day.` : 'Daily chore reminders are off.' });
+      // A failed write shows updateUser's error toast and nothing else (PR-1).
+      const saved = await updateUser({ choreSettings: { reminderEnabled: enabled, reminderTime: time, overdueAlerts } }, { silent: true });
+      if (saved) toast({ title: 'Reminder saved', description: enabled ? `We'll remind you at ${time} each day.` : 'Daily chore reminders are off.' });
     } finally {
       setIsSaving(false);
     }
@@ -113,7 +113,7 @@ export function ProfileClient() {
     if (photoPreview) URL.revokeObjectURL(photoPreview);
   }, [photoPreview]);
 
-  const uploadAvatar = async (file: File): Promise<string> => {
+  const uploadAvatar = async (file: File): Promise<{ url: string; storageRef: StorageReference }> => {
     if (!currentUser?.uid) throw new Error('User not authenticated');
     const storage = getStorage();
     const fileExtension = file.name.split('.').pop();
@@ -121,7 +121,7 @@ export function ProfileClient() {
     // Keyed by the account ID, so the photo's download URL carries no email.
     const storageRef = ref(storage, `users/${currentUser.uid}/avatars/${fileName}`);
     await uploadBytes(storageRef, file);
-    return getDownloadURL(storageRef);
+    return { url: await getDownloadURL(storageRef), storageRef };
   };
 
   const choosePhoto = (file: File | undefined) => {
@@ -146,14 +146,23 @@ export function ProfileClient() {
     setIsSubmitting(true);
     try {
       let avatarUrl = removePhoto ? null : currentUser.avatarUrl;
+      let uploaded: StorageReference | null = null;
       if (photoFile) {
-        avatarUrl = await uploadAvatar(photoFile);
+        const upload = await uploadAvatar(photoFile);
+        avatarUrl = upload.url;
+        uploaded = upload.storageRef;
       }
 
-      await updateUser({
+      const saved = await updateUser({
         displayName: values.displayName.trim(),
         avatarUrl: avatarUrl || null,
       });
+      // PR-1: a failed save keeps the chosen photo and the edited name on screen (the
+      // error toast has been shown) and removes the file it uploaded, which nothing uses.
+      if (!saved) {
+        if (uploaded) void deleteObject(uploaded).catch(() => undefined);
+        return;
+      }
 
       clearPhotoChoice();
       setRemovePhoto(false);

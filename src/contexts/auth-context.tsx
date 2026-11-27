@@ -17,7 +17,6 @@ import {
   onAuthStateChanged,
   onIdTokenChanged,
   signOut,
-  updatePassword,
   signInWithPopup,
   getAdditionalUserInfo,
   type User as FirebaseAuthUser,
@@ -49,6 +48,7 @@ import { hasPushSubscription } from '@/lib/service-worker';
 import { normalizeInviteCode } from '@/lib/invite-codes';
 import { memberProfileDiffers } from '@/lib/member-directory';
 import { friendlyError } from '@/lib/friendly-error';
+import { mergeProfilePatch } from '@/lib/auth/profile-patch';
 import { createHouseholdAction, deleteHouseholdAction, joinHouseholdWithInvite, leaveHouseholdAction, syncMyMemberProfileAction } from '@/app/household/actions';
 import { hasTabletMarker } from '@/lib/devices/former-tablet';
 import { codeFromSetupFragment } from '@/lib/devices/device-codes';
@@ -124,8 +124,19 @@ interface AuthContextType {
   dismissMembershipEnded: () => void;
   signInWithGoogle: () => Promise<void>;
   logout: () => void;
-  /** `silent` skips the global loading state and the success toast (used for background preference sync). */
-  updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string, options?: { silent?: boolean }) => Promise<void>;
+  /**
+   * PR-1: resolves true once the profile write succeeded and false when it failed (the
+   * error toast has then been shown), so callers run their success steps only on true.
+   * `silent` skips the global loading state and the success toast (background sync).
+   */
+  updateUser: (data: Partial<Omit<User, 'uid' | 'email'>>, options?: { silent?: boolean }) => Promise<boolean>;
+  /**
+   * PR-7: true when the signed-in person's profile could not be read from the server
+   * (offline, a server error). `/profile` shows an error with Retry instead of an endless
+   * skeleton; `retryProfileLoad` reads it again (also run automatically on `online`).
+   */
+  profileLoadFailed: boolean;
+  retryProfileLoad: () => Promise<void>;
   createHousehold: (name: string) => Promise<void>;
   joinHousehold: (code: string) => Promise<boolean>;
   leaveHousehold: () => Promise<boolean>;
@@ -198,6 +209,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const principalRef = useRef<Principal>(PERSONAL);
   const [loading, setLoading] = useState(true);
   const [profileConfirmed, setProfileConfirmed] = useState(false);
+  const [profileLoadFailed, setProfileLoadFailed] = useState(false);
   // Bumped by "Try again" so every listener of the household is reopened.
   const [listenAttempt, setListenAttempt] = useState(0);
   // The first Auth callback of a page load is the session restore: the only one the cache
@@ -264,7 +276,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!googleProfileData) {
       console.warn("Creating user profile with basic info from `onAuthStateChanged`. For full details, user should re-login.");
-       const newUserProfile: Omit<User, 'uid' | 'householdId' | 'forcePasswordChange' | 'role'> = {
+       const newUserProfile: Omit<User, 'uid' | 'householdId' | 'role'> = {
           email: firebaseUser.email,
           displayName: firebaseUser.displayName || firebaseUser.email.split('@')[0],
           firstName: firebaseUser.displayName?.split(' ')[0] || '',
@@ -274,7 +286,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const dataToSave = {
         ...newUserProfile,
         role: 'member',
-        forcePasswordChange: false,
         householdId: null,
       }
       return createProfile(dataToSave);
@@ -287,7 +298,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       lastName: googleProfileData.family_name,
       avatarUrl: googleProfileData.picture || firebaseUser.photoURL,
       role: 'member',
-      forcePasswordChange: false,
       householdId: null,
     };
 
@@ -584,11 +594,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // SL-12: a failed read (offline with a cold cache, a server error) is retried on
         // its own (backoff, and at once when back online) instead of leaving the page on
         // its skeleton for good; it stops when another account (or nobody) is signed in.
+        // PR-7: meanwhile /profile shows the failure with Try again (`retryProfileLoad`);
+        // only for the account still signed in, so a sign-out never brings it back.
         const fetched = await retryUntil(() => fetchOrCreateUserProfile(firebaseUser), {
           keepGoing: () => auth.currentUser?.uid === firebaseUser.uid,
-          onError: (error) => console.warn('Your profile could not be loaded; retrying.', error instanceof Error ? error.message : String(error)),
+          onError: (error) => {
+            console.warn('Your profile could not be loaded; retrying.', error instanceof Error ? error.message : String(error));
+            if (auth.currentUser?.uid === firebaseUser.uid) setProfileLoadFailed(true);
+          },
         });
         if (fetched.aborted) return;
+        setProfileLoadFailed(false);
         const userProfile = fetched.value;
         if (userProfile) {
           publishProfile(userProfile);
@@ -601,6 +617,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } else {
         // User is not logged in: nothing of the last user's house stays on this device.
+        setProfileLoadFailed(false);
         dispatchMembership({ type: 'reset' });
         forgetHouseholdOnDevice(null);
         // A wall tablet whose session ended while its shell was not running (removed while
@@ -710,43 +727,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   },[toast]);
 
-  const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, newPassword?: string, options?: { silent?: boolean }) => {
+  // PR-21: consumers keep one stable `updateUser`; it reads the latest profile from a ref.
+  const currentUserRef = useRef<User | null>(null);
+  useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
+  const updateUser = useCallback(async (data: Partial<Omit<User, 'uid' | 'email'>>, options?: { silent?: boolean }): Promise<boolean> => {
     const silent = options?.silent === true;
-    if (!auth.currentUser || !currentUser?.email) {
+    const me = currentUserRef.current;
+    if (!auth.currentUser || !me?.email) {
       if (!silent) toast({ variant: 'destructive', title: 'Not Authenticated', description: 'You must be logged in to update your profile.' });
-      return;
+      return false;
     }
     if (!silent) setLoading(true);
     try {
-      if (newPassword && auth.currentUser.providerData.some(p => p.providerId === 'password')) {
-        toast({title: 'Updating Password...'})
-        await updatePassword(auth.currentUser, newPassword);
-        toast({title: 'Password Updated Successfully!'})
-        data.forcePasswordChange = false;
-      }
-
       const { db, doc, setDoc } = await loadData();
-      const userDocRef = doc(db, 'users', currentUser.email);
+      const userDocRef = doc(db, 'users', me.email);
       await setDoc(userDocRef, data, { merge: true });
-      setProfile(prev => prev ? { ...prev, ...data } : null);
+      // Merged like the write: nested maps (theme, reminders, preferences) key by key.
+      setProfile(prev => prev ? mergeProfilePatch<User>(prev, data) : null);
       // Housemates see the name and photo through the membership record, which only
       // the server may write for you (best effort: the next load heals a failure).
-      if (currentUser.householdId && ('displayName' in data || 'avatarUrl' in data)) void syncMemberProfile(currentUser.householdId);
+      if (me.householdId && ('displayName' in data || 'avatarUrl' in data)) void syncMemberProfile(me.householdId);
       if (!silent) toast({ title: 'Profile Updated', description: 'Your information has been successfully updated.' });
-
+      return true;
     } catch (error) {
       console.error("Update User Error:", error instanceof Error ? error : String(error));
-      let description = "An unknown error occurred.";
-      if (hasErrorCode(error) && error.code === 'auth/requires-recent-login') {
-          description = "This action requires you to have recently logged in. Please log out and log back in to continue.";
-      } else {
-          description = friendlyError(error);
-      }
-      toast({ variant: 'destructive', title: 'Update Failed', description });
+      toast({ variant: 'destructive', title: 'Update Failed', description: friendlyError(error) });
+      return false;
     } finally {
         if (!silent) setLoading(false);
     }
-  }, [currentUser, toast]);
+  }, [toast]);
+
+  const retryProfileLoad = useCallback(async () => {
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser || principalRef.current.kind !== 'personal') return;
+    setProfileLoadFailed(false);
+    try {
+      const userProfile = await fetchOrCreateUserProfile(firebaseUser);
+      if (userProfile && auth.currentUser?.uid === firebaseUser.uid) {
+        publishProfile(userProfile);
+        setProfileConfirmed(true);
+        setLoading(false);
+      }
+    } catch (error) {
+      console.warn('Your profile could not be loaded.', error instanceof Error ? error.message : String(error));
+      setProfileLoadFailed(true);
+    }
+  }, [fetchOrCreateUserProfile, publishProfile]);
+
+  // Coming back online retries a failed profile load on its own.
+  useEffect(() => {
+    if (!profileLoadFailed) return;
+    const retry = () => { void retryProfileLoad(); };
+    window.addEventListener('online', retry);
+    return () => window.removeEventListener('online', retry);
+  }, [profileLoadFailed, retryProfileLoad]);
 
   const createHousehold = useCallback(async (name: string) => {
     const firebaseUser = auth.currentUser;
@@ -905,6 +940,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     householdLoading,
     profileConfirmed,
+    profileLoadFailed,
+    retryProfileLoad,
     householdLoadFailed,
     retryHouseholdLoad,
     membershipEnded: view.ended,

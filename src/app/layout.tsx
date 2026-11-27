@@ -5,7 +5,6 @@ import './globals.css';
 import { Header } from '@/components/header';
 import { MobileTabBar } from '@/components/mobile-tab-bar';
 import { AuthProvider } from '@/contexts/auth-context';
-import { PasswordChangeHandler } from '@/components/password-change-handler';
 import { HouseholdManager } from '@/components/household-manager';
 import { AppearanceProvider } from '@/components/appearance-provider';
 import { AmbientBackground } from '@/components/motion/ambient-background';
@@ -96,7 +95,6 @@ export default function RootLayout({
             <DeferredPushNotificationManager />
             <InstallPromptCapture />
             <FirebaseErrorListener />
-            <PasswordChangeHandler />
             <HouseholdManager>
               {/* SL-18: the first Tab stop skips the header to the page. */}
               <a

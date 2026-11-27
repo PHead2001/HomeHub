@@ -9,16 +9,16 @@ import { settleViewTransition } from '@/lib/view-transition';
 import {
   APPEARANCE_STORAGE_KEY,
   DEFAULT_APPEARANCE,
-  appearanceFromProfile,
   applyPresetToDocument,
   applyTextScaleToDocument,
   parseAppearance,
-  profileAppearance,
   nextAutoSwitch,
   resolvePresetId,
   type AppearancePreferences,
 } from '@/lib/theme/appearance';
 import type { PresetId } from '@/lib/theme/tokens';
+import { changedSyncedKeys, dropPending, reconcileProfileTheme, themeWrite, type SyncedValues } from '@/lib/theme/theme-sync';
+import type { User } from '@/lib/types';
 
 type RevealOrigin = { x: number; y: number } | HTMLElement | null | undefined;
 
@@ -39,8 +39,6 @@ type AppearanceContextValue = {
 };
 
 const AppearanceContext = createContext<AppearanceContextValue | null>(null);
-
-const SYNCED_KEYS = ['mode', 'darkPreset', 'lightPreset', 'reduceMotion'] as const;
 
 /* ---------------------------------------------------------------------------
  * Preference store: localStorage-backed, shared by every tab via `storage`.
@@ -221,22 +219,36 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const activePreset = resolvePresetId(preferences, systemDark, autoNow);
   const reducedMotion = preferences.reduceMotion || systemReducedMotion;
 
-  // A signed-in member's synced profile preferences win over this device's copy
-  // (once per sign-in; later changes on this device are written back to the profile).
-  // Only the server-confirmed profile counts: the provisional cached copy shown on a repeat
-  // visit may predate a change made on another device.
-  const syncedProfileFor = useRef<string | null>(null);
+  // PR-6: this page follows the live profile's synced preferences (mode, presets, Reduce
+  // motion), so a change made on another device arrives here instead of being written
+  // back over. Keys this device wrote and has not seen echoed yet stay pending and are
+  // not overwritten by an older snapshot. Only the server-confirmed profile counts: the
+  // provisional cached copy shown on a repeat visit may predate a change made elsewhere.
+  const pendingThemeWrites = useRef<SyncedValues>({});
+  const themeOwner = useRef<string | null>(null);
   useEffect(() => {
     if (!currentUser?.email) {
-      syncedProfileFor.current = null;
+      themeOwner.current = null;
+      pendingThemeWrites.current = {};
       return;
     }
     if (!profileConfirmed) return;
-    if (syncedProfileFor.current === currentUser.email) return;
-    syncedProfileFor.current = currentUser.email;
-    const fromProfile = appearanceFromProfile(currentUser.theme);
-    if (fromProfile) storePreferences({ ...getStoredPreferences(), ...fromProfile });
+    if (themeOwner.current !== currentUser.email) {
+      themeOwner.current = currentUser.email;
+      pendingThemeWrites.current = {};
+    }
+    const local = getStoredPreferences();
+    const { apply, pending } = reconcileProfileTheme(local, currentUser.theme, pendingThemeWrites.current);
+    pendingThemeWrites.current = pending;
+    if (Object.keys(apply).length > 0) storePreferences(parseAppearance({ ...local, ...apply }));
   }, [currentUser?.email, currentUser?.theme, profileConfirmed]);
+
+  // PR-21: the write path reads the profile from refs, so `setPreferences` (and every
+  // consumer of this context) is not recreated by unrelated profile changes.
+  const profileRef = useRef<Pick<User, 'email' | 'theme'> | null>(null);
+  useEffect(() => {
+    profileRef.current = currentUser ? { email: currentUser.email, theme: currentUser.theme } : null;
+  }, [currentUser]);
 
   // Keep <html> in sync after hydration (the pre-paint script handled first paint):
   // System mode following the OS, profile sync, and changes from other tabs.
@@ -278,12 +290,19 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       const allowMotion = !(next.reduceMotion || systemReducedMotion);
       revealPreset(resolvePresetId(next, systemDark, new Date()), origin, allowMotion, () => storePreferences(next));
 
-      const syncedChanged = SYNCED_KEYS.some((key) => previous[key] !== next[key]);
-      if (syncedChanged && currentUser?.email) {
-        void updateUser({ theme: profileAppearance(next) }, undefined, { silent: true });
+      const changed = changedSyncedKeys(previous, next);
+      const profile = profileRef.current;
+      const write = profile?.email ? themeWrite(profile.theme, next, changed) : null;
+      if (write) {
+        // Only the changed keys are merged into the stored theme (PR-6).
+        const written = Object.fromEntries(changed.map((key) => [key, next[key]])) as SyncedValues;
+        pendingThemeWrites.current = { ...pendingThemeWrites.current, ...written };
+        void updateUser({ theme: write }, { silent: true }).then((ok) => {
+          if (!ok) pendingThemeWrites.current = dropPending(pendingThemeWrites.current, written);
+        });
       }
     },
-    [currentUser?.email, systemDark, systemReducedMotion, updateUser],
+    [systemDark, systemReducedMotion, updateUser],
   );
 
   const value = useMemo<AppearanceContextValue>(

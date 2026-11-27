@@ -643,6 +643,25 @@ describe('profiles', () => {
     }));
   });
 
+  test('the forced password change flag can no longer be written by its owner (PR-8)', async () => {
+    const ref = (user: Identity) => doc(dbFor(user), 'users', user.email);
+    await assertFails(updateDoc(ref(users.member), { forcePasswordChange: true }));
+    await assertFails(updateDoc(ref(users.member), { forcePasswordChange: false }));
+    // A legacy profile that still holds it stays editable; only an ops script clears it.
+    await environment.withSecurityRulesDisabled(context =>
+      updateDoc(doc(context.firestore(), 'users', users.member.email), { forcePasswordChange: true }));
+    await assertSucceeds(updateDoc(ref(users.member), { displayName: 'Member A' }));
+    await assertFails(updateDoc(ref(users.member), { forcePasswordChange: deleteField() }));
+  });
+
+  test('a theme change merges only the changed keys into the stored theme (PR-6)', async () => {
+    const ref = doc(dbFor(users.member), 'users', users.member.email);
+    await assertSucceeds(setDoc(ref, { theme: { version: 2, mode: 'dark', darkPreset: 'hearth', lightPreset: 'light', reduceMotion: false } }, { merge: true }));
+    await assertSucceeds(setDoc(ref, { theme: { version: 2, reduceMotion: true } }, { merge: true }));
+    const stored = (await getDoc(ref)).get('theme');
+    assert.deepEqual(stored, { version: 2, mode: 'dark', darkPreset: 'hearth', lightPreset: 'light', reduceMotion: true });
+  });
+
   test('per-user notification inboxes cannot be written by others', async () => {
     await assertFails(setDoc(doc(dbFor(users.owner), 'users', users.member.email, 'notifications', 'n'), { message: 'hi' }));
   });
