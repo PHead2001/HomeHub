@@ -297,13 +297,13 @@ describe('shopping, pantry, maintenance and pets', () => {
 });
 
 describe('records whose group was deleted are never dropped', () => {
-  it('keeps chores of a deleted room in an "Unknown Room" bucket, counted once', () => {
+  it('keeps chores of a deleted room in a "Removed room" bucket, counted once', () => {
     const facts = computeChoreFacts([
       { id: 'gone', task: 'Paint shed', assignedToEmail: viewer.email, dueDate: '2026-07-29', originalDueDate: '2026-07-29', isCompleted: false, roomIds: ['shed', 'attic'] },
       { id: 'mixed', task: 'Dust', assignedToEmail: viewer.email, dueDate: '2026-08-01', originalDueDate: '2026-08-01', isCompleted: false, roomIds: ['kitchen', 'shed'] },
     ], rooms, viewer, now);
     const unknown = facts.rooms.find((room) => room.id === UNKNOWN_ROOM_ID);
-    assert.equal(unknown?.name, 'Unknown Room');
+    assert.equal(unknown?.name, 'Removed room');
     assert.equal(unknown?.overdue, 1, 'two missing rooms on one chore count once');
     assert.equal(unknown?.dueToday, 1);
     assert.equal(unknown?.status, 'overdue');

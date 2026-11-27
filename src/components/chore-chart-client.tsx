@@ -5,7 +5,7 @@ import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, Plus, Repeat, RotateCw, Trophy, User as UserIcon } from 'lucide-react';
-import { type DocumentData, type DocumentReference, type Transaction, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { type DocumentData, type DocumentReference, type Transaction, arrayRemove, arrayUnion, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { withSkippedOccurrences } from '@functions/shared/skips';
 import { isGeneratedInstance, isUpcomingInstance, roomDeletionPlan, skipsForDeletion } from '@/lib/chores/recurrence-edits';
@@ -49,7 +49,7 @@ import { useChoreSettings } from '@/components/chores/use-chore-settings';
 import { useChoreLiveData } from '@/components/chores/use-chore-live-data';
 import { mergeLiveRows } from '@/lib/chores/live';
 import { MissedRecently } from '@/components/chores/missed-recently';
-import { useHouseholdToday, useToday } from '@/components/chores/use-today';
+import { useHouseholdToday } from '@/components/chores/use-today';
 import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
@@ -76,6 +76,10 @@ async function stillOpen(transaction: Transaction, refs: DocumentReference[]) {
 
 /** How long after a change to repeats upkeep waits, so several edits share one run. */
 const UPKEEP_DEBOUNCE_MS = 1500;
+
+/** One name for chores without a room, everywhere (CH-23), and one for a room that was removed. */
+export const AROUND_THE_HOUSE = 'Around the house';
+export const REMOVED_ROOM = 'Removed room';
 
 /** At most this long after a write settles, the page's version of its row gives way to the listener's. */
 const SETTLE_WAIT_MS = 5000;
@@ -370,7 +374,10 @@ export function ChoreChartClient() {
           if (removedRoomIds.length > 0 && isGeneratedInstance({ ...chore, id: choreDoc.id }) && chore.roomIds?.some(roomId => removedRoomIds.includes(roomId))) {
             transaction.delete(choreDoc.ref);
           } else {
-            transaction.update(choreDoc.ref, { task: choreData.task, notes: choreData.notes, subTasks: choreData.subTasks });
+            // Ticks of steps the template no longer has go too (CH-10).
+            const steps = choreData.subTasks ?? [];
+            const ticked = (choreDoc.get('completedSubTasks') as unknown[] | undefined ?? []).filter((step): step is string => typeof step === 'string' && steps.includes(step));
+            transaction.update(choreDoc.ref, { task: choreData.task, notes: choreData.notes, subTasks: choreData.subTasks, completedSubTasks: ticked });
           }
         });
       });
@@ -606,7 +613,8 @@ export function ChoreChartClient() {
   /* Completing (H05)                                                        */
   /* ---------------------------------------------------------------------- */
 
-  const today = useToday();
+  // The household's day everywhere on the page, as the server generates and judges (CH-10).
+  const today = householdDay;
 
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
@@ -736,7 +744,6 @@ export function ChoreChartClient() {
     });
     const label = completed.length === 1 ? completed[0].task : `${completed.length} chores`;
     const handle = toast({
-      group: 'chore-complete',
       title: completed.length === 1 ? 'Done' : 'Chores done',
       description: `${label} marked complete.`,
       duration: CHORE_UNDO_MS,
@@ -807,7 +814,8 @@ export function ChoreChartClient() {
     const release = hold([chore.id]);
     patchChores([chore.id], c => ({ ...c, completedSubTasks: next }));
     try {
-      await updateDoc(doc(choresCollection, chore.id), { completedSubTasks: next });
+      // One step at a time, so two devices ticking different steps both count (CH-10).
+      await updateDoc(doc(choresCollection, chore.id), { completedSubTasks: current.includes(subTask) ? arrayRemove(subTask) : arrayUnion(subTask) });
     } catch (error) {
       patchChores([chore.id], c => ({ ...c, completedSubTasks: current }));
       toastError(error, "Couldn't update the step");
@@ -952,17 +960,21 @@ export function ChoreChartClient() {
   const isEmptyHousehold = assignedChores.length === 0 && choreTemplates.length === 0;
 
   const groupByRoom = (entries: ToDoEntry[]) => {
-    const grouped = new Map<string, { name: string; icon: string; entries: ToDoEntry[] }>();
+    // Keyed by room id, never by name: a room someone named "General" or "Around the house"
+    // stays its own group (CH-10). Chores of removed rooms share one group.
+    const grouped = new Map<string, { id: string; name: string; icon: string; entries: ToDoEntry[] }>();
     for (const entry of entries) {
       const roomIds = entry.chore.roomIds && entry.chore.roomIds.length > 0 ? entry.chore.roomIds : ['general'];
       for (const roomId of roomIds) {
-        const room = roomId === 'general' ? { name: 'General', icon: 'Home' } : (roomsById.get(roomId) || { name: 'Unknown Room', icon: 'Home' });
-        const group = grouped.get(room.name) || { name: room.name, icon: room.icon, entries: [] };
+        const known = roomsById.get(roomId);
+        const key = roomId === 'general' ? 'general' : known ? roomId : 'removed';
+        const room = roomId === 'general' ? { name: AROUND_THE_HOUSE, icon: 'Home' } : (known || { name: REMOVED_ROOM, icon: 'Home' });
+        const group = grouped.get(key) || { id: key, name: room.name, icon: room.icon, entries: [] };
         group.entries.push(entry);
-        grouped.set(room.name, group);
+        grouped.set(key, group);
       }
     }
-    return [...grouped.values()].sort((a, b) => (a.name === 'General' ? 1 : b.name === 'General' ? -1 : a.name.localeCompare(b.name)));
+    return [...grouped.values()].sort((a, b) => (a.id === 'general' ? 1 : b.id === 'general' ? -1 : a.name.localeCompare(b.name)));
   };
   const asEntries = (chores: ChoreRecord[]): ToDoEntry[] => chores.map(chore => ({ chore, missed: [] }));
 
@@ -992,9 +1004,9 @@ export function ChoreChartClient() {
     // who filter remounts the groups with each newly listed room open (clearing Mine
     // brings in housemates' rooms, which would otherwise stay collapsed).
     return (
-      <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.name}`) : []}>
+      <Accordion key={`${prefix}-${choresFiltersKey({ ...filters, room: filterRoomId })}`} type="multiple" className="w-full space-y-2" defaultValue={openByDefault ? groups.map(g => `${prefix}-${g.id}`) : []}>
         {groups.map(group => (
-          <AccordionItem value={`${prefix}-${group.name}`} key={`${prefix}-${group.name}`} className="rounded-lg border bg-background px-2 md:px-3">
+          <AccordionItem value={`${prefix}-${group.id}`} key={`${prefix}-${group.id}`} className="rounded-lg border bg-background px-2 md:px-3">
             <AccordionTrigger className="py-2 text-sm font-semibold hover:no-underline md:text-base">
               <span className="flex items-center gap-2"><RoomIcon name={group.icon} className="h-4 w-4" /><span>{group.name} (<NumberTicker value={group.entries.length} animateOnMount={false} />)</span></span>
             </AccordionTrigger>
@@ -1222,7 +1234,7 @@ export function ChoreChartClient() {
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm">
                     <Filter className="mr-2 h-4 w-4" />
-                    {filterRoomId === 'all' ? 'All Rooms' : (filterRoomId === 'general' ? 'General' : roomsById.get(filterRoomId)?.name || 'Filter')}
+                    {filterRoomId === 'all' ? 'All Rooms' : (filterRoomId === 'general' ? AROUND_THE_HOUSE : roomsById.get(filterRoomId)?.name || 'Filter')}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-56">
@@ -1230,7 +1242,7 @@ export function ChoreChartClient() {
                   <DropdownMenuSeparator />
                   <DropdownMenuRadioGroup value={filterRoomId} onValueChange={setFilterRoomId}>
                     <DropdownMenuRadioItem value="all">All Rooms</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="general">General</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="general">{AROUND_THE_HOUSE}</DropdownMenuRadioItem>
                     {rooms.map(room => (
                       <DropdownMenuRadioItem key={room.id} value={room.id}>
                         <span className="flex items-center gap-2"><RoomIcon name={room.icon} className="h-3 w-3" />{room.name}</span>
@@ -1292,7 +1304,7 @@ export function ChoreChartClient() {
                       compact
                       headingLevel={3}
                       title={filters.due === 'overdue' ? 'Nothing overdue' : completedToday > 0 ? 'All done for today' : 'Nothing due today'}
-                      description={nextUp ? `Next up: ${nextUp.task}, ${format(new Date(`${choreDueKey(nextUp)}T12:00:00`), 'EEE, MMM d')}.` : 'Nothing is scheduled. Add a chore when something comes up.'}
+                      description={nextUp ? `Next up: ${nextUp.task}, ${format(new Date(`${choreDueKey(nextUp)}T12:00:00`), 'EEE, MMM d')}.` : completedToday > 0 ? 'Nothing else is scheduled.' : 'Nothing is scheduled. Add a chore when something comes up.'}
                       action={capabilities.canCreate ? { label: 'Add Chore', icon: <Plus className="h-4 w-4" />, onClick: openAdd } : undefined}
                     />
                   )}

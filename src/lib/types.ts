@@ -31,6 +31,8 @@ export type Recurrence = {
   /** Legacy copy of the assignee's email on older templates; never written since member privacy release C. */
   assignedToEmail?: string;
   startDate?: string; // yyyy-MM-dd anchor date for interval-based schedules
+  /** yyyy-MM-dd last day it repeats (inclusive); none repeats for good (CH-10). */
+  endDate?: string;
   dailyOptions?: {
     excludeWeekends: boolean;
   };

@@ -622,12 +622,13 @@ service cloud.firestore {
       return value == null || (
         value is map &&
         value.keys().hasOnly([
-          'frequency', 'interval', 'assignedToEmail', 'startDate', 'dailyOptions', 'weeklyOptions', 'monthlyOptions'
+          'frequency', 'interval', 'assignedToEmail', 'startDate', 'endDate', 'dailyOptions', 'weeklyOptions', 'monthlyOptions'
         ]) &&
         value.get('frequency', null) in ['daily', 'weekly', 'biweekly', 'monthly'] &&
         (!('interval' in value) || boundedNumber(value.interval, 1, 52)) &&
         (!('assignedToEmail' in value) || optionalString(value.assignedToEmail, 320)) &&
         (!('startDate' in value) || optionalString(value.startDate, 40)) &&
+        (!('endDate' in value) || optionalString(value.endDate, 40)) &&
         (!('dailyOptions' in value) ||
           (value.dailyOptions is map && value.dailyOptions.keys().hasOnly(['excludeWeekends']))) &&
         (!('weeklyOptions' in value) ||

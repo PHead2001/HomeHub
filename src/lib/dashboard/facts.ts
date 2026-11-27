@@ -305,7 +305,8 @@ export const GENERAL_ROOM_ID = 'general';
 /** Bucket for chores whose room id no longer matches a room. */
 export const UNKNOWN_ROOM_ID = 'unknown-room';
 /** Same label the Chores page uses for a missing room. */
-export const UNKNOWN_ROOM_NAME = 'Unknown Room';
+/** Chores of a room that was removed (CH-23: the Chores page uses the same name). */
+export const UNKNOWN_ROOM_NAME = 'Removed room';
 
 const text = (value: unknown, fallback: string) =>
   typeof value === 'string' && value.trim() ? value.trim().replace(/\s+/g, ' ').slice(0, 100) : fallback;
