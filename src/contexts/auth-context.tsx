@@ -124,6 +124,8 @@ interface AuthContextType {
   dismissMembershipEnded: () => void;
   signInWithGoogle: () => Promise<void>;
   logout: () => void;
+  /** True while a sign-out is flushing queued writes (PR-10). */
+  signingOut: boolean;
   /**
    * PR-1: resolves true once the profile write succeeded and false when it failed (the
    * error toast has then been shown), so callers run their success steps only on true.
@@ -182,6 +184,21 @@ const browserTimeZone = () => {
   }
 };
 
+
+// PR-10: a full sign-out reloads the page, so its confirmation is shown by the next one.
+const SIGNED_OUT_MARK = 'homehub.signed-out';
+const markSignedOutForNextPage = () => {
+  try { window.sessionStorage.setItem(SIGNED_OUT_MARK, '1'); } catch { /* storage blocked: no toast */ }
+};
+const takeSignedOutMark = (): boolean => {
+  try {
+    if (window.sessionStorage.getItem(SIGNED_OUT_MARK) !== '1') return false;
+    window.sessionStorage.removeItem(SIGNED_OUT_MARK);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /** Copies your profile's name and photo onto your membership record (server action, best effort). */
 async function syncMemberProfile(householdId: string): Promise<void> {
@@ -618,6 +635,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else {
         // User is not logged in: nothing of the last user's house stays on this device.
         setProfileLoadFailed(false);
+        // PR-10: the sign-out that reloaded this page confirms itself here.
+        if (takeSignedOutMark()) toast({ title: 'Signed out', description: 'You have been signed out on this device.' });
         dispatchMembership({ type: 'reset' });
         forgetHouseholdOnDevice(null);
         // A wall tablet whose session ended while its shell was not running (removed while
@@ -636,7 +655,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => unsubscribeAuth();
-  }, [fetchOrCreateUserProfile, publishProfile, switchPrincipal]);
+  }, [fetchOrCreateUserProfile, publishProfile, switchPrincipal, toast]);
 
 
   const signInWithGoogle = useCallback(async (): Promise<void> => {
@@ -678,10 +697,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [fetchOrCreateUserProfile, publishProfile, toast]);
 
   const logoutInFlight = useRef(false);
+  // PR-10: shown while a sign-out flushes (up to about 3 s), so a button can show progress.
+  const [signingOut, setSigningOut] = useState(false);
   const logout = useCallback(async () => {
     // A second tap while the first sign-out is still flushing does nothing.
     if (logoutInFlight.current) return;
     logoutInFlight.current = true;
+    setSigningOut(true);
     // From here on no push registration may complete for this account: one still
     // in flight is discarded and cleaned up (see push-tokens).
     pushSignOutGate.begin();
@@ -707,6 +729,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // instance.)
       const firestoreStopped = !firebaseEmulatorMode && await (await loadData()).clearLocalFirestoreCache();
       reloading = firestoreStopped;
+      // PR-10: the page reloads before a toast could show, so the next page shows it.
+      if (firestoreStopped) markSignedOutForNextPage();
       try {
         await signOut(auth);
       } finally {
@@ -723,6 +747,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!reloading) {
         logoutInFlight.current = false;
         pushSignOutGate.end();
+        setSigningOut(false);
       }
     }
   },[toast]);
@@ -948,6 +973,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     dismissMembershipEnded,
     signInWithGoogle,
     logout,
+    signingOut,
     updateUser,
     createHousehold,
     joinHousehold,

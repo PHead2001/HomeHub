@@ -144,6 +144,18 @@ describe('invite redemption', () => {
     assert.equal((await memberDoc.get()).data()?.avatarUrl, 'https://example.test/chosen.png');
   });
 
+  test('a joiner shows the name they chose in Profile, not the Google name (PR-2)', async () => {
+    await invite('PROF-NAME-XX');
+    await adminDb.collection('users').doc(newcomer.email).set({ email: newcomer.email, displayName: 'Jo' });
+    await redeemInvite(newcomer, 'PROF-NAME-XX', NOW);
+    const house = adminDb.collection('households').doc(HOUSE);
+    assert.equal((await house.collection('members').doc(newcomer.uid).get()).get('displayName'), 'Jo');
+    const notes = await house.collection('notifications').where('sourceId', '==', newcomer.uid).get();
+    assert.ok(notes.docs.length > 0);
+    for (const note of notes.docs) assert.match(String(note.get('message')), /Jo\b/);
+    for (const note of notes.docs) assert.doesNotMatch(String(note.get('message')), /Jordan/);
+  });
+
   test('expired, cancelled, used-up and unknown codes are refused with clear messages', async () => {
     await invite('EXPI-REDX-XX', { expiresAt: '2026-08-01T11:59:59.000Z' });
     await invite('REVO-KEDX-XX', { revokedAt: '2026-08-01T11:55:00.000Z' });
@@ -261,6 +273,17 @@ describe('leaving and deleting', () => {
     const notes = await house.collection('notifications').where('sourceType', '==', 'household-member-left').get();
     assert.deepEqual(notes.docs.map(d => d.data().targetUserUid).sort(), [admin.uid, owner.uid].sort());
     for (const note of notes.docs) assert.deepEqual(note.data().audience, [note.data().targetUserUid]);
+  });
+
+  test('the leaving notice uses the member record name, which follows Profile (PR-2)', async () => {
+    const house = adminDb.collection('households').doc(HOUSE);
+    await house.collection('members').doc(guest.uid).update({ displayName: 'Grandma' });
+    await leaveHousehold({ ...guest, displayName: 'Google Name' }, HOUSE, NOW);
+    const notes = await house.collection('notifications').where('sourceType', '==', 'household-member-left').get();
+    assert.ok(notes.docs.length > 0);
+    for (const note of notes.docs) assert.equal(note.get('message'), 'Grandma left the household.');
+    const audit = await house.collection('auditLogs').where('action', '==', 'member.left').get();
+    assert.equal(audit.docs[0]?.get('actorName'), 'Grandma');
   });
 
   test('leaving unassigns chores and templates found by uid; a chore an older build moved to someone else is left alone', async () => {

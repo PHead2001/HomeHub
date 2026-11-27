@@ -19,7 +19,9 @@ import { FieldError } from '@/components/field-error';
 import { MemberAvatar } from '@/components/member-avatar';
 import { cn } from '@/lib/utils';
 import { roleLabel } from '@/components/household/household-model';
-import { AVATAR_ACCEPT, avatarFileError } from '@/components/profile/profile-validation';
+import { AVATAR_MAX_BYTES } from '@/components/profile/profile-validation';
+import { downscaleImage } from '@/lib/images/downscale';
+import { AVATAR_MAX_EDGE, PROFILE_PHOTO_ACCEPT, avatarExtensionFor, ownAvatarPath, profilePhotoError } from '@/lib/profile/avatar';
 import { PushNotificationSettings } from './PushNotificationSettings';
 import { AppearanceSettings } from './appearance-settings';
 import { TabletPinCard } from '@/components/profile/tablet-pin-card';
@@ -96,6 +98,7 @@ export function ProfileClient() {
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [removePhoto, setRemovePhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [preparingPhoto, setPreparingPhoto] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -116,22 +119,45 @@ export function ProfileClient() {
   const uploadAvatar = async (file: File): Promise<{ url: string; storageRef: StorageReference }> => {
     if (!currentUser?.uid) throw new Error('User not authenticated');
     const storage = getStorage();
-    const fileExtension = file.name.split('.').pop();
-    const fileName = `${crypto.randomUUID()}.${fileExtension}`;
+    // PR-9: the extension comes from the encoded type, never the picked file's name.
+    const fileName = `${crypto.randomUUID()}.${avatarExtensionFor(file.type)}`;
     // Keyed by the account ID, so the photo's download URL carries no email.
     const storageRef = ref(storage, `users/${currentUser.uid}/avatars/${fileName}`);
-    await uploadBytes(storageRef, file);
+    await uploadBytes(storageRef, file, { contentType: file.type });
     return { url: await getDownloadURL(storageRef), storageRef };
   };
 
-  const choosePhoto = (file: File | undefined) => {
+  // PR-9: every photo is redrawn at 512 px before it is shown or uploaded, which also
+  // drops EXIF metadata (GPS location included). HEIC works where the browser reads it.
+  const choosePhoto = async (file: File | undefined) => {
     if (!file) return;
-    const error = avatarFileError(file);
+    const error = profilePhotoError(file);
     setPhotoError(error);
     if (error) return;
-    setPhotoFile(file);
-    setRemovePhoto(false);
-    setPhotoPreview(URL.createObjectURL(file));
+    setPreparingPhoto(true);
+    try {
+      const result = await downscaleImage(file, { maxEdge: AVATAR_MAX_EDGE, maxBytes: AVATAR_MAX_BYTES, force: true });
+      if (!result.ok) {
+        setPhotoError(result.reason === 'unreadable'
+          ? 'This photo could not be read on this device. Choose a JPG or PNG photo.'
+          : 'This photo is too large even after shrinking it. Choose another one.');
+        return;
+      }
+      setPhotoFile(result.file);
+      setRemovePhoto(false);
+      setPhotoPreview(URL.createObjectURL(result.file));
+    } finally {
+      setPreparingPhoto(false);
+    }
+  };
+
+  // After a successful save, the replaced or removed photo is deleted when it is one of
+  // this person's own uploads (never the Google account photo). Best effort.
+  const deletePreviousPhoto = (previousUrl: string | null | undefined, keptUrl: string | null) => {
+    if (!currentUser?.uid || !previousUrl || previousUrl === keptUrl) return;
+    const storage = getStorage();
+    const path = ownAvatarPath(previousUrl, { uid: currentUser.uid, email: currentUser.email }, storage.app.options.storageBucket);
+    if (path) void deleteObject(ref(storage, path)).catch(() => undefined);
   };
 
   const clearPhotoChoice = () => {
@@ -145,6 +171,7 @@ export function ProfileClient() {
     if (!currentUser) return;
     setIsSubmitting(true);
     try {
+      const previousUrl = currentUser.avatarUrl;
       let avatarUrl = removePhoto ? null : currentUser.avatarUrl;
       let uploaded: StorageReference | null = null;
       if (photoFile) {
@@ -163,6 +190,7 @@ export function ProfileClient() {
         if (uploaded) void deleteObject(uploaded).catch(() => undefined);
         return;
       }
+      deletePreviousPhoto(previousUrl, avatarUrl || null);
 
       clearPhotoChoice();
       setRemovePhoto(false);
@@ -220,23 +248,23 @@ export function ProfileClient() {
                         ref={fileInputRef}
                         id="profile-photo"
                         type="file"
-                        accept={AVATAR_ACCEPT}
+                        accept={PROFILE_PHOTO_ACCEPT}
                         className="sr-only"
                         tabIndex={-1}
                         aria-label="Profile photo"
-                        onChange={(event) => choosePhoto(event.target.files?.[0])}
-                        disabled={isSubmitting}
+                        onChange={(event) => void choosePhoto(event.target.files?.[0])}
+                        disabled={isSubmitting || preparingPhoto}
                       />
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        disabled={isSubmitting}
+                        disabled={isSubmitting || preparingPhoto}
                         aria-describedby={photoError ? 'profile-photo-error' : 'profile-photo-hint'}
                         aria-invalid={photoError ? true : undefined}
                         onClick={() => fileInputRef.current?.click()}
                       >
-                        <Camera className="mr-2 h-4 w-4" />
+                        {preparingPhoto ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Camera className="mr-2 h-4 w-4" />}
                         {hasPhoto ? 'Change photo' : 'Add photo'}
                       </Button>
                       {photoFile ? (
@@ -258,7 +286,7 @@ export function ProfileClient() {
                     <p id="profile-photo-hint" className="text-xs text-muted-foreground">
                       {photoChanged
                         ? 'Save changes to update your photo.'
-                        : 'JPG, PNG, GIF or WebP, up to 5 MB. Without a photo you get a gradient in your member color.'}
+                        : 'JPG, PNG, GIF, WebP or HEIC. Photos are shrunk to 512 px and their location data is removed. Without a photo you get a gradient in your member color.'}
                     </p>
                   </div>
                 </div>
