@@ -16,6 +16,7 @@ import {
   type OpenFoodFactsOutcome,
   type UnavailableReason,
 } from '@/lib/barcode/lookup-outcome';
+import { lookupIds } from '@/lib/barcode/gtin';
 
 const LookupBarcodeInputSchema = z.object({
   barcode: z.string().trim().regex(/^\d{6,32}$/),
@@ -96,17 +97,18 @@ export const lookupBarcodeForAuthorizedUser = async (
   rawInput: LookupBarcodeInput,
   user: AuthorizedHouseholdUser
 ): Promise<LookupBarcodeOutput> => {
-  const { barcode } = LookupBarcodeInputSchema.parse(rawInput);
-  const snapshot = await adminDb
-    .collection('households')
-    .doc(user.householdId)
-    .collection('barcode-library')
-    .doc(barcode)
-    .get();
-
-  if (snapshot.exists) {
-    const libraryItem = sanitizeLibraryItem(snapshot.id, snapshot.data() || {});
-    return { productName: libraryItem.name, libraryItem, source: 'household' };
+  const { barcode: raw } = LookupBarcodeInputSchema.parse(rawInput);
+  // BL-12: the normalised ID first, then the code as given (a product saved before
+  // normalisation that scripts/ops/normalize-barcode-library.mjs has not moved yet).
+  const ids = lookupIds(raw);
+  const barcode = ids[0] ?? raw;
+  const library = adminDb.collection('households').doc(user.householdId).collection('barcode-library');
+  for (const id of ids) {
+    const snapshot = await library.doc(id).get();
+    if (snapshot.exists) {
+      const libraryItem = sanitizeLibraryItem(snapshot.id, snapshot.data() || {});
+      return { productName: libraryItem.name, libraryItem, source: 'household' };
+    }
   }
 
   const outcome = await fetchOpenFoodFacts(barcode);

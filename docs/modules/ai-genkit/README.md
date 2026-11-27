@@ -80,7 +80,7 @@ This module owns no persisted result collection.
 - Recipe outputs remain component state. Maintenance summaries are stored on the log by the Maintenance Center's server action (`summarizeStoredMaintenanceLog` in `src/ai/flows/summarize-maintenance-log.ts`, writing through `src/lib/server/maintenance-summary.ts`); the plain `summarizeMaintenanceLog` (text in, summary out) stays for the e2e household probe and stores nothing.
 - Receipt readings are transient; only what the member confirms is saved, as ordinary log fields.
 - Grocery categories are persisted only as part of Shopping item writes.
-- Barcode lookup reads `households/{householdId}/barcode-library/{barcode}` and does not write it.
+- Barcode lookup reads `households/{householdId}/barcode-library/{barcode}` (the normalised 13-digit ID first, then the code as given; BL-12, see [Barcode Library](../barcode-library/README.md)) and does not write it.
 - Overview facts and narrative are transient component state and are not written to Firestore.
 - The palette reader's answer is transient; only a write the member confirms is stored (by the owning module's document contract).
 

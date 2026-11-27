@@ -185,4 +185,65 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
       .map((document) => document.data().status), { timeout: 10_000 })
       .toEqual(['purchased']);
   });
+
+  test('a camera that cannot start says why over the camera area and moves focus to the number field (BL-6, BL-18)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    // The test browser has no camera (or no permission): the denial or no-camera path.
+    await page.clock.setFixedTime(fixedNow);
+    await page.goto(`/library?add=${TIMEOUT}`);
+    await page.getByRole('dialog', { name: 'Add New Library Item' }).getByRole('button', { name: 'Scan product barcode' }).click();
+    const scanner = page.getByRole('dialog', { name: 'Scan Barcode' });
+    await expect(scanner.getByTestId('scanner-camera-error')).toBeVisible({ timeout: 15_000 });
+    // No aiming frame over an error, and the way on is the typed number.
+    await expect(scanner.getByTestId('scanner-frame')).toHaveCount(0);
+    await expect(scanner.getByLabel('Barcode number')).toBeFocused();
+    await expect(scanner.getByTestId('scanner-status')).toHaveText(/Type the barcode number instead/);
+    // A typed code fills the form and focus moves on to the product name (BL-18).
+    await scanner.getByLabel('Barcode number').fill(UNKNOWN);
+    await scanner.getByRole('button', { name: 'Use barcode' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
+    await expect(dialog.getByLabel('Barcode (UPC)')).toHaveValue(UNKNOWN);
+    await expect(dialog.getByLabel('Product Name')).toBeFocused();
+  });
+
+  test('Add saves one normalised ID and refuses what is not a barcode (BL-12)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const NORMALISED = '0036000291452';
+    await library.doc(NORMALISED).delete();
+    try {
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto(`/library?add=${UNKNOWN}`);
+      const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
+      await dialog.getByLabel('Product Name').fill('E2E Normalised Beans');
+      await dialog.getByLabel('Barcode (UPC)').fill('12345');
+      await dialog.getByRole('button', { name: 'Save Item' }).click();
+      await expect(dialog.getByText('Enter 6 to 32 digits.')).toBeVisible();
+      // A UPC-A typed with spaces and hyphens is saved under its 13-digit form.
+      await dialog.getByLabel('Barcode (UPC)').fill('0-36000 29145-2');
+      await dialog.getByRole('button', { name: 'Save Item' }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(async () => (await library.doc(NORMALISED).get()).data()?.name, { timeout: 10_000 }).toBe('E2E Normalised Beans');
+    } finally {
+      await library.doc(NORMALISED).delete();
+    }
+  });
+
+  test('a product saved verbatim with spaces and hyphens (before BL-12) is found by Add, not duplicated', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const LEGACY = '0-42100 00526-4';
+    await library.doc(LEGACY).set({ name: 'E2E Legacy Spaced', imageUrl: '', createdAt: fixedNow.toISOString() });
+    try {
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto(`/library?add=${UNKNOWN}`);
+      const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
+      await dialog.getByLabel('Barcode (UPC)').fill(LEGACY);
+      await dialog.getByLabel('Product Name').fill('E2E Duplicate Attempt');
+      await dialog.getByRole('button', { name: 'Save Item' }).click();
+      await expect(dialog.getByRole('alert').filter({ hasText: 'already saved as E2E Legacy Spaced' })).toBeVisible();
+      expect((await library.doc('0042100005264').get()).exists).toBe(false);
+    } finally {
+      await library.doc(LEGACY).delete();
+      await library.doc('0042100005264').delete();
+    }
+  });
 });
