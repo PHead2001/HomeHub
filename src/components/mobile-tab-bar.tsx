@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils';
 import { isActiveRoute } from '@/lib/navigation';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from './ui/sheet';
 import { openCommandPalette } from './command/events';
+import { startVoiceSession } from './command/voice-session';
 import { MAINTENANCE_LOGS_HREF } from '@/lib/dashboard/links';
 import { isComposingKey } from '@/lib/dashboard/shortcuts';
 import styles from './dashboard/dashboard.module.css';
@@ -179,6 +180,9 @@ function QuickAddFab({ actions }: { actions: QuickAction[] }) {
         onClick={() => {
           if (longPressed.current) {
             longPressed.current = false;
+            // Listening starts on the release, inside the gesture (iOS refuses it from
+            // the long-press timer); the palette opened by the timer takes it over (QA-16).
+            startVoiceSession();
             return;
           }
           setOpen((current) => !current);

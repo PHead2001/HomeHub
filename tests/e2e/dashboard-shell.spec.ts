@@ -772,8 +772,12 @@ test.describe('voice add (H14)', () => {
     const mic = palette.getByRole('button', { name: 'Speak to quick add' });
     await expect(mic).toBeVisible();
     await mic.click();
-    await expect(palette.getByRole('combobox', { name: 'Search or quick add' })).toHaveValue('e2e voice oat milk to groceries');
+    // An explicit spoken intent opens its preview at once (QA-22); nothing is saved before Confirm.
+    const preview = palette.getByTestId('quick-add-preview');
+    await expect(preview).toContainText('Add E2e voice oat milk');
     expect(await page.evaluate(() => (window as unknown as { __voiceStarts: number }).__voiceStarts)).toBe(1);
+    await preview.getByRole('button', { name: 'Back' }).click();
+    await expect(palette.getByRole('combobox', { name: 'Search or quick add' })).toHaveValue('e2e voice oat milk to groceries');
     // Listening ended with the phrase (nothing is added without the confirm step).
     await expect(palette.getByRole('button', { name: 'Speak to quick add' })).toHaveAttribute('aria-pressed', 'false');
   });

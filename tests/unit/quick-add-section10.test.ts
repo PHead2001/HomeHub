@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { parseQuickAdd, splitItems, looksLikeItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { mileageInText, portionInText, readMileage } from '../../src/lib/dashboard/quick-add-numbers';
 import { householdWallClock } from '../../src/lib/household-zone';
+import { recognitionLanguage, voiceAutoPreview, voiceErrorMessage } from '../../src/lib/dashboard/voice';
 
 // Saturday, 1 August 2026, local noon.
 const now = new Date(2026, 7, 1, 12, 0, 0);
@@ -131,5 +132,25 @@ describe('D-6: the parser reads the household day', () => {
     const tokyo = householdWallClock('Asia/Tokyo', instant);
     assert.deepEqual([la.getMonth(), la.getDate(), la.getHours()], [7, 1, 20]);
     assert.deepEqual([tokyo.getMonth(), tokyo.getDate(), tokyo.getHours()], [7, 2, 12]);
+  });
+});
+
+describe('QA-16, QA-22: voice', () => {
+  it('asks recognition for English, the language the parser reads', () => {
+    assert.equal(recognitionLanguage('en-GB'), 'en-GB');
+    assert.equal(recognitionLanguage('en'), 'en');
+    assert.equal(recognitionLanguage('de-DE'), 'en-US');
+    assert.equal(recognitionLanguage(undefined), 'en-US');
+  });
+  it('explains errors plainly', () => {
+    assert.match(voiceErrorMessage('not-allowed'), /blocked/);
+    assert.match(voiceErrorMessage('no-speech'), /Did not catch/);
+  });
+  it('opens the preview at once only for an explicit intent', () => {
+    assert.equal(voiceAutoPreview(parse('vacuum the stairs tomorrow')), true);
+    assert.equal(voiceAutoPreview(parse('fed audit rex')), true);
+    assert.equal(voiceAutoPreview(parse('add milk')), true);
+    assert.equal(voiceAutoPreview(parse('milk and eggs')), false);
+    assert.equal(voiceAutoPreview(null), false);
   });
 });
