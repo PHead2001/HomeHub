@@ -19,6 +19,8 @@ const CALLERS = {
   member: { uid: 'ha-member', email: 'ha.member@example.test', role: 'member', permissions: {} },
   controller: { uid: 'ha-controller', email: 'ha.controller@example.test', role: 'member', permissions: { 'automation.control': true } },
   child: { uid: 'ha-child', email: 'ha.child@example.test', role: 'child', permissions: { 'automation.view': true } },
+  childManager: { uid: 'ha-child-manager', email: 'ha.child.manager@example.test', role: 'child', permissions: { 'automation.view': true, 'automation.manage': true } },
+  guestManager: { uid: 'ha-guest-manager', email: 'ha.guest.manager@example.test', role: 'guest', permissions: { 'automation.view': true, 'automation.manage': true } },
 } as const;
 type Caller = keyof typeof CALLERS;
 const tokens = new Map<Caller, string>();
@@ -61,6 +63,21 @@ beforeEach(async () => {
 after(() => adminDb.recursiveDelete(house));
 
 describe('settings and what each person is sent', () => {
+  test('AU-11: a settings change answers with what the caller may see, never sensitive favourites for a child or guest manager', async () => {
+    await seedConfig({ ...config, favorites: ['light.k'], showSensitiveToMembers: true });
+    for (const caller of ['childManager', 'guestManager'] as const) {
+      const pinned = await setAutomationFavorite(as(caller), { entityId: 'lock.front', pinned: true });
+      assert.ok(pinned.ok, caller);
+      assert.deepEqual(pinned.data.favorites, ['light.k'], `${caller}: the lock is stored but not sent back`);
+      const privacy = await setMembersSeeSensitive(as(caller), { show: true });
+      assert.ok(privacy.ok && !privacy.data.favorites.includes('lock.front'), caller);
+    }
+    assert.deepEqual((await configDoc().get()).get('favorites'), ['light.k', 'lock.front']);
+    // The owner's answer to the same kind of change still lists it.
+    const owner = await setAutomationFavorite(as('owner'), { entityId: 'light.x', pinned: true });
+    assert.ok(owner.ok && owner.data.favorites.includes('lock.front'));
+  });
+
   test('only managers change settings; a bad change is refused', async () => {
     assert.equal((await setAutomationFavorite(as('member'), { entityId: 'light.k', pinned: true })).ok, false);
     assert.equal((await setMembersSeeSensitive(as('member'), { show: true })).ok, false);

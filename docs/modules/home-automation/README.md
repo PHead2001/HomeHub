@@ -30,7 +30,7 @@ Every action (`getHomeAssistantStatus`, `getHomeAssistantEntities`, `saveHomeAss
 
 **One read per household (AU-10).** Every state read goes through `householdSnapshot` (`home-assistant-snapshot.ts`): the credentials are read, then a per-instance `SnapshotCache` keyed by household and the credentials' `updatedAt` serves the last answer for 15 s and shares one in-flight request between concurrent callers; failures are cached for the window too. Polling pages and every member's screen therefore cost Home Assistant at most one `GET /api/states` per household every 15 s on a server instance (Cloud Run instances do not share the cache). A disconnect or a new token forgets the cached answer.
 
-**Privacy is applied on the server (AU-11).** The cache holds the full list; each caller then receives `visibleEntities(…)` for their role and the household's `showSensitiveToMembers`, and `configForViewer` strips the privacy choice for non-managers and sensitive favourites for those who may not see them.
+**Privacy is applied on the server (AU-11).** The cache holds the full list; each caller then receives `visibleEntities(…)` for their role and the household's `showSensitiveToMembers`, and `configForViewer` strips the privacy choice for non-managers and sensitive favourites for those who may not see them. Every settings action answers through `configForViewer` too, so a child or guest given `automation.manage` never receives sensitive favourites in the reply to a change.
 
 ## Data Model and Persistence
 

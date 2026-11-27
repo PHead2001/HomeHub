@@ -136,15 +136,22 @@ export async function disconnectHomeAssistant(context: Context): Promise<Result<
 }
 
 /**
+ * One settings change, answered with what this caller may see (`configForViewer`): a child
+ * or guest given automation.manage still never receives sensitive favourites (AU-11).
+ */
+const changeFor = async (user: AuthorizedHouseholdUser, change: unknown) =>
+  configFor(user, await changeConfig(user.householdId, user.uid, change));
+
+/**
  * AU-8, AU-11: each setting is its own action, applied by the server to the stored config
  * inside one transaction, so an older page never overwrites another manager's change.
  */
 export async function setAutomationFavorite(context: Context, input: { entityId: string; pinned: boolean }): Promise<Result<AutomationConfig>> {
   return run(context, 'automation.manage', (user) =>
-    changeConfig(user.householdId, user.uid, { kind: 'favorite', entityId: input?.entityId, pinned: input?.pinned }));
+    changeFor(user, { kind: 'favorite', entityId: input?.entityId, pinned: input?.pinned }));
 }
 
 export async function setMembersSeeSensitive(context: Context, input: { show: boolean }): Promise<Result<AutomationConfig>> {
   return run(context, 'automation.manage', (user) =>
-    changeConfig(user.householdId, user.uid, { kind: 'showSensitiveToMembers', show: input?.show }));
+    changeFor(user, { kind: 'showSensitiveToMembers', show: input?.show }));
 }
