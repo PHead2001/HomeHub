@@ -13,6 +13,7 @@ import {
   revokeAllInvites,
   revokeInvite,
   transferOwnership,
+  updateHouseholdTimeZone,
   updateMemberPermissions,
   type MembershipErrorCode,
   type VerifiedCaller,
@@ -805,5 +806,32 @@ describe('invite links and suggested roles (HO-16, HO-23)', () => {
     await redeemInvite(stranger, 'SUGG-ESTX-XX', NOW);
     assert.equal((await memberRef(stranger).get()).get('suggestedRole'), undefined);
     assert.equal(invite.maxUses, 1, 'codes stay single-use (16.3)');
+  });
+});
+
+describe('household time zone (HO-19)', () => {
+  test('an owner or admin changes it; the log says from and to', async () => {
+    await house().update({ timeZone: 'America/Chicago' });
+    assert.deepEqual(await updateHouseholdTimeZone(admin, HOUSE, 'America/New_York', NOW), { timeZone: 'America/New_York' });
+    assert.equal((await house().get()).get('timeZone'), 'America/New_York');
+    const [entry] = await audits('household.time_zone_changed');
+    assertActor(entry, admin);
+    assert.deepEqual(entry.details, { timeZone: 'America/New_York', previousTimeZone: 'America/Chicago' });
+    // Saving the same zone writes nothing more.
+    await updateHouseholdTimeZone(owner, HOUSE, 'America/New_York', NOW);
+    assert.equal((await audits('household.time_zone_changed')).length, 1);
+  });
+
+  test('members, kids, guests, pending people and invalid zones are refused', async () => {
+    await refused(updateHouseholdTimeZone(member, HOUSE, 'Europe/Paris', NOW), 'missing_permission');
+    await grant(member, { 'household.manageMembers': true });
+    await refused(updateHouseholdTimeZone(member, HOUSE, 'Europe/Paris', NOW), 'missing_permission');
+    await refused(updateHouseholdTimeZone(guest, HOUSE, 'Europe/Paris', NOW), 'missing_permission');
+    await refused(updateHouseholdTimeZone(pending, HOUSE, 'Europe/Paris', NOW), 'missing_permission');
+    await refused(updateHouseholdTimeZone(outsider, HOUSE, 'Europe/Paris', NOW), 'not_member');
+    for (const bad of ['Mars/Olympus', '', 'x'.repeat(65), 42]) {
+      await refused(updateHouseholdTimeZone(owner, HOUSE, bad, NOW), 'invalid_input');
+    }
+    assert.equal((await house().get()).get('timeZone'), undefined);
   });
 });

@@ -15,6 +15,7 @@ import {
   revokeInvite,
   syncMemberProfile,
   transferOwnership,
+  updateHouseholdTimeZone,
   updateMemberPermissions,
   verifyCaller,
   type CreateHouseholdResult,
@@ -97,6 +98,11 @@ export async function createHouseholdAction(input: { idToken: string; name: stri
 
 export async function renameHouseholdAction(input: { idToken: string; householdId: string; name: string }): Promise<HouseholdActionResult<{ name: string }>> {
   return manage(input?.idToken, caller => renameHousehold(caller, input.householdId, input.name));
+}
+
+/** Household time zone (HO-19): owners and admins; validated and logged on the server. */
+export async function updateHouseholdTimeZoneAction(input: { idToken: string; householdId: string; timeZone: string }): Promise<HouseholdActionResult<{ timeZone: string }>> {
+  return manage(input?.idToken, caller => updateHouseholdTimeZone(caller, input.householdId, input.timeZone));
 }
 
 export async function createInviteAction(input: { idToken: string; householdId: string; suggestedRole?: HouseholdRole | null }): Promise<HouseholdActionResult<InviteCode>> {

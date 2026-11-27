@@ -922,6 +922,36 @@ export const remindPendingMembers = async (caller: VerifiedCaller, householdId: 
   });
 };
 
+/**
+ * Change the household's time zone (HO-19; D-6: every reminder, "today" and recurring
+ * chore follows it). Owners and admins (role), as the rules allow for the same field;
+ * the server validates the IANA name and logs the change with from/to.
+ */
+export const updateHouseholdTimeZone = async (
+  caller: VerifiedCaller,
+  householdId: string,
+  rawTimeZone: unknown,
+  now = new Date(),
+): Promise<{ timeZone: string }> => {
+  const timeZone = normalizeTimeZone(rawTimeZone);
+  if (!timeZone) throw new MembershipError("That time zone isn't recognized. Pick one from the list.", 'invalid_input');
+  return adminDb.runTransaction(async transaction => {
+    const context = await loadActor(transaction, caller, householdId);
+    const actor = context.actor;
+    if ((actor.status || 'active') !== 'active' || (actor.role !== 'owner' && actor.role !== 'admin')) {
+      throw new MembershipError('Only owners and admins can change the time zone.', 'missing_permission');
+    }
+    const previous = typeof context.household.timeZone === 'string' ? context.household.timeZone : '';
+    if (previous === timeZone) return { timeZone };
+    transaction.update(context.householdRef, { timeZone, updatedAt: now.toISOString() });
+    writeAudit(transaction, context, caller, now, {
+      action: 'household.time_zone_changed',
+      details: { timeZone, previousTimeZone: previous || null },
+    });
+    return { timeZone };
+  });
+};
+
 /** Rename the household (`household.manageMembers`). */
 export const renameHousehold = async (caller: VerifiedCaller, householdId: string, rawName: string, now = new Date()): Promise<{ name: string }> => {
   const name = requireHouseholdName(rawName);

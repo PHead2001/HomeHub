@@ -84,6 +84,7 @@ import { MemberCard, type MemberActions } from '@/components/household/member-ca
 import { PendingMemberBanner } from '@/components/household/pending-member-banner';
 import { ALL_ROLES, RolesPanel } from '@/components/household/roles-panel';
 import { InviteRoleSelect, type InviteRoleChoice } from '@/components/household/invite-role-select';
+import { TimeZoneSetting } from '@/components/household/time-zone-setting';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
@@ -578,6 +579,7 @@ export function HouseholdManagementClient() {
                 </div>
               </CardContent>
             </Card>
+            <TimeZoneSetting householdId={household.id} timeZone={household.timeZone} canEdit={isOwnerOrAdminRole} />
             <WeekStartSetting householdId={household.id} canEdit={isOwnerOrAdminRole} />
           </TabsContent>
 
