@@ -35,7 +35,7 @@ export function TabletQuickAdd({ onClose }: { onClose: () => void }) {
   const { pets, chores } = useMemo(() => quickAddTargets(data.sectionFacts ?? {}), [data.sectionFacts]);
   const remembered = person(shell.face?.memberUid);
   const petStates = useMemo(() => new Map((petsSection(data.sectionFacts ?? {}) ?? []).map((pet) => [pet.id, pet])), [data.sectionFacts]);
-  const intents = matchLocalIntents(text, { pets, chores, sections: settings.sections })
+  const intents = matchLocalIntents(text, { pets, chores, sections: settings.sections, room: settings.room })
     .filter((intent) => !remembered || personMayUse(remembered, policyOf(intent.capability)))
     // A feed needs the pet's feeding history (its portion and food), as the Feed button does.
     .filter((intent) => intent.kind !== 'feed' || Boolean(petStates.get(intent.petId)?.feed));

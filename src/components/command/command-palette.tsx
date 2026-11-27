@@ -50,11 +50,11 @@ import { useToast } from '@/hooks/use-toast';
 import { playFeedback } from '@/lib/feedback';
 import { cn } from '@/lib/utils';
 import type { HouseholdPermission } from '@/lib/types';
-import { assignableMembers, describeRepeat, parseQuickAdd, createSettlementGuard, planUnconfirmedSettlement, quickAddRetryMessage, resolveChoreAssignee, unconfirmedShoppingMessage, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
+import { assignableMembers, describeRepeat, parseQuickAdd, parseQuickAddClauses, createSettlementGuard, planUnconfirmedSettlement, quickAddRetryMessage, resolveChoreAssignee, unconfirmedShoppingMessage, type MaintenanceTarget, type QuickAddAsset, type QuickAddContext, type QuickAddIntent, type QuickAddMember, type QuickAddRoom, type QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote, type QuickMaintenanceRequest } from '@/lib/dashboard/quick-add-writes';
 import { NO_ANSWER_MESSAGE } from '@/components/maintenance/maintenance-action-client';
-import { canSplitChip, joinChips, removeChip, splitChip } from '@/lib/dashboard/quick-add-preview';
+import { batchBlocker, canSplitChip, joinChips, removeChip, splitChip } from '@/lib/dashboard/quick-add-preview';
 import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker, type IndexSection } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
@@ -70,9 +70,15 @@ import { highlightRowWhenShown } from './search-hit';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance, undoOneTimeChore, undoQuickMaintenance, undoShoppingAdd } from './quick-add-actions';
 import { QUICK_ADD_UNDO_MS } from '@/lib/dashboard/quick-add-undo';
 import { useVoiceInput } from './use-voice-input';
+import dynamic from 'next/dynamic';
+import { lookupBarcode } from '@/ai/flows/lookup-barcode-flow';
+import { scannedShoppingIntent } from '@/lib/dashboard/quick-add-scan';
 import { VOICE_DISCLOSURE, voiceAutoPreview } from '@/lib/dashboard/voice';
 import { ChoreMode, FeedingMode, ItemMode } from './palette-modes';
 import { bareVerbOffer, feedingModeState, itemModeState, modeBlocker, MODE_PERMISSION, type PaletteMode } from '@/lib/dashboard/palette-mode';
+
+// The camera scanner loads only when the Scan button is pressed (QA-24).
+const PaletteScanner = dynamic(() => import('@/components/barcode-scanner').then((mod) => mod.BarcodeScanner), { ssr: false });
 
 type Page = { href: string; label: string; icon: LucideIcon; permission?: HouseholdPermission; keywords?: string };
 
@@ -162,6 +168,10 @@ export function CommandPalette({
   const [text, setText] = useState('');
   const [activeChoice, setActive] = useState(0);
   const [pending, setPending] = useState<QuickAddIntent | null>(null);
+  // Scan into quick add (QA-24): the camera is on while `scan.open`.
+  const [scan, setScan] = useState<{ open: boolean; status: 'idle' | 'looking' | 'miss' | 'error'; message?: string }>({ open: false, status: 'idle' });
+  // Several things from one sentence (QA-25), shown stacked with one Confirm.
+  const [batch, setBatch] = useState<{ intents: QuickAddIntent[]; notes: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
   // Shopping entries saved but not confirmed yet ("Still sending…"): the preview
@@ -255,6 +265,15 @@ export function CommandPalette({
     () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, { ...quickContext, now: householdWallClock(household?.timeZone) })) : null),
     [text, quickContext, permitted, index.loading, household?.timeZone],
   );
+
+  // "milk and eggs, and remind Sam …" or "fed Maple and Oreo": every clause permitted (QA-25).
+  const clauses = useMemo(() => {
+    if (!quickContext || index.loading) return null;
+    const read = parseQuickAddClauses(text, { ...quickContext, now: householdWallClock(household?.timeZone) });
+    if (!read) return null;
+    const allowed = read.map((entry) => permitted(entry));
+    return allowed.every((entry): entry is QuickAddIntent => entry !== null) ? allowed : null;
+  }, [text, quickContext, index.loading, permitted, household?.timeZone]);
 
   // AI reading (H13 fallback): only on request, for a sentence the parser could not read.
   const [aiState, setAiState] = useState<{ status: 'idle' | 'reading' | 'none' | 'error'; message?: string }>({ status: 'idle' });
@@ -399,6 +418,20 @@ export function CommandPalette({
         },
       });
     }
+    if (clauses) {
+      quick.push({
+        id: 'quick-add-batch',
+        group: 'Quick add',
+        label: `Add ${clauses.length} things`,
+        detail: clauses.map((entry) => describeIntent(entry, self).title).join(' · '),
+        hint: 'Enter',
+        icon: Plus,
+        run: () => {
+          invalidateAi();
+          setBatch({ intents: clauses, notes: [] });
+        },
+      });
+    }
     // Bare words ("milk and eggs") become a shopping suggestion only when search finds nothing.
     if (intent && !(intent.kind === 'shopping' && !intent.explicit && records.length + pageOptions.length > 0)) {
       const description = describeIntent(intent, self);
@@ -464,7 +497,7 @@ export function CommandPalette({
     }] : [];
     // Group, then rank: each group's options stay together (QA-5).
     return groupContiguous([...quick, ...records, ...pageOptions, ...ai]);
-  }, [text, permissions, index.entries, index.loading, intent, self, navigate, offerAi, readWithAi, invalidateAi, bareOffer, quickContext, picks, recentItems]);
+  }, [text, permissions, index.entries, index.loading, intent, self, navigate, offerAi, readWithAi, invalidateAi, bareOffer, quickContext, picks, recentItems, clauses]);
 
   const active = Math.min(activeChoice, Math.max(0, options.length - 1));
 
@@ -736,6 +769,101 @@ export function CommandPalette({
     }
   };
 
+  // Several things at once (QA-25): each is saved through its module's own path, in
+  // turn; whatever could not be saved stays in the stack with the reason.
+  const saveBatch = async () => {
+    const householdId = currentUser?.householdId;
+    if (!batch || !householdId || !currentUser) return;
+    const lateError = (error: unknown) => toastError(error, 'Could not sync');
+    const timeZone = household?.timeZone ?? null;
+    const left: QuickAddIntent[] = [];
+    const notes: string[] = [];
+    const saved: string[] = [];
+    setSaving(true);
+    for (const entry of batch.intents) {
+      const title = describeIntent(entry, self).title;
+      try {
+        if (entry.kind === 'shopping' && entry.list) {
+          const outcome = await addShoppingItems(householdId, entry.list, entry.items, lateError);
+          if (outcome.saved.length > 0) {
+            recentItems.record(outcome.saved.map((item) => item.name));
+            notifyDataChanged({ module: 'shopping', householdId, listId: entry.list.id });
+          }
+          const rest = [...outcome.unconfirmed, ...outcome.failed];
+          if (rest.length > 0) {
+            left.push({ ...entry, items: rest });
+            notes.push(outcome.unconfirmed.length > 0 ? `${rest.map((item) => item.name).join(', ')}: not confirmed yet.` : quickAddRetryMessage(rest) ?? '');
+          } else saved.push(title);
+        } else if (entry.kind === 'feeding') {
+          const portion = feedingPortion(entry);
+          const result = await logFeeding({
+            householdId, petId: entry.pet.id, amount: portion.amount, unit: portion.unit, viewer: currentUser, timeZone,
+            opId: newFeedOpId(), confirm: null, portionFromSlot: entry.amount === null, food: entry.food ?? null, onLateError: lateError,
+          });
+          if (result.status === 'needsConfirm') {
+            // Never a second feeding from a stack: the double-feed check wins (PE-23).
+            left.push(entry);
+            notes.push(`${entry.pet.name} was fed recently. Log it on its own to feed again.`);
+          } else {
+            notifyDataChanged({ module: 'pets', householdId, petId: entry.pet.id });
+            saved.push(title);
+          }
+        } else if (entry.kind === 'chore') {
+          const { assignee } = resolveChoreAssignee(entry.assignee, assignable, self);
+          if (!assignee) throw new Error('missing-assignee');
+          if (entry.repeat) await createRepeatingChore({ householdId, viewer: currentUser, task: entry.task, repeat: entry.repeat, firstDay: entry.dueDate, assignee, room: entry.room ?? null, onLateError: lateError });
+          else await createOneTimeChore({ householdId, viewer: currentUser, task: entry.task, dueDate: entry.dueDate, assignee, room: entry.room ?? null, onLateError: lateError });
+          notifyDataChanged({ module: 'chores', householdId });
+          saved.push(title);
+        } else if (entry.kind === 'maintenance') {
+          const result = await logMaintenance({ householdId, title: entry.title, mileage: entry.mileage, target: entry.target ?? null, timeZone, held: null, onLateError: lateError });
+          if (result.status === 'saved' || result.status === 'queued') {
+            notifyDataChanged({ module: 'maintenance', householdId });
+            saved.push(title);
+          } else {
+            // Unknown outcome or a refusal: never resent from a stack (it could save twice).
+            notes.push(result.status === 'failed' ? `${entry.title}: ${result.message}` : `${entry.title}: no answer from the server. Check Maintenance before adding it again.`);
+          }
+        }
+      } catch (error) {
+        left.push(entry);
+        notes.push(`${title}: ${friendlyError(error)}`);
+      }
+    }
+    setSaving(false);
+    if (saved.length > 0) {
+      toast({ title: `Added ${saved.length} ${saved.length === 1 ? 'thing' : 'things'}`, description: saved.join(' · ') });
+      playFeedback('add');
+    }
+    if (left.length === 0 && notes.length === 0) {
+      close();
+      return;
+    }
+    setBatch({ intents: left, notes });
+  };
+
+  const onScanned = async (barcode: string) => {
+    const householdId = currentUser?.householdId;
+    setScan({ open: false, status: 'looking' });
+    if (!householdId) return;
+    try {
+      // The same lookup as Shopping and Pantry scans (household library first).
+      const result = unwrapAiActionResult(await lookupBarcode({ barcode }, await getAiActionContext(householdId)));
+      const scanned = permitted(scannedShoppingIntent(result.productName, index.lists));
+      if (!scanned) {
+        setScan({ open: false, status: 'miss', message: `No product found for ${barcode}. Type its name instead.` });
+        return;
+      }
+      setScan({ open: false, status: 'idle' });
+      invalidateAi();
+      setPendingFromAi(false);
+      setPending(scanned);
+    } catch (error) {
+      setScan({ open: false, status: 'error', message: friendlyError(error) });
+    }
+  };
+  const canScan = Boolean(permissions['shopping.edit']) && index.lists.length > 0;
+
   // Item mode: Enter saves at once through the same shopping save as Confirm; the
   // preview shows its status (still sending, failures to retry) when there is one.
   const saveFromMode = (entry: QuickAddIntent) => {
@@ -841,7 +969,22 @@ export function CommandPalette({
         <DialogDescription className="sr-only">
           Search HomeHub, or type a sentence like &quot;milk and eggs to groceries&quot;, &quot;fed Maple&quot; or &quot;vacuum Friday for Sam&quot;.
         </DialogDescription>
-        {pending ? (
+        {batch && !pending ? (
+          <BatchPreview
+            intents={batch.intents}
+            notes={batch.notes}
+            self={self}
+            vehicleCount={index.vehicles.length}
+            indexLoading={index.loading}
+            saving={saving}
+            onRemove={(at) => setBatch((current) => (current ? { ...current, intents: current.intents.filter((_, index) => index !== at) } : current))}
+            onBack={() => {
+              setBatch(null);
+              window.setTimeout(() => inputRef.current?.focus(), 0);
+            }}
+            onConfirm={() => void saveBatch()}
+          />
+        ) : pending ? (
           <QuickAddPreview
             // Remounts once the index has loaded, so its choices start from the full records.
             key={index.loading ? 'loading' : 'ready'}
@@ -963,12 +1106,35 @@ export function CommandPalette({
                   {voice.listening ? <VoiceWave /> : <Mic aria-hidden />}
                 </Button>
               )}
+              {canScan && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn('touch-target h-9 w-9 shrink-0', scan.open && 'text-primary')}
+                  aria-label={scan.open ? 'Stop scanning' : 'Scan a barcode to add'}
+                  aria-pressed={scan.open}
+                  onClick={() => setScan((current) => ({ open: !current.open, status: 'idle' }))}
+                  data-testid="palette-scan"
+                >
+                  <ScanBarcode aria-hidden />
+                </Button>
+              )}
               {/* Touch screens have no Esc key: a close button (QA-14). */}
               <Button type="button" variant="ghost" size="icon" className="touch-target hidden h-9 w-9 shrink-0 coarse:inline-flex" aria-label="Close" onClick={close} data-testid="palette-close">
                 <X aria-hidden />
               </Button>
             </div>
             {voice.error && <p role="alert" className="border-b px-4 py-2 text-xs text-destructive">{voice.error}</p>}
+            {scan.open && (
+              <div className="border-b p-3" data-testid="palette-scanner">
+                <PaletteScanner onScan={(barcode) => void onScanned(barcode)} />
+              </div>
+            )}
+            <div role="status" aria-live="polite">
+              {scan.status === 'looking' && <p className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground"><Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />Looking up the product…</p>}
+              {(scan.status === 'miss' || scan.status === 'error') && <p className="border-b px-4 py-2 text-xs text-muted-foreground" data-testid="palette-scan-miss">{scan.message}</p>}
+            </div>
             {/* A clear listening state, announced (QA-16). */}
             <div role="status" aria-live="polite" data-testid="palette-voice-status">
               {voice.listening && (
@@ -1263,6 +1429,68 @@ function QuickAddPreview({
         >
           {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
           {confirmLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The stacked preview for several things from one sentence (QA-25): one Confirm. */
+function BatchPreview({
+  intents, notes, self, vehicleCount, indexLoading, saving, onRemove, onBack, onConfirm,
+}: {
+  intents: QuickAddIntent[];
+  /** Why entries were kept or skipped after the last Confirm. */
+  notes: string[];
+  self: QuickAddMember | null;
+  vehicleCount: number;
+  indexLoading: boolean;
+  saving: boolean;
+  onRemove: (index: number) => void;
+  onBack: () => void;
+  onConfirm: () => void;
+}) {
+  const blocker = batchBlocker(intents, { indexLoading, vehicleCount });
+  const summaryId = useId();
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    confirmRef.current?.focus();
+  }, []);
+  return (
+    <div className="p-4" data-testid="quick-add-batch">
+      <p className="text-xs font-medium text-muted-foreground">Check before saving</p>
+      <ul id={summaryId} className="mt-2 space-y-2" aria-label="To add">
+        {intents.map((entry, at) => {
+          const description = describeIntent(entry, self);
+          return (
+            <li key={`${entry.kind}-${at}`} className="flex items-start gap-2 rounded-lg border bg-muted/40 p-3">
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">{description.title}</span>
+                <span className="block text-sm text-muted-foreground">{description.detail}</span>
+              </span>
+              {intents.length > 1 && (
+                <Button type="button" variant="ghost" size="icon" className="touch-target h-8 w-8 shrink-0" onClick={() => onRemove(at)} disabled={saving} aria-label={`Remove ${description.title}`}>
+                  <X aria-hidden className="h-4 w-4" />
+                </Button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {notes.filter(Boolean).length > 0 && (
+        <ul role="alert" className="mt-3 space-y-1 text-sm text-destructive" data-testid="quick-add-batch-notes">
+          {notes.filter(Boolean).map((note) => <li key={note}>{note}</li>)}
+        </ul>
+      )}
+      {blocker && <p role="status" className="mt-3 text-sm text-muted-foreground" data-testid="quick-add-blocker">{blocker}</p>}
+      <div className="mt-4 flex justify-between gap-2">
+        <Button type="button" variant="ghost" onClick={onBack} disabled={saving}>
+          <ArrowLeft aria-hidden className="mr-2 h-4 w-4" />
+          Back
+        </Button>
+        <Button ref={confirmRef} type="button" onClick={onConfirm} disabled={saving || blocker !== null || intents.length === 0} aria-describedby={summaryId} data-testid="quick-add-confirm">
+          {saving && <Loader2 aria-hidden className="mr-2 h-4 w-4 animate-spin" />}
+          {intents.length > 1 ? `Confirm all ${intents.length}` : 'Confirm'}
         </Button>
       </div>
     </div>

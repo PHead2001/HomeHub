@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { parseQuickAddClauses } from '../../src/lib/dashboard/quick-add';
+import { scannedShoppingIntent } from '../../src/lib/dashboard/quick-add-scan';
+import { batchBlocker } from '../../src/lib/dashboard/quick-add-preview';
+import { matchLocalIntents } from '../../src/lib/devices/quick-add-local';
 import { parseQuickAdd, splitItems, looksLikeItems, namedPets, foodFromText, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
 import { canSplitChip, describeIntent, joinChips, removeChip, splitChip } from '../../src/lib/dashboard/quick-add-preview';
 import { mileageInText, portionInText, readMileage } from '../../src/lib/dashboard/quick-add-numbers';
@@ -357,5 +361,52 @@ describe('QA-9: what quick-add Undo may take back', () => {
     for (const bad of [[], [{ itemId: 'a/b', merged: false, quantity: 1 }], [{ itemId: 'a', merged: 'no', quantity: 1 }], [{ itemId: 'a', merged: false, quantity: 0 }], 'x', Array.from({ length: 21 }, () => ({ itemId: 'a', merged: false, quantity: 1 }))]) {
       assert.equal(parseItemUndos(bad), null);
     }
+  });
+});
+
+describe('QA-25: several things in one sentence', () => {
+  it('splits clauses only when each reads on its own', () => {
+    const both = parseQuickAddClauses('milk and eggs, and remind Sam to take out the trash Tuesday', context);
+    assert.equal(both?.length, 2);
+    assert.ok(both?.[0].kind === 'shopping' && both[0].items.length === 2);
+    assert.ok(both?.[1].kind === 'chore' && both[1].assignee?.uid === 'sam' && both[1].task === 'Take out the trash' && both[1].dueDate === '2026-08-04');
+    const semi = parseQuickAddClauses('vacuum tomorrow; fed maple', context);
+    assert.deepEqual(semi?.map((intent) => intent.kind), ['chore', 'feeding']);
+  });
+  it('leaves single sentences and plain lists alone', () => {
+    assert.equal(parseQuickAddClauses('milk, eggs and bread', context), null);
+    assert.equal(parseQuickAddClauses('milk and eggs', context), null);
+    assert.equal(parseQuickAddClauses('vacuum tomorrow, and xyzzy nothing', context), null);
+  });
+  it('logs every pet a feeding names', () => {
+    const fed = parseQuickAddClauses('fed Maple and Oreo', context);
+    assert.deepEqual(fed?.map((intent) => intent.kind === 'feeding' && intent.pet.id), ['maple', 'oreo']);
+  });
+  it('blocks a stack that needs a choice it does not ask for', () => {
+    assert.equal(batchBlocker([parse('vacuum tomorrow')!], { indexLoading: false, vehicleCount: 0 }), null);
+    assert.match(batchBlocker([parse('vacuum tomorrow')!], { indexLoading: true, vehicleCount: 0 }) ?? '', /Loading/);
+    const reading = { kind: 'maintenance' as const, title: 'Oil change', mileage: 48_000, target: null };
+    assert.match(batchBlocker([reading], { indexLoading: false, vehicleCount: 2 }) ?? '', /vehicle/);
+    const ambiguous = { kind: 'chore' as const, task: 'Mop', dueDate: '2026-08-02', assignee: null, repeat: null, assigneeQuery: 'Sam' };
+    assert.match(batchBlocker([ambiguous], { indexLoading: false, vehicleCount: 0 }) ?? '', /more than one person/);
+  });
+});
+
+describe('QA-24: scan into quick add', () => {
+  it('turns a scanned product into a shopping preview for the Grocery list', () => {
+    const intent = scannedShoppingIntent('oat milk', context.lists);
+    assert.deepEqual(intent, { kind: 'shopping', items: [{ name: 'Oat milk', quantity: 1 }], list: context.lists[0], explicit: true });
+    assert.equal(scannedShoppingIntent(null, context.lists), null);
+    assert.equal(scannedShoppingIntent('Milk', []), null);
+  });
+});
+
+describe('QA-23: the tablet offers its own room first', () => {
+  it('ranks the tablet room chores first', () => {
+    const chores = [{ id: 'a', title: 'Wipe counters', roomName: 'Bathroom' }, { id: 'b', title: 'Wipe table', roomName: 'Kitchen' }];
+    const sections = { home: true, chores: true, shopping: true, pets: true, calendar: true, maintenance: true } as never;
+    const labels = (room?: string) => matchLocalIntents('wipe', { pets: [], chores, sections, room }).map((intent) => intent.kind === 'complete' && intent.choreId);
+    assert.deepEqual(labels(), ['a', 'b']);
+    assert.deepEqual(labels('kitchen'), ['b', 'a']);
   });
 });

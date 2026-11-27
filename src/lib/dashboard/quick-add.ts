@@ -600,6 +600,12 @@ export function bareCommandVerb(input: string): CommandVerbKind | null {
 
 /** A chore sentence ("vacuum Friday for Sam"; "chore …" also works). Exported for the palette's Chore mode. */
 export function parseChore(text: string, context: QuickAddContext): ChoreIntent | null {
+  // "remind Sam to take out the trash Tuesday": a chore for Sam (QA-25).
+  const remindSomeone = /^remind\s+(\p{L}[\p{L}.'-]*)\s+to\s+(.+)$/iu.exec(text);
+  if (remindSomeone && !/^(?:me|us)$/i.test(remindSomeone[1])) {
+    const named = findAssignee(`for ${remindSomeone[1]}`, context);
+    if (named) return parseChore(`chore ${remindSomeone[2]} for ${remindSomeone[1]}`, context);
+  }
   const explicit = /^(?:chore|task|todo|to do|remind (?:me|us) to)[:\s]+(.+)$/i.exec(text);
   let body = explicit ? explicit[1] : text;
   const repeat = findRepeat(body, context.now);
@@ -817,4 +823,40 @@ export function quickAddRetryMessage(failed: readonly QuickAddEntry[]): string |
  */
 export function foodTypeFromLatest(lists: Array<Array<{ id: string; date: unknown; foodType?: unknown }>>): FoodType {
   return knownFoodType(newestFirst(lists, 1)[0]?.foodType) ?? 'Dry';
+}
+
+const CLAUSE_SPLIT = /\s*;\s*|,?\s+and then\s+|,\s+then\s+|,\s*(?:and\s+)?(?:also\s+)?(?=(?:remind|fed|feed|add|buy|get|grab|pick up|chore|task|log|logged|did|done|we need|i need)\b)/i;
+
+/**
+ * Several things in one sentence (QA-25): "milk and eggs, and remind Sam to take out
+ * the trash Tuesday" or "fed Maple and Oreo". Splits into clauses at ";", "and then"
+ * or a comma before a command word, and gives one intent per clause (one feeding per
+ * pet named), but only when every clause reads on its own; otherwise null and the
+ * single reading stands. A shopping list alone is never split here ("milk, eggs and
+ * bread" is one shopping intent).
+ */
+export function parseQuickAddClauses(input: string, context: QuickAddContext): QuickAddIntent[] | null {
+  const text = collapse(input).replace(/[.!?]+$/, '');
+  if (text.length < 2 || text.length > 200) return null;
+  const parts = text.split(CLAUSE_SPLIT).map((part) => part.trim()).filter(Boolean);
+  const intents: QuickAddIntent[] = [];
+  if (parts.length >= 2) {
+    for (const part of parts) {
+      const one = parseQuickAdd(part, context);
+      if (!one) return expandPets(parseQuickAdd(text, context));
+      intents.push(one);
+    }
+    if (intents.every((intent) => intent.kind === 'shopping')) return expandPets(parseQuickAdd(text, context));
+  } else {
+    return expandPets(parseQuickAdd(text, context));
+  }
+  const expanded = intents.flatMap((intent) => expandPets(intent) ?? [intent]);
+  return expanded.length >= 2 ? expanded : null;
+}
+
+/** A feeding that named several pets, as one feeding per pet; null for anything else. */
+function expandPets(intent: QuickAddIntent | null): QuickAddIntent[] | null {
+  if (!intent || intent.kind !== 'feeding' || !intent.alsoPets?.length) return null;
+  const { alsoPets, ...first } = intent;
+  return [first, ...alsoPets.map((pet) => ({ ...first, pet }))];
 }
