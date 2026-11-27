@@ -167,7 +167,9 @@ test.describe('H13: natural-language quick add writes what it says', () => {
     try {
       await openDashboard(page);
       const { palette, input } = await openPalette(page);
-      await input.fill('could sam deal with the recycling on tuesdays');
+      // The parser now reads "on tuesdays" itself (QA-4), so the AI fallback is reached with
+      // a sentence it cannot read; the deterministic provider still finds the weekday.
+      await input.fill('could sam deal with the recycling, a tuesdayish job');
       const ask = palette.getByRole('option', { name: /with AI/ });
       await expect(ask).toBeVisible();
       await ask.click();

@@ -67,6 +67,10 @@ export type FeedingIntent = {
   pet: QuickAddPet;
   amount: number | null;
   unit: PortionUnit | null;
+  /** The food the sentence names ("wet", "dry", "kibble"); null keeps the latest feeding's (QA-4). */
+  food?: FoodType | null;
+  /** Other pets the same sentence named ("fed Maple and Oreo"): each gets its own feeding (QA-4, QA-25). */
+  alsoPets?: QuickAddPet[];
 };
 
 export type ChoreIntent = {
@@ -239,45 +243,58 @@ export function findDate(text: string, now: Date, rooms: readonly { name: string
   return null;
 }
 
-type RepeatMatch = { repeat: QuickAddRepeat; consumed: RegExp; firstDate: Date };
+type RepeatMatch = { repeat: QuickAddRepeat; consumed: RegExp; firstDate: Date; /** The monthly day asked for (before moving 29-31 to the 28th). */ askedDay?: number };
+
+const WEEKDAY_WORD = '(sun(?:day)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?)';
 
 export function findRepeat(text: string, now: Date): RepeatMatch | null {
   const lower = text.toLowerCase();
-  if (/\b(every day|daily|each day)\b/.test(lower)) {
-    return { repeat: { frequency: 'daily' }, consumed: /\b(every day|daily|each day)\b/i, firstDate: startOfLocalDay(now) };
+  // Each pattern removes exactly what it matched (QA-4), never the first "every X".
+  const exact = (match: RegExpExecArray) => new RegExp(escapeRegExp(match[0]), 'i');
+  const daily = /\b(every day|daily|each day)\b/.exec(lower);
+  if (daily) return { repeat: { frequency: 'daily' }, consumed: exact(daily), firstDate: startOfLocalDay(now) };
+  const weekly = (match: RegExpExecArray, word: string, other: boolean): RepeatMatch | null => {
+    const day = weekdayFromWord(word);
+    return day === null ? null : { repeat: { frequency: other ? 'biweekly' : 'weekly', dayOfWeek: day }, consumed: exact(match), firstDate: nextWeekday(now, day) };
+  };
+  // "every week on Saturday", "every other week on Friday", "weekly on Monday".
+  const weekOn = new RegExp(`\\b(?:(?:every|each)( other)? week|(bi)?weekly|fortnightly)\\s+on\\s+${WEEKDAY_WORD}s?\\b`).exec(lower);
+  if (weekOn) {
+    const found = weekly(weekOn, weekOn[3], Boolean(weekOn[1] || weekOn[2] || weekOn[0].startsWith('fortnightly')));
+    if (found) return found;
   }
-  const weekday = /\b(every|each)( other)? (sun(?:day)?|mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?)s?\b/.exec(lower);
-  if (weekday) {
-    const day = weekdayFromWord(weekday[3]);
-    if (day !== null) {
-      return {
-        repeat: { frequency: weekday[2] ? 'biweekly' : 'weekly', dayOfWeek: day },
-        consumed: /\b(every|each)( other)? [a-z]+\b/i,
-        firstDate: nextWeekday(now, day),
-      };
+  const everyDay = new RegExp(`\\b(every|each)( other)? ${WEEKDAY_WORD}s?\\b`).exec(lower);
+  if (everyDay) {
+    const found = weekly(everyDay, everyDay[3], Boolean(everyDay[2]));
+    if (found) return found;
+  }
+  // "every weekend" repeats on Saturdays (QA-4); "this weekend" stays one date.
+  const weekend = /\b(?:every|each) weekend\b|\b(?:on )?weekends\b/.exec(lower);
+  if (weekend) return { repeat: { frequency: 'weekly', dayOfWeek: 6 }, consumed: exact(weekend), firstDate: nextWeekday(now, 6) };
+  // Plural weekdays repeat: "on Tuesdays", "trash mondays" (QA-4).
+  const plural = /\b(?:on )?(sundays|mondays|tuesdays|wednesdays|thursdays|fridays|saturdays)\b/.exec(lower);
+  if (plural) {
+    const found = weekly(plural, plural[1], false);
+    if (found) return found;
+  }
+  const week = /\b(every week|weekly|each week)\b/.exec(lower);
+  if (week) return { repeat: { frequency: 'weekly', dayOfWeek: now.getDay() as Weekday }, consumed: exact(week), firstDate: startOfLocalDay(now) };
+  const otherWeek = /\b(every other week|biweekly|fortnightly)\b/.exec(lower);
+  if (otherWeek) return { repeat: { frequency: 'biweekly', dayOfWeek: now.getDay() as Weekday }, consumed: exact(otherWeek), firstDate: startOfLocalDay(now) };
+  // "every month on the 15th", "monthly on the 1st", "on the 15th of every month" (QA-4).
+  const monthOn = /\b(?:(?:every|each) month|monthly)\s+on\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b/.exec(lower)
+    ?? /\b(?:on\s+)?the\s+(\d{1,2})(?:st|nd|rd|th)?\s+of\s+(?:every|each)\s+month\b/.exec(lower);
+  if (monthOn) {
+    const asked = Number(monthOn[1]);
+    if (asked >= 1 && asked <= 31) {
+      const repeat = normalizeRepeat({ frequency: 'monthly', dayOfMonth: asked }).repeat;
+      return { repeat, consumed: exact(monthOn), firstDate: firstDateForRepeat(repeat, now), askedDay: asked };
     }
   }
-  if (/\b(every week|weekly|each week)\b/.test(lower)) {
-    return {
-      repeat: { frequency: 'weekly', dayOfWeek: now.getDay() as Weekday },
-      consumed: /\b(every week|weekly|each week)\b/i,
-      firstDate: startOfLocalDay(now),
-    };
-  }
-  if (/\b(every other week|biweekly|fortnightly)\b/.test(lower)) {
-    return {
-      repeat: { frequency: 'biweekly', dayOfWeek: now.getDay() as Weekday },
-      consumed: /\b(every other week|biweekly|fortnightly)\b/i,
-      firstDate: startOfLocalDay(now),
-    };
-  }
-  if (/\b(every month|monthly|each month)\b/.test(lower)) {
+  const month = /\b(every month|monthly|each month)\b/.exec(lower);
+  if (month) {
     const repeat = normalizeRepeat({ frequency: 'monthly', dayOfMonth: now.getDate() }).repeat;
-    return {
-      repeat,
-      consumed: /\b(every month|monthly|each month)\b/i,
-      firstDate: firstDateForRepeat(repeat, now),
-    };
+    return { repeat, consumed: exact(month), firstDate: firstDateForRepeat(repeat, now), askedDay: now.getDate() };
   }
   return null;
 }
@@ -289,8 +306,9 @@ export function findRepeat(text: string, now: Date): RepeatMatch | null {
  * is null and `ambiguous` holds the name, so the preview asks who it is for.
  */
 export function findAssignee(text: string, context: QuickAddContext): { member: QuickAddMember | null; consumed: RegExp; ambiguous?: string } | null {
-  for (const mention of text.matchAll(/(?:^|\s)(?:for\s+|to\s+|@)@?([a-z][a-z.'-]*)\b/gi)) {
-    const word = mention[1].toLowerCase().replace(/[.'-]+$/, '');
+  for (const mention of text.matchAll(/(?:^|\s)(?:for\s+|to\s+|@)@?(\p{L}[\p{L}.'-]*)(?![\p{L}\p{N}])/giu)) {
+    // Accented names are matched with or without their accents (QA-4).
+    const word = foldAccents(mention[1]).replace(/[.'-]+$/, '');
     const consumed = new RegExp(mention[0].trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     if (word === 'me' || word === 'myself') {
       const self = context.members.find((member) => member.uid === context.viewer.uid);
@@ -298,9 +316,9 @@ export function findAssignee(text: string, context: QuickAddContext): { member: 
       continue;
     }
     const matches = context.members.filter((candidate) => {
-      const first = candidate.name.trim().split(/\s+/)[0]?.toLowerCase();
+      const first = foldAccents(candidate.name.trim().split(/\s+/)[0] ?? '');
       const local = candidate.email?.split('@')[0]?.toLowerCase();
-      return first === word || candidate.name.toLowerCase() === word || local === word || local?.split(/[._-]/)[0] === word;
+      return first === word || foldAccents(candidate.name) === word || local === word || local?.split(/[._-]/)[0] === word;
     });
     if (matches.length === 1) return { member: matches[0], consumed };
     if (matches.length > 1) return { member: null, consumed, ambiguous: mention[1].replace(/[.'-]+$/, '') };
@@ -450,17 +468,58 @@ function parseFeeding(text: string, context: QuickAddContext): FeedingIntent | n
   const match = /^(?:i\s+)?(?:fed|feed|fed up|feeding)\s+(.+)$/i.exec(text) ?? /^(.+?)\s+(?:ate|was fed|has eaten|got fed)\b(.*)$/i.exec(text);
   if (!match) return null;
   const rest = match[1].toLowerCase();
-  const pet = [...context.pets]
-    .sort((a, b) => b.name.length - a.name.length)
-    .find((candidate) => wholeToken(candidate.name).test(rest));
-  if (!pet) return null;
+  const pets = namedPets(rest, context.pets);
+  if (pets.length === 0) return null;
+  const [pet, ...alsoPets] = pets;
   // The Pets module's portion parser reads amounts whole (".5 cups", "1/2 cup",
   // "1 1/2 cups", "one can"), never the digits at the end of a decimal or fraction.
   const portion = parsePortion(text);
   // A unit with an amount the parser cannot read is rejected (falls back to search), never guessed.
   if (!portion && PORTION_UNIT_WORD.test(text)) return null;
-  return { kind: 'feeding', pet, amount: portion?.amount ?? null, unit: portion?.unit ?? null };
+  return {
+    kind: 'feeding',
+    pet,
+    amount: portion?.amount ?? null,
+    unit: portion?.unit ?? null,
+    ...(foodFromText(rest) ? { food: foodFromText(rest) } : {}),
+    ...(alsoPets.length > 0 ? { alsoPets } : {}),
+  };
 }
+
+/** The food a feeding sentence names, or null (QA-4). */
+export function foodFromText(text: string): FoodType | null {
+  const lower = text.toLowerCase();
+  if (/\b(?:mix|mixed)\b|\bwet and dry\b|\bdry and wet\b/.test(lower)) return 'Mix';
+  if (/\b(?:wet|canned|can food)\b/.test(lower)) return 'Wet';
+  if (/\b(?:dry|kibble|biscuits?)\b/.test(lower)) return 'Dry';
+  return null;
+}
+
+/**
+ * Every pet a feeding sentence names, in the order they appear (QA-4): full names
+ * first (longest wins), then a single word of a pet's name ("Rex" for "Audit Rex")
+ * when that word belongs to exactly one pet. Names are compared without accents.
+ */
+export function namedPets(text: string, pets: readonly QuickAddPet[]): QuickAddPet[] {
+  const folded = foldAccents(text);
+  const found = new Map<string, { pet: QuickAddPet; at: number }>();
+  let rest = folded;
+  for (const pet of [...pets].sort((a, b) => b.name.length - a.name.length)) {
+    const match = wholeToken(foldAccents(pet.name)).exec(rest);
+    if (!match) continue;
+    found.set(pet.id, { pet, at: match.index });
+    rest = rest.slice(0, match.index) + ' '.repeat(match[0].length) + rest.slice(match.index + match[0].length);
+  }
+  const words = rest.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2);
+  for (const word of words) {
+    const owners = pets.filter((pet) => !found.has(pet.id) && foldAccents(pet.name).split(/[^\p{L}\p{N}]+/u).includes(word));
+    if (owners.length === 1) found.set(owners[0].id, { pet: owners[0], at: rest.indexOf(word) });
+  }
+  return [...found.values()].sort((a, b) => a.at - b.at).map((entry) => entry.pet);
+}
+
+/** Lower case without accents, so "José" and "jose" match (QA-4). */
+export const foldAccents = (value: string) => value.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase();
 
 const MAINTENANCE_WORDS = /\b(oil change|tire rotation|tyre rotation|brakes?|filters?|inspections?|service[sd]?|tune[- ]?up|alignment|repair(?:ed|s)?|replaced?|maintenance|miles|mi|odometer)\b/i;
 
@@ -563,8 +622,8 @@ export function parseChore(text: string, context: QuickAddContext): ChoreIntent 
     assignee: assignee?.member ?? null,
     assigneeQuery: assignee?.ambiguous ?? null,
     repeat: repeat?.repeat ?? null,
-    repeatNote: repeat?.repeat.frequency === 'monthly' && context.now.getDate() > MONTHLY_MAX_DAY
-      ? normalizeRepeat({ frequency: 'monthly', dayOfMonth: context.now.getDate() }).note
+    repeatNote: repeat?.repeat.frequency === 'monthly' && (repeat.askedDay ?? 0) > MONTHLY_MAX_DAY
+      ? normalizeRepeat({ frequency: 'monthly', dayOfMonth: repeat.askedDay ?? MONTHLY_MAX_DAY }).note
       : null,
     room: room?.room ?? null,
   };

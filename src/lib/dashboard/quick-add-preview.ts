@@ -123,7 +123,8 @@ export function describeIntent(intent: QuickAddIntent, self: QuickAddMember | nu
       };
     case 'feeding': {
       const portion = feedingPortion(intent);
-      return { title: `Log a meal for ${intent.pet.name}`, detail: `${formatPortion(portion.amount, portion.unit)}, now` };
+      // The named food shows, so "wet" is never silently ignored (QA-4).
+      return { title: `Log a meal for ${intent.pet.name}`, detail: `${formatPortion(portion.amount, portion.unit)}${intent.food ? `, ${intent.food.toLowerCase()} food` : ''}, now` };
     }
     case 'chore': {
       if (intent.assigneeQuery && !intent.assignee) {
@@ -145,4 +146,32 @@ export function describeIntent(intent: QuickAddIntent, self: QuickAddMember | nu
       return { title: `Log maintenance: ${intent.title}`, detail: parts.join(' · ') };
     }
   }
+}
+
+type Item = { name: string; quantity: number };
+
+/** Editable preview chips (QA-19): remove one item. At least one always stays. */
+export function removeChip(items: readonly Item[], index: number): Item[] {
+  if (items.length <= 1 || index < 0 || index >= items.length) return [...items];
+  return items.filter((_, at) => at !== index);
+}
+
+/** Splits an item whose name holds "and" or "&" ("Dry cleaning and milk") into one item per part (QA-19). */
+export function splitChip(items: readonly Item[], index: number): Item[] {
+  const item = items[index];
+  if (!item) return [...items];
+  const parts = item.name.split(/\s+(?:and|&)\s+/i).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return [...items];
+  const pieces = parts.map((part) => ({ name: part.charAt(0).toUpperCase() + part.slice(1), quantity: 1 }));
+  return [...items.slice(0, index), ...pieces, ...items.slice(index + 1)];
+}
+
+/** True when an item can be split ("Mac and cheese" can, on purpose: the member decides). */
+export const canSplitChip = (item: Item) => /\s(?:and|&)\s/i.test(item.name);
+
+/** Joins every item into one ("Mac" + "Cheese" → "Mac and cheese"), as the member asked (QA-19). */
+export function joinChips(items: readonly Item[]): Item[] {
+  if (items.length < 2) return [...items];
+  const names = items.map((item, at) => (at === 0 ? item.name : item.name.charAt(0).toLowerCase() + item.name.slice(1)));
+  return [{ name: `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`, quantity: 1 }];
 }

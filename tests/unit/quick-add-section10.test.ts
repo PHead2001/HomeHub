@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseQuickAdd, splitItems, looksLikeItems, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { parseQuickAdd, splitItems, looksLikeItems, namedPets, foodFromText, type QuickAddContext } from '../../src/lib/dashboard/quick-add';
+import { canSplitChip, describeIntent, joinChips, removeChip, splitChip } from '../../src/lib/dashboard/quick-add-preview';
 import { mileageInText, portionInText, readMileage } from '../../src/lib/dashboard/quick-add-numbers';
 import { householdWallClock } from '../../src/lib/household-zone';
+import { groupContiguous, indexCacheKey, recentUse, searchScore, withinOneEdit } from '../../src/lib/dashboard/command-search';
 import { recognitionLanguage, voiceAutoPreview, voiceErrorMessage } from '../../src/lib/dashboard/voice';
 
 // Saturday, 1 August 2026, local noon.
@@ -14,6 +16,7 @@ const context: QuickAddContext = {
     { uid: 'owner', name: 'Alex Owner' },
     { uid: 'sam', name: 'Sam Member' },
     { uid: 'phillip', name: 'Phillip Head' },
+    { uid: 'jose', name: 'José Díaz' },
   ],
   pets: [{ id: 'rex', name: 'Audit Rex' }, { id: 'maple', name: 'Maple' }, { id: 'oreo', name: 'Oreo' }],
   lists: [{ id: 'groceries', name: 'Groceries', type: 'Grocery' }, { id: 'hardware', name: 'Hardware Run', type: 'Hardware' }],
@@ -180,5 +183,110 @@ describe('QA-3: a date followed by a room keeps its day', () => {
       const intent = parse(text);
       assert.ok(intent?.kind === 'shopping', text);
     }
+  });
+});
+describe('QA-4: repeats, pets and names', () => {
+  it('reads the day in "every week on Saturday" and "every month on the 15th"', () => {
+    const weekly = parse('clean the gutters every week on Saturday');
+    assert.ok(weekly?.kind === 'chore' && weekly.repeat?.frequency === 'weekly' && weekly.repeat.dayOfWeek === 6 && weekly.task === 'Clean the gutters');
+    const monthly = parse('pay rent every month on the 15th');
+    assert.ok(monthly?.kind === 'chore' && monthly.repeat?.frequency === 'monthly' && monthly.repeat.dayOfMonth === 15 && monthly.dueDate === '2026-08-15' && monthly.task === 'Pay rent');
+    const late = parse('pay rent on the 31st of every month');
+    assert.ok(late?.kind === 'chore' && late.repeat?.frequency === 'monthly' && late.repeat.dayOfMonth === 28 && Boolean(late.repeatNote));
+  });
+  it('repeats "every weekend" and plural weekdays', () => {
+    const weekend = parse('vacuum every weekend');
+    assert.ok(weekend?.kind === 'chore' && weekend.repeat?.frequency === 'weekly' && weekend.repeat.dayOfWeek === 6 && weekend.task === 'Vacuum');
+    const tuesdays = parse('water plants on Tuesdays');
+    assert.ok(tuesdays?.kind === 'chore' && tuesdays.repeat?.frequency === 'weekly' && tuesdays.repeat.dayOfWeek === 2 && tuesdays.task === 'Water plants');
+  });
+  it('removes exactly the repeat it matched', () => {
+    const intent = parse('rake every bit of the yard every Tuesday');
+    assert.ok(intent?.kind === 'chore' && intent.task === 'Rake every bit of the yard' && intent.repeat?.frequency === 'weekly');
+    const other = parse('mop every other Friday');
+    assert.ok(other?.kind === 'chore' && other.task === 'Mop' && other.repeat?.frequency === 'biweekly');
+  });
+  it('matches part of a pet name, every named pet, and the food', () => {
+    const rex = parse('fed Rex');
+    assert.ok(rex?.kind === 'feeding' && rex.pet.id === 'rex');
+    const both = parse('fed Maple and Oreo');
+    assert.ok(both?.kind === 'feeding' && both.pet.id === 'maple' && both.alsoPets?.[0]?.id === 'oreo');
+    assert.deepEqual(namedPets('rex', [{ id: 'a', name: 'Audit Rex' }, { id: 'b', name: 'Rex Junior' }]), []);
+    const wet = parse('fed audit rex wet food');
+    assert.ok(wet?.kind === 'feeding' && wet.food === 'Wet');
+    assert.equal(foodFromText('kibble'), 'Dry');
+    assert.equal(foodFromText('wet and dry'), 'Mix');
+    assert.match(describeIntent(wet!, null).detail, /wet food/);
+  });
+  it('assigns accented names, typed with or without accents', () => {
+    for (const text of ['vacuum tomorrow for José', 'vacuum tomorrow for jose']) {
+      const intent = parse(text);
+      assert.ok(intent?.kind === 'chore' && intent.assignee?.uid === 'jose', text);
+    }
+  });
+});
+
+describe('QA-19: editable preview chips', () => {
+  const items = [{ name: 'Dry cleaning and milk', quantity: 1 }, { name: 'Eggs', quantity: 2 }];
+  it('splits, removes and joins', () => {
+    assert.equal(canSplitChip(items[0]), true);
+    assert.deepEqual(splitChip(items, 0).map((item) => item.name), ['Dry cleaning', 'Milk', 'Eggs']);
+    assert.deepEqual(removeChip(items, 1), [items[0]]);
+    assert.deepEqual(removeChip([items[1]], 0), [items[1]]);
+    assert.deepEqual(joinChips([{ name: 'Mac', quantity: 1 }, { name: 'Cheese', quantity: 1 }]), [{ name: 'Mac and cheese', quantity: 1 }]);
+  });
+});
+
+describe('QA-11: matching', () => {
+  it('scores every word across label, detail and keywords', () => {
+    assert.ok(searchScore({ label: 'Take out trash', detail: 'Sam Member · Kitchen' }, 'sam') > 0);
+    assert.ok(searchScore({ label: 'Take out trash', detail: 'Sam Member · Kitchen' }, 'trash kitchen') > 0);
+    assert.equal(searchScore({ label: 'Take out trash', detail: 'Sam Member' }, 'trash garage'), 0);
+    assert.ok(searchScore({ label: 'Civic', detail: '2019 Honda Civic', keywords: 'vehicle car' }, 'honda') > 0);
+    assert.ok(searchScore({ label: 'Appearance', keywords: 'dark mode theme' }, 'dark mode') > 0);
+  });
+  it('allows one typo in longer words, and ranks label and prefix matches higher', () => {
+    assert.equal(withinOneEdit('mlik', 'milk'), true);
+    assert.equal(withinOneEdit('dishwaser', 'dishwasher'), true);
+    assert.equal(withinOneEdit('milk', 'mint'), false);
+    assert.ok(searchScore({ label: 'Dishwasher' }, 'dishwaser') > 0);
+    assert.equal(searchScore({ label: 'Mint' }, 'milk'), 0);
+    assert.ok(searchScore({ label: 'Milk' }, 'milk') > searchScore({ label: 'Oat milk' }, 'milk'));
+    assert.ok(searchScore({ label: 'Milk' }, 'mil') > searchScore({ label: 'Chips', detail: 'Milk run' }, 'mil'));
+  });
+  it('boosts what is used often and lately', () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => void store.set(key, value) };
+    const uses = recentUse(storage, 'k');
+    const now = Date.UTC(2026, 7, 1);
+    uses.record(['milk'], now - 30 * 86_400_000);
+    uses.record(['eggs'], now);
+    uses.record(['eggs'], now);
+    assert.deepEqual(uses.top(2, now), ['eggs', 'milk']);
+    assert.ok(uses.boost('eggs', now) > uses.boost('milk', now));
+    assert.equal(uses.boost('bread', now), 0);
+    assert.deepEqual(recentUse({ getItem: () => 'not json', setItem: () => undefined }, 'k').top(3), []);
+  });
+});
+
+describe('QA-5 and QA-12: grouping and the index cache key', () => {
+  it('keeps each group together, in order of its best option', () => {
+    const options = [{ id: 'a', group: 'Chores' }, { id: 'b', group: 'Shopping' }, { id: 'c', group: 'Chores' }, { id: 'd', group: 'Go to' }];
+    assert.deepEqual(groupContiguous(options).map((option) => option.id), ['a', 'c', 'b', 'd']);
+  });
+  it('keys the cache by household, person and permissions', () => {
+    const one = indexCacheKey('h1', 'u1', { 'chores.view': true, 'pets.view': false });
+    assert.equal(one, indexCacheKey('h1', 'u1', { 'pets.view': false, 'chores.view': true }));
+    assert.notEqual(one, indexCacheKey('h1', 'u2', { 'chores.view': true }));
+    assert.notEqual(one, indexCacheKey('h1', 'u1', { 'chores.view': true, 'pets.view': true }));
+  });
+});
+
+describe('QA-4: the e2e AI-fallback sentence stays with the AI reader', () => {
+  it('reads "on tuesdays" itself, and leaves the e2e sentence unread', () => {
+    // tests/e2e/shell-wave4.spec.ts used this sentence to reach "Read with AI"; the parser now reads it.
+    assert.equal(parse('could sam deal with the recycling on tuesdays')?.kind, 'chore');
+    // The spec's sentence: no whole weekday word, a pronoun-free verb phrase the guess filter rejects.
+    assert.equal(parse('could sam deal with the recycling, a tuesdayish job'), null);
   });
 });
