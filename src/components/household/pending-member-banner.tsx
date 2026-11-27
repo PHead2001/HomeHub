@@ -83,7 +83,8 @@ export function PendingMemberBanner({
                   ))}
                 </SelectContent>
               </Select>
-              <span id={`${roleFieldId}-hint`} className="sr-only">{roleSummary(role)}</span>
+              {/* Shown, not only read out (HO-17): what the chosen role means. */}
+              <p id={`${roleFieldId}-hint`} className="max-w-[16rem] text-xs text-muted-foreground" aria-live="polite">{roleSummary(role)}</p>
             </div>
           )}
           <div className="flex gap-2">

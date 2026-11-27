@@ -16,6 +16,9 @@ import {
 } from '../../src/lib/guest-pass';
 import { canTransferOwnership } from '../../src/lib/household-policy';
 import { guestPassCurrent, isApprovedMemberAt } from '../../functions/src/push-policy';
+import { getMemberPermissions } from '../../src/lib/permissions';
+import { resolveHouseholdAuthority } from '../../src/ai/household-authority';
+import { nextPassEnd, rosterFrom, withoutEndedPasses } from '../../src/lib/devices/roster';
 
 const NOW = Date.parse('2026-08-01T12:00:00.000Z');
 const ts = (ms: number) => ({ toMillis: () => ms });
@@ -63,6 +66,16 @@ describe('guest passes (HO-14, HO-24)', () => {
     assert.equal(guestPassCurrent('2099-01-01', NOW), false, 'not a Timestamp: fail closed');
   });
 
+  test('every server action\'s authority refuses an ended pass (permissions, AI and module actions)', () => {
+    const running = { uid: 'g', role: 'guest' as const, status: 'active' as const, accessUntil: ts(Date.now() + 60_000) };
+    const ended = { ...running, accessUntil: ts(Date.now() - 1000) };
+    assert.equal(getMemberPermissions(running)['chores.view'], true);
+    assert.equal(getMemberPermissions(ended)['chores.view'], false);
+    assert.equal(getMemberPermissions({ ...ended, permissions: { 'shopping.edit': true } })['shopping.edit'], false);
+    assert.equal(resolveHouseholdAuthority({ uid: 'g', member: running }).permissions['pets.view'], true);
+    assert.throws(() => resolveHouseholdAuthority({ uid: 'g', member: ended }));
+  });
+
   test('someone on a pass can never become the owner', () => {
     const owner = { uid: 'o', role: 'owner' as const, status: 'active' as const };
     const guest = { uid: 'g', role: 'guest' as const, status: 'active' as const, guestPass: true };
@@ -82,6 +95,18 @@ describe('guest passes (HO-14, HO-24)', () => {
     assert.equal(readTabletPassUntil(NOW + 3_600_000, NOW), NOW + 3_600_000);
     assert.equal(readTabletPassUntil(NOW - 1, NOW), null);
     assert.equal(readTabletPassUntil(NOW + 8 * 24 * 3_600_000, NOW), null);
+  });
+
+  test('the tablet row drops a pass at its end time without a new snapshot', () => {
+    const roster = rosterFrom([
+      { id: 'u1', data: { role: 'member', displayName: 'Max' } },
+      { id: 'guest_ABCDEFGHIJKLMNOPQRST', data: { role: 'guest', kind: 'identity', displayName: 'Sitter', accessUntil: ts(NOW + 60_000) } },
+    ], NOW);
+    assert.deepEqual(roster.map((p) => p.name), ['Max', 'Sitter']);
+    assert.equal(nextPassEnd(roster), NOW + 60_000);
+    assert.equal(withoutEndedPasses(roster, NOW + 59_999), roster, 'unchanged before the end (same array)');
+    assert.deepEqual(withoutEndedPasses(roster, NOW + 60_000).map((p) => p.name), ['Max']);
+    assert.equal(nextPassEnd(withoutEndedPasses(roster, NOW + 60_000)), null);
   });
 
   test('"until" reads in the household time zone', () => {

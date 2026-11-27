@@ -437,6 +437,60 @@ export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): 
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Household activity';
 }
 
+/** Activity filters (HO-28). */
+export type AuditFilter = 'all' | 'people' | 'invites' | 'roles' | 'tablets';
+
+export const AUDIT_FILTERS: ReadonlyArray<{ value: AuditFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'people', label: 'People' },
+  { value: 'invites', label: 'Invites' },
+  { value: 'roles', label: 'Roles and permissions' },
+  { value: 'tablets', label: 'Tablets' },
+];
+
+/** Which filter an activity entry belongs to; household-wide changes (rename, time zone, pets) show under All only. */
+export function auditCategory(action: string): Exclude<AuditFilter, 'all'> | 'other' {
+  if (action === 'member.role_changed' || action === 'member.permissions_changed') return 'roles';
+  if (action.startsWith('invite.')) return 'invites';
+  if (action.startsWith('device.') || action.startsWith('pin.')) return 'tablets';
+  if (action.startsWith('member.') || action === 'ownership.transferred' || action.startsWith('child.') || action.startsWith('guest.')) return 'people';
+  return 'other';
+}
+
+export function filterAuditLogs<T extends Pick<AuditLog, 'action'>>(logs: readonly T[], filter: AuditFilter): T[] {
+  return filter === 'all' ? [...logs] : logs.filter((log) => auditCategory(log.action) === filter);
+}
+
+/** Entries the Activity tab reads per page; "Load more" asks for the next page (HO-22). */
+export const AUDIT_PAGE_SIZE = 50;
+/** Newest invite codes the Invite Codes tab reads (HO-22); codes last 30 minutes, so every active one is among them. */
+export const INVITE_LIST_LIMIT = 25;
+/** Used, expired or revoked codes shown before "Show older" (HO-20). */
+export const INVITE_HISTORY_SHOWN = 5;
+
+/**
+ * The invite list (HO-20): every active code, then the newest few that can no longer be
+ * used; the rest wait behind "Show older".
+ */
+export function inviteHistory<T extends Pick<InviteCode, 'revokedAt' | 'expiresAt' | 'maxUses' | 'useCount'>>(
+  invites: readonly T[],
+  now: Date,
+  showAll = false,
+  keep = INVITE_HISTORY_SHOWN,
+): { shown: T[]; hidden: number } {
+  const active = invites.filter((invite) => isActiveInvite(invite, now));
+  const inactive = invites.filter((invite) => !isActiveInvite(invite, now));
+  const kept = showAll ? inactive : inactive.slice(0, keep);
+  return { shown: [...active, ...kept], hidden: inactive.length - kept.length };
+}
+
+/** The exact time of an entry, shown beside "2 hours ago" (HO-20: not hover-only). */
+export function absoluteTime(iso: string, timeZone?: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', { timeZone: timeZone || undefined, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
+}
+
 /**
  * Who did it, for the Activity list: the actor, and for an action taken on a wall
  * tablet "as Alex (PIN) on Kitchen tablet" (WT-18b; the server records the device,

@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Timestamp, collection, doc, onSnapshot, query, where, type Query, type Unsubscribe } from 'firebase/firestore';
+import { Timestamp, collection, doc, limit, onSnapshot, orderBy, query, where, type Query, type Unsubscribe } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { inviteDateToIso } from '@/lib/invite-codes';
 import type { AuditLog, HouseholdMember, InviteCode } from '@/lib/types';
 import { withContactEmails } from '@functions/shared/member-contact';
-import { choreStatsByMember, mergeChoresById, sortMembers, startOfNextWeek, startOfWeek, type ChoreLike, type MemberChoreStats } from './household-model';
+import { AUDIT_PAGE_SIZE, INVITE_LIST_LIMIT, choreStatsByMember, mergeChoresById, sortMembers, startOfNextWeek, startOfWeek, type ChoreLike, type MemberChoreStats } from './household-model';
 
 type ChoreParts = { key: string; open?: ChoreLike[]; server?: ChoreLike[]; legacy?: ChoreLike[]; failed?: boolean };
 
@@ -14,6 +14,8 @@ export type HouseholdLiveData = {
   members: HouseholdMember[];
   invites: InviteCode[];
   auditLogs: AuditLog[];
+  /** True when the activity log may hold older entries than those read (a full page came back). */
+  auditHasMore: boolean;
   /** Chore counts by lower-cased member email; empty without `chores.view` or until ready. */
   choreStats: Map<string, MemberChoreStats>;
   /** True once every chore listener answered without error; until then show no counts. */
@@ -45,6 +47,8 @@ type Options = {
   ownEmail?: string | null;
   /** The household's first weekday (CA-16, `readWeekStartsOn`): "this week" for the member counts. */
   weekStartsOn?: 0 | 1;
+  /** How many activity entries to read, newest first (HO-22: pages of AUDIT_PAGE_SIZE). */
+  auditLimit?: number;
 };
 
 const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
@@ -55,12 +59,13 @@ const byNewest = <T extends { createdAt: string }>(a: T, b: T) =>
  * role can read that path under the rules, and each fails independently, so a
  * denied invite or audit read never blanks the member list.
  */
-export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null, weekStartsOn = 1 }: Options): HouseholdLiveData {
+export function useHouseholdLiveData({ householdId: requestedHouseholdId, enabled = true, currentMember, canListInvites, canReadAudit, canViewChores, canManageMembers = false, ownEmail = null, weekStartsOn = 1, auditLimit = AUDIT_PAGE_SIZE }: Options): HouseholdLiveData {
   const householdId = enabled ? requestedHouseholdId : undefined;
   const [rawMembers, setRawMembers] = useState<HouseholdMember[] | null>(null);
   const [membersFailed, setMembersFailed] = useState(false);
   const [invites, setInvites] = useState<InviteCode[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditHasMore, setAuditHasMore] = useState(false);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date(), weekStartsOn));
   // Chore listener results, keyed by household and week so a rollover or a new
   // household never shows the previous week's numbers.
@@ -112,7 +117,9 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
   useEffect(() => {
     if (!householdId || !canListInvites) return;
     return onSnapshot(
-      query(collection(db, 'inviteCodes'), where('householdId', '==', householdId)),
+      // The newest codes only (HO-22; composite index householdId + createdAt desc in
+      // firestore.indexes.json). Codes last 30 minutes, so every active one is among them.
+      query(collection(db, 'inviteCodes'), where('householdId', '==', householdId), orderBy('createdAt', 'desc'), limit(INVITE_LIST_LIMIT)),
       (snapshot) => setInvites(snapshot.docs
         .map((d) => ({ ...d.data(), id: d.id, expiresAt: inviteDateToIso(d.data().expiresAt) }) as InviteCode)
         .sort(byNewest)),
@@ -122,12 +129,16 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
 
   useEffect(() => {
     if (!householdId || !canReadAudit) return;
+    // Newest first, one page at a time (HO-22); every entry's createdAt is an ISO string.
     return onSnapshot(
-      collection(db, 'households', householdId, 'auditLogs'),
-      (snapshot) => setAuditLogs(snapshot.docs.map((d) => ({ ...d.data(), id: d.id }) as AuditLog).sort(byNewest)),
+      query(collection(db, 'households', householdId, 'auditLogs'), orderBy('createdAt', 'desc'), limit(auditLimit)),
+      (snapshot) => {
+        setAuditLogs(snapshot.docs.map((d) => ({ ...d.data(), id: d.id }) as AuditLog).sort(byNewest));
+        setAuditHasMore(snapshot.size >= auditLimit);
+      },
       (error) => console.error('Failed to load audit logs', error),
     );
-  }, [canReadAudit, householdId]);
+  }, [auditLimit, canReadAudit, householdId]);
 
   useEffect(() => {
     if (!householdId || !canViewChores) return;
@@ -220,6 +231,7 @@ export function useHouseholdLiveData({ householdId: requestedHouseholdId, enable
     members,
     invites: canListInvites ? invites : [],
     auditLogs: canReadAudit ? auditLogs : [],
+    auditHasMore: canReadAudit && auditHasMore,
     choreStats,
     choreStatsReady,
     loading: rawMembers === null,

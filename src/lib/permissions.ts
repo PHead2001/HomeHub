@@ -81,6 +81,38 @@ export const permissionLabels: Record<HouseholdPermission, string> = {
   'notifications.dismiss': 'Dismiss notifications',
 };
 
+/** One line under each row of the Roles matrix (HO-18): what the permission lets someone do. */
+export const permissionDescriptions: Record<HouseholdPermission, string> = {
+  'household.view': 'Open the Household page: members, roles and settings.',
+  'household.manageMembers': 'Approve, remove and change the role of people below them; rename the household.',
+  'household.manageInvites': 'Create, share and revoke invite codes.',
+  'household.manageRoles': 'Customize what people below them may do.',
+  'household.delete': 'Delete the household and everything in it. Owner only.',
+  'household.transferOwnership': 'Hand the household to someone else. Owner only.',
+  'chores.view': 'See the chore chart and the calendar.',
+  'chores.complete': 'Mark chores done and undo it.',
+  'chores.create': 'Add chores.',
+  'chores.edit': 'Change chores and their repeats.',
+  'chores.delete': 'Delete chores.',
+  'chores.assign': 'Give chores to someone else.',
+  'shopping.view': 'See shopping lists and the pantry.',
+  'shopping.edit': 'Add, tick and change items and lists.',
+  'shopping.delete': 'Delete lists and items for good.',
+  'pets.view': 'See pets and their care history.',
+  'pets.addLogs': 'Log feedings, doses, care and weights.',
+  'pets.editProfiles': 'Add pets and change their details and schedules.',
+  'pets.deleteLogs': 'Delete pet logs.',
+  'maintenance.view': 'See home assets, vehicles and their history.',
+  'maintenance.createLogs': 'Log services and repairs.',
+  'maintenance.edit': 'Change assets, vehicles and schedules.',
+  'maintenance.delete': 'Delete maintenance records.',
+  'automation.view': 'See smart-home devices.',
+  'automation.control': 'Switch smart-home devices.',
+  'automation.manage': 'Connect and set up the smart home.',
+  'notifications.view': 'See household notifications.',
+  'notifications.dismiss': 'Dismiss household notifications.',
+};
+
 export const permissionGroups: { title: string; permissions: HouseholdPermission[] }[] = [
   {
     title: 'Household',

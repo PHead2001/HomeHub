@@ -7,7 +7,7 @@
 // action, so a stale roster can never credit an ineligible person.
 
 import { effectivePermissions } from '@/lib/household-policy';
-import { guestPassEnded, isGuestIdentityUid } from '@/lib/guest-pass';
+import { accessUntilMs, guestPassEnded, isGuestIdentityUid } from '@/lib/guest-pass';
 import type { HouseholdPermission, PermissionOverrides } from '@/lib/types';
 import { policyPermits, type DeviceCapabilityPolicy } from '@/lib/devices/action-policy';
 
@@ -23,6 +23,20 @@ export type RosterPerson = {
    * PE-17e). The server decides again for every action.
    */
   permissions?: Record<HouseholdPermission, boolean>;
+  /** A tablet guest pass (WT-21): when it ends, so the row drops it on time (`withoutEndedPasses`). */
+  accessUntilMs?: number;
+};
+
+/** The roster without guest passes that have ended by `nowMs`. */
+export const withoutEndedPasses = (people: RosterPerson[], nowMs: number): RosterPerson[] =>
+  people.some((person) => person.accessUntilMs !== undefined && person.accessUntilMs <= nowMs)
+    ? people.filter((person) => person.accessUntilMs === undefined || person.accessUntilMs > nowMs)
+    : people;
+
+/** The next time a pass in the roster ends, or null. */
+export const nextPassEnd = (people: readonly RosterPerson[]): number | null => {
+  const ends = people.map((person) => person.accessUntilMs).filter((ms): ms is number => ms !== undefined);
+  return ends.length > 0 ? Math.min(...ends) : null;
 };
 
 /** Whether this person may use a capability (one of its permissions), as far as the tablet knows. */
@@ -61,6 +75,7 @@ export function rosterFrom(docs: ReadonlyArray<{ id: string; data: Record<string
       role: role as RosterPerson['role'],
       kind: data.kind === 'identity' ? 'identity' : 'account',
       avatarUrl: avatar,
+      ...(accessUntilMs(data.accessUntil) !== null ? { accessUntilMs: accessUntilMs(data.accessUntil)! } : {}),
       permissions: effectivePermissions({
         uid: id, role: role as RosterPerson['role'], status: 'active',
         permissions: data.permissions && typeof data.permissions === 'object' ? data.permissions as PermissionOverrides : {},

@@ -33,7 +33,8 @@ export function TimeZoneSetting({
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const selected = draft ?? current;
-  const options = useMemo(() => timeZoneOptions(current), [current]);
+  // Labels are built once per stored zone (about 400 of them).
+  const options = useMemo(() => timeZoneOptions(current).map((zone) => ({ zone, label: timeZoneLabel(zone) })), [current]);
   const deviceZone = typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : '';
 
   const save = async (zone: string) => {
@@ -79,8 +80,8 @@ export function TimeZoneSetting({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="max-h-80">
-                  {options.map((zone) => (
-                    <SelectItem key={zone} value={zone}>{timeZoneLabel(zone)}</SelectItem>
+                  {options.map(({ zone, label }) => (
+                    <SelectItem key={zone} value={zone}>{label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
