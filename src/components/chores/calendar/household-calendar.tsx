@@ -50,6 +50,7 @@ import { liveGroupStatus, useLiveDocs, type LiveSpec } from './use-live-docs';
 import { useIdleReturn } from './use-idle-return';
 import { FairShareStrip } from './fair-share-strip';
 import { AwayDialog } from './away-dialog';
+import { CalendarFeedDialog } from './calendar-feed-dialog';
 
 type View = 'day' | 'week' | 'month';
 
@@ -107,6 +108,7 @@ export function HouseholdCalendar() {
   const canMove = Boolean(permissions['chores.edit']);
   const canComplete = Boolean(permissions['chores.complete']);
   const canSkip = Boolean(permissions['chores.delete']);
+  const isManager = Boolean(currentMember && (currentMember.status ?? 'active') === 'active' && (currentMember.role === 'owner' || currentMember.role === 'admin'));
   const timeZone = safeTimeZone(household?.timeZone);
   const weekStartsOn = readWeekStartsOn(household?.weekStartsOn);
   const weekdayNames = useMemo(() => weekdayLabels(weekStartsOn), [weekStartsOn]);
@@ -702,6 +704,7 @@ export function HouseholdCalendar() {
           {canSkip && canViewChores && (
             <AwayDialog today={today} count={(from, to) => awayList(from, to).length} onSkip={(from, to) => skip(awayList(from, to), `Repeating chores from ${format(dayFromKey(from), 'MMM d')} to ${format(dayFromKey(to), 'MMM d')} are skipped.`)} />
           )}
+          {isManager && <CalendarFeedDialog householdId={householdId} />}
           <Button variant="outline" className="min-h-[var(--target-min)]" asChild>
             <Link href="/chores"><ListChecks className="mr-2 h-4 w-4" /> Chores</Link>
           </Button>
