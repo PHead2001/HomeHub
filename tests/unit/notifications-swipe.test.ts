@@ -92,7 +92,8 @@ describe('service worker push display', () => {
     assert.equal(options.badge, '/icons/badge-96.png');
     assert.equal(options.image, PET);
     assert.equal(options.tag, 'n1');
-    assert.equal((options.data as { link: string }).link, '/pets');
+    // NO-9: the link names the notification, so the page that opens marks it read.
+    assert.equal((options.data as { link: string }).link, '/pets?n=n1');
   });
 
   test('drops foreign pictures and unsafe links', async () => {

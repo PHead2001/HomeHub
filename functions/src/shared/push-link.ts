@@ -44,3 +44,23 @@ export const safePushLink = (link: unknown): string => {
   }
   return trimmed;
 };
+
+/**
+ * The link a push opens, with the notification's ID added as `?n=<id>` (or
+ * `&n=<id>`, before any `#`), so the page that opens can mark it read
+ * (NO-9). Only plain IDs are added; anything else leaves the link unchanged.
+ * Self-contained like safePushLink (the worker embeds its source); run the
+ * result through safePushLink again.
+ * @param {string} link A link already checked by safePushLink.
+ * @param {unknown} id Notification ID (the push tag).
+ * @return {string} The link with the ID.
+ */
+export const pushOpenLink = (link: string, id: unknown): string => {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(id)) {
+    return link;
+  }
+  const hashAt = link.indexOf("#");
+  const path = hashAt === -1 ? link : link.slice(0, hashAt);
+  const hash = hashAt === -1 ? "" : link.slice(hashAt);
+  return path + (path.indexOf("?") === -1 ? "?" : "&") + "n=" + id + hash;
+};

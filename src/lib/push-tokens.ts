@@ -39,6 +39,31 @@ export const PUSH_DEVICE_KEY = 'homehub.push-device';
 export type PushDeviceRecord = { v: 1; token: string; email: string; at: number };
 type DeviceStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
+/**
+ * "Turn off on this device" (NO-5, NO-24): the account that turned push off here.
+ * Browser permission stays granted, so without this the silent registration after
+ * sign-in would turn it back on. Cleared by turning push on again.
+ */
+export const PUSH_OFF_KEY = 'homehub.push-off';
+
+export function readPushOff(storage: DeviceStorage | null, email: string | null | undefined): boolean {
+  if (!storage || !email) return false;
+  try {
+    return storage.getItem(PUSH_OFF_KEY) === email;
+  } catch {
+    return false;
+  }
+}
+
+export function writePushOff(storage: DeviceStorage | null, email: string | null): void {
+  try {
+    if (email) storage?.setItem(PUSH_OFF_KEY, email);
+    else storage?.removeItem(PUSH_OFF_KEY);
+  } catch {
+    // Storage blocked: the setting is not remembered on this device.
+  }
+}
+
 /** FCM refreshes web tokens weekly; a record older than this is confirmed again. */
 export const PUSH_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;
 /** Sign-out waits at most this long for the push registration to be removed. */
@@ -90,9 +115,11 @@ export function pushSignInAction(input: {
   email: string | null | undefined;
   record: PushDeviceRecord | null;
   now: number;
+  /** The member turned push off on this device (`PUSH_OFF_KEY`). */
+  optedOut?: boolean;
 }): PushSignInAction {
   const { permission, email, record, now } = input;
-  if (permission !== 'granted' || !email) return 'none';
+  if (permission !== 'granted' || !email || input.optedOut) return 'none';
   if (!record) return 'register';
   if (record.email !== email) return 'replace';
   return now - record.at >= PUSH_REFRESH_MS ? 'register' : 'none';

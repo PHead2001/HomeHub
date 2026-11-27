@@ -1,6 +1,6 @@
 
 import { NextResponse } from 'next/server';
-import { safePushLink } from './push-link';
+import { pushOpenLink, safePushLink } from './push-link';
 import { BUILD_MESSAGE, BUILD_QUERY_MESSAGE, minimumBuildId } from '@/lib/shell/update-check';
 
 // HomeHub's single service worker, served from /api/sw with a root scope.
@@ -78,6 +78,27 @@ export async function GET() {
       }
     };
 
+    const pushOpenLink = ${pushOpenLink.toString()};
+    // NO-9: the link carries the notification's ID (?n=), so the page marks it read.
+    const openLinkFor = (link, id) => {
+      const base = safePushLink(link);
+      const withId = safePushLink(pushOpenLink(base, id));
+      return withId === '/' && base !== '/' ? base : withId;
+    };
+    // NO-27: the app icon's badge counts HomeHub's notifications in the tray while
+    // the app is closed; an open page sets the exact unread count itself.
+    const updateBadge = async () => {
+      try {
+        const nav = self.navigator;
+        if (!nav || typeof nav.setAppBadge !== 'function') return;
+        const list = await self.registration.getNotifications();
+        if (list.length > 0) await nav.setAppBadge(list.length);
+        else if (typeof nav.clearAppBadge === 'function') await nav.clearAppBadge();
+      } catch (error) {
+        // Decorative: a browser without badge permission keeps working.
+      }
+    };
+
     // A failed import (CDN blocked or offline at install) must not stop the
     // app-shell worker from installing; push simply stays off until the next update.
     try {
@@ -109,37 +130,52 @@ export async function GET() {
             icon: safePushAsset(notification.icon) || '/icons/icon-192.png',
             badge: safePushAsset(data.badge) || '/icons/badge-96.png',
             data: {
-                link: safePushLink(payload.fcmOptions?.link)
+                link: openLinkFor(payload.fcmOptions?.link, data.tag)
             }
           };
           const image = safePushImage(notification.image);
           if (image) notificationOptions.image = image;
           if (typeof data.tag === 'string' && data.tag) notificationOptions.tag = data.tag;
 
-          return self.registration.showNotification(notificationTitle, notificationOptions);
+          return self.registration.showNotification(notificationTitle, notificationOptions).then(updateBadge);
         });
       } catch (error) {
         console.warn('HomeHub service worker: push unavailable', error);
       }
     }
 
+    // NO-9 / SL-16: a tap reuses an open HomeHub window (focused, then sent to the
+    // link) and opens a new one only when none is open or it cannot be navigated
+    // (an uncontrolled window rejects navigate()).
     self.addEventListener('notificationclick', (event) => {
         event.notification.close();
 
         const targetUrl = safePushLink(event.notification.data?.link);
 
-        event.waitUntil(
-            clients.matchAll({ type: "window" }).then((clientList) => {
-                for (const client of clientList) {
-                    if (new URL(client.url).pathname === targetUrl && 'focus' in client) {
-                        return client.focus();
+        event.waitUntil((async () => {
+            const clientList = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+            const open = clientList.find((client) => {
+                try {
+                    return new URL(client.url).origin === self.location.origin;
+                } catch (error) {
+                    return false;
+                }
+            });
+            if (open && 'focus' in open) {
+                try {
+                    const focused = await open.focus();
+                    const current = new URL(open.url);
+                    if (current.pathname + current.search + current.hash === targetUrl) return focused;
+                    if (typeof open.navigate === 'function') {
+                        const navigated = await open.navigate(targetUrl);
+                        if (navigated) return navigated;
                     }
+                } catch (error) {
+                    // Fall through to a new window.
                 }
-                if (clients.openWindow) {
-                    return clients.openWindow(targetUrl);
-                }
-            })
-        );
+            }
+            if (clients.openWindow) await clients.openWindow(targetUrl);
+        })().then(updateBadge));
     });
 
     // ---- App shell (offline) -------------------------------------------------
