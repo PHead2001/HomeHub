@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { collection, onSnapshot, query, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { resilientListener, type ResilientHandle } from '@/lib/dashboard/resilient-listener';
@@ -27,6 +27,9 @@ export function useChoreLiveData(householdId: string | null | undefined, key: st
 } {
   const [state, dispatch] = useReducer(choreLiveReducer, key, (initialKey) => initialChoreLiveState(initialKey));
   const handles = useRef<ResilientHandle[]>([]);
+  // **Try again** starts every listener over, also one that settled on `unauthorized`
+  // after repeated refusals (it has no retry pending of its own).
+  const [restart, setRestart] = useState(0);
 
   useEffect(() => {
     if (!key || !householdId) return;
@@ -56,11 +59,11 @@ export function useChoreLiveData(householdId: string | null | undefined, key: st
       started.forEach((handle) => handle.stop());
       if (handles.current === started) handles.current = [];
     };
-  }, [householdId, key]);
+  }, [householdId, key, restart]);
 
   // Nothing of another key is shown while the new listeners start.
   const current = state.key === key ? state : initialChoreLiveState(key);
   const status = choreLiveStatus(current);
-  const retry = useMemo(() => () => handles.current.forEach((handle) => handle.retryNow()), []);
+  const retry = useCallback(() => setRestart((n) => n + 1), []);
   return useMemo(() => ({ state: current, status, retry }), [current, status, retry]);
 }

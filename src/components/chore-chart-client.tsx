@@ -145,20 +145,30 @@ export function ChoreChartClient() {
   const live = useChoreLiveData(currentUser?.householdId, liveKey);
   // Chores with a write in flight keep this page's optimistic version until it settles
   // (`mergeLiveRows`), so an unrelated snapshot never flips a just-ticked row back.
+  // After the write settles, the row keeps the page's version (the handler applied the
+  // server's answer) until the listener delivers a newer snapshot, which reflects the write.
   const held = useRef(new Map<string, number>());
-  const [heldVersion, setHeldVersion] = useState(0);
+  const settledAt = useRef(new Map<string, unknown>());
+  const liveChoreDocs = useRef<unknown>(null);
+  useEffect(() => { liveChoreDocs.current = live.state.docs.chores; }, [live.state.docs.chores]);
   const hold = useCallback((ids: readonly string[]) => {
-    ids.forEach(id => held.current.set(id, (held.current.get(id) ?? 0) + 1));
+    ids.forEach(id => {
+      held.current.set(id, (held.current.get(id) ?? 0) + 1);
+      settledAt.current.delete(id);
+    });
     let released = false;
     return () => {
       if (released) return;
       released = true;
       ids.forEach(id => {
         const left = (held.current.get(id) ?? 1) - 1;
-        if (left <= 0) held.current.delete(id);
-        else held.current.set(id, left);
+        if (left > 0) {
+          held.current.set(id, left);
+          return;
+        }
+        held.current.delete(id);
+        settledAt.current.set(id, liveChoreDocs.current);
       });
-      setHeldVersion(version => version + 1);
     };
   }, []);
 
@@ -184,8 +194,12 @@ export function ChoreChartClient() {
       const user = usersData.find(u => u.uid === assignedToUid);
       return { ...chore, assignedToUid, assignedToDisplayName: user?.displayName || chore.assignedToDisplayName || 'Unassigned' };
     });
-    setAssignedChores(previous => mergeLiveRows(serverChores, previous, new Set(held.current.keys())));
-  }, [live.state, heldVersion, currentUser]);
+    // Settled writes stop being kept once a newer snapshot than the one at release arrived.
+    for (const [id, snapshot] of settledAt.current) {
+      if (snapshot !== docs.chores) settledAt.current.delete(id);
+    }
+    setAssignedChores(previous => mergeLiveRows(serverChores, previous, new Set([...held.current.keys(), ...settledAt.current.keys()])));
+  }, [live.state, currentUser]);
 
   const loading = Boolean(liveKey) && live.status === 'loading';
 
