@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page, type Route } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
@@ -134,10 +134,26 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     await expect(page.getByRole('button', { name: 'Rewrite the brief with AI' })).toBeVisible();
     await expect(page.getByTestId('home-ai-overview-result')).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Rewrite the brief with AI' }).click();
-    await expect(page.getByRole('button', { name: 'Rewriting the brief with AI' })).toBeDisabled();
+    // The busy state lasts only as long as the overview request, which the e2e provider
+    // answers at once. Server actions POST to the page URL, so hold this page's POSTs
+    // until the busy state has been seen, then let them through.
+    let releaseOverview!: () => void;
+    const overviewHeld = new Promise<void>((resolve) => { releaseOverview = resolve; });
+    const holdActions = async (route: Route) => {
+      if (route.request().method() === 'POST') await overviewHeld;
+      await route.continue();
+    };
+    const homePage = (url: URL) => url.pathname === '/';
+    await page.route(homePage, holdActions);
+    try {
+      await page.getByRole('button', { name: 'Rewrite the brief with AI' }).click();
+      await expect(page.getByRole('button', { name: 'Rewriting the brief with AI' })).toBeDisabled();
+    } finally {
+      releaseOverview();
+    }
     const result = page.getByTestId('home-ai-overview-result');
     await expect(result).toBeVisible();
+    await page.unroute(homePage, holdActions);
     const exactSeededMetrics = {
       chores: ['Your open chores', '1', '0 overdue'],
       shopping: ['Needed items', '3', '2 lists'],
@@ -207,8 +223,13 @@ test.describe('AI isolation, overview, and barcode hardening', () => {
     await expect(packageSize).toHaveValue('128');
     await packageSize.fill('64');
     await expect(packageSize).toHaveValue('64');
-    await itemDialog.getByRole('button', { name: 'Close' }).click();
-    await expect(itemDialog).toBeHidden();
+    // A phone run once kept the sheet open after this click (the scan's toasts were still
+    // arriving at the top of the screen, over the sheet's close button). Closing is not
+    // what this test checks, so a swallowed tap is tried again.
+    await expect(async () => {
+      if (await itemDialog.isVisible()) await itemDialog.getByRole('button', { name: 'Close' }).click({ timeout: 2_000 });
+      await expect(itemDialog).toBeHidden({ timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
 
     await page.getByRole('button', { name: 'Add Item' }).click();
     itemDialog = page.getByRole('dialog', { name: 'Add New Item' });
