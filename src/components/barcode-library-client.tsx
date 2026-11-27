@@ -29,6 +29,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { LIBRARY_SORTS, matchesLibrarySearch, sortLibrary, type LibrarySort } from '@/lib/barcode/library-view';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { pluralize } from '@/lib/shopping/items';
+import { useLive } from '@/lib/shopping/live';
+import { liveKey } from '@/lib/shopping/live-state';
 import { cn } from '@/lib/utils';
 import { downscaleErrorCopy, downscaleImage, PRODUCT_PHOTO_MAX_BYTES } from '@/lib/images/downscale';
 import {
@@ -313,6 +315,8 @@ const libraryPhotoDeletes = createPendingPhotoDeletes({
 });
 const photoDeleteKey = (householdId: string, barcode: string) => `${householdId}/${barcode}`;
 
+const NO_PRODUCTS: BarcodeLibraryItem[] = [];
+
 /**
  * The household Barcode Library: a photo-first grid of saved products (H30) with
  * search. Add/Edit appear for `shopping.edit`, Delete for `shopping.delete`;
@@ -334,8 +338,6 @@ export function BarcodeLibraryClient() {
   const denied = !householdLoading && Boolean(currentMember) && !canView;
   const canEdit = Boolean(permissions['shopping.edit']);
   const canDelete = Boolean(permissions['shopping.delete']);
-  const [items, setItems] = useState<BarcodeLibraryItem[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<LibrarySort>('newest');
   const [opened, setOpened] = useState<BarcodeLibraryItem | null>(null);
@@ -349,34 +351,36 @@ export function BarcodeLibraryClient() {
     return collection(db, 'households', householdId, 'barcode-library');
   }, [householdId]);
 
-  // Live: another member's add, edit or delete shows at once, and Edit opens the
-  // current product.
+  // Live (BL-14): another member's add, edit or delete shows at once, and Edit opens
+  // the current product. The same kept-alive listener Pantry uses (`useLive`): metadata
+  // changes, so the cache answers offline; a failed listener keeps the last list on
+  // screen and retries with backoff, and resubscribes when the browser is back online
+  // or the page is shown again.
+  const libraryKey = canView ? liveKey('barcode-library', householdId) : null;
+  const libraryState = useLive(libraryKey, NO_PRODUCTS, (next, fail) => onSnapshot(
+    query(collection(db, 'households', householdId as string, 'barcode-library'), orderBy('createdAt', 'desc')),
+    { includeMetadataChanges: true },
+    (snapshot) => next(snapshot.docs.map(document => {
+      const data = document.data();
+      // BL-23: the last scan's server timestamp as an ISO string for sorting.
+      const at = data.lastScannedAt as { toDate?: () => Date } | undefined;
+      const lastScannedAt = typeof at?.toDate === 'function' ? at.toDate().toISOString() : undefined;
+      return { ...data, id: document.id, lastScannedAt } as BarcodeLibraryItem;
+    }), snapshot.metadata),
+    fail,
+  ));
+  const items = libraryState.value;
+  // Keep the skeleton until membership (and so permissions) has loaded.
+  const loading = libraryKey ? libraryState.status === 'loading' : householdLoading;
+
+  // A library that cannot load says so once (the listener keeps retrying).
+  const reportedLibraryErrorRef = useRef<unknown>(null);
   useEffect(() => {
-    const collectionRef = getLibraryCollectionRef();
-    if (!collectionRef || !canView) {
-      // Keep the skeleton until membership (and so permissions) has loaded.
-      if (!householdLoading) setLoading(false);
-      return;
-    }
-    setLoading(true);
-    return onSnapshot(
-      query(collectionRef, orderBy('createdAt', 'desc')),
-      (snapshot) => {
-        setItems(snapshot.docs.map(document => {
-          const data = document.data();
-          // BL-23: the last scan's server timestamp as an ISO string for sorting.
-          const at = data.lastScannedAt as { toDate?: () => Date } | undefined;
-          const lastScannedAt = typeof at?.toDate === 'function' ? at.toDate().toISOString() : undefined;
-          return { ...data, id: document.id, lastScannedAt } as BarcodeLibraryItem;
-        }));
-        setLoading(false);
-      },
-      (error) => {
-        toastError(error, 'Could not load the library');
-        setLoading(false);
-      },
-    );
-  }, [getLibraryCollectionRef, toastError, canView, householdLoading]);
+    const error = libraryState.error;
+    if (!error || reportedLibraryErrorRef.current === error) return;
+    reportedLibraryErrorRef.current = error;
+    toastError(error, 'Could not load the library');
+  }, [libraryState.error, toastError]);
 
   // "Save to library" from a scan: open Add with the code, then drop it from the URL.
   useEffect(() => {
@@ -553,7 +557,6 @@ export function BarcodeLibraryClient() {
           if (current) transaction.delete(productRef);
           return current;
         });
-        setItems(prev => prev.filter(existingItem => existingItem.id !== shown.id));
         if (!item) {
           toast({ title: 'Already deleted', description: `${shown.name} was already removed from the library.` });
           return;
