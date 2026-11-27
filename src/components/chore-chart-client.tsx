@@ -44,6 +44,7 @@ import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
 import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
+import { PersonDoneMoment } from '@/components/chores/person-done-moment';
 import { householdDayZone } from '@/lib/household-day';
 import { useConfetti } from '@/components/chores/confetti';
 import { RoomIcon } from '@/components/chores/room-icons';
@@ -61,7 +62,7 @@ import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
 import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, parseChoresFilters, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
-import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, type CleanRoom } from '@/lib/chores/house-clean';
+import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, ownListCleared, personDoneStorageKey, personDoneTitle, type CleanRoom } from '@/lib/chores/house-clean';
 
 
 /** End of `today` (local), so every completion made today counts and the week is today's week. */
@@ -122,6 +123,7 @@ export function ChoreChartClient() {
   // CH-6: reopening asks first; it takes the completer's points away.
   const [choreToReopen, setChoreToReopen] = useState<ChoreRecord | null>(null);
   const [houseClean, setHouseClean] = useState<CleanRoom[] | null>(null);
+  const [personDone, setPersonDone] = useState<string | null>(null);
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -633,7 +635,16 @@ export function ChoreChartClient() {
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
     const hadDue = !isToDoClear(before, today);
-    if (!hadDue || !isToDoClear(after, today)) return;
+    if (!hadDue || !isToDoClear(after, today)) {
+      // CH-22: your own list cleared while the house still has work.
+      if (!ownListCleared(before, after, currentUser.uid, today)) return;
+      const key = personDoneStorageKey(currentUser.householdId, currentUser.uid, today);
+      if (houseCleanShown(key)) return;
+      markHouseCleanShown(key);
+      setPersonDone(personDoneTitle(currentUser.displayName));
+      playFeedback('celebrate');
+      return;
+    }
     const key = houseCleanStorageKey(currentUser.householdId, today);
     if (houseCleanShown(key)) return;
     markHouseCleanShown(key);
@@ -645,7 +656,7 @@ export function ChoreChartClient() {
     const workedIn = new Set(doneToday.flatMap(chore => chore.roomIds || []));
     setHouseClean(cleanHouseRooms(rooms, workedIn));
     playFeedback('celebrate');
-  }, [currentUser?.householdId, today, rooms]);
+  }, [currentUser, today, rooms]);
 
   // Completion, Undo and reopen go through the server (complete-client.ts): it
   // refuses chores due after today and records who completed each one (H3).
@@ -888,6 +899,7 @@ export function ChoreChartClient() {
   }, [getCollectionRef, householdUsers, patchChores, toast, toastError, hold]);
 
   const closeHouseClean = useCallback(() => setHouseClean(null), []);
+  const closePersonDone = useCallback(() => setPersonDone(null), []);
 
   const toggleOpen = useCallback((id: string) => {
     setOpenIds(previous => {
@@ -1049,6 +1061,7 @@ export function ChoreChartClient() {
     <>
       {confettiLayer}
       <HouseCleanMoment open={!!houseClean} rooms={houseClean || []} onDone={closeHouseClean} />
+      <PersonDoneMoment title={personDone} onDone={closePersonDone} />
 
       <AlertDialog open={!!choreToDelete} onOpenChange={(open) => !open && setChoreToDelete(null)}>
         <AlertDialogContent>

@@ -1,7 +1,9 @@
 /**
  * "House is clean" (H05) helpers: which rooms the moment shows, the order they
- * sparkle in, and the once-per-day key. Pure, so they are unit tested.
+ * sparkle in, and the once-per-day key; and the per-person "Your chores are
+ * done" moment (CH-22). Pure, so they are unit tested.
  */
+import { choreDueKey, type ChoreRecord } from './dates';
 
 export type CleanRoom = { id: string; name: string; icon: string; workedToday: boolean };
 
@@ -64,4 +66,53 @@ export function houseCleanShown(key: string, storage: FlagStorage | null = devic
 export function markHouseCleanShown(key: string, storage: FlagStorage | null = deviceStorage()): void {
   shownDays.add(key);
   try { storage?.setItem(key, '1'); } catch { /* storage blocked: the in-memory flag still holds for this visit */ }
+}
+
+/* -------------------------------------------------------------------------- */
+/* "Your chores are done" (CH-22)                                              */
+/* -------------------------------------------------------------------------- */
+
+/** How long the per-person moment stays up. */
+export const PERSON_DONE_MS = 2500;
+
+type ListChore = Pick<ChoreRecord, 'isCompleted' | 'assignedToUid' | 'originalDueDate' | 'dueDate'>;
+
+const openForToday = (chores: readonly ListChore[], uid: string, today: string) =>
+  chores.filter(chore => !chore.isCompleted && chore.assignedToUid === uid && choreDueKey(chore) !== '' && choreDueKey(chore) <= today).length;
+
+/**
+ * Whether `uid`'s own To Do (open chores assigned to them, due today or earlier)
+ * just cleared: something was open before, nothing is after, and the house as a
+ * whole is not clean (then "House is clean" is the moment instead).
+ */
+export function ownListCleared(before: readonly ListChore[], after: readonly ListChore[], uid: string, today: string): boolean {
+  if (!uid || openForToday(before, uid, today) === 0 || openForToday(after, uid, today) > 0) return false;
+  return after.some(chore => !chore.isCompleted && choreDueKey(chore) !== '' && choreDueKey(chore) <= today);
+}
+
+/**
+ * People whose open chores for today all left a live list (the wall tablet's
+ * "Today's chores", CH-22): someone with at least one before and none after, while
+ * other chores are still open (an empty list is the whole house being done).
+ * Unassigned chores (`assigneeKey` "") belong to nobody.
+ */
+export function clearedAssignees(
+  before: ReadonlyArray<{ assigneeKey?: string }>,
+  after: ReadonlyArray<{ assigneeKey?: string }>,
+): string[] {
+  if (after.length === 0) return [];
+  const remaining = new Set(after.map(chore => chore.assigneeKey).filter((key): key is string => Boolean(key)));
+  return [...new Set(before.map(chore => chore.assigneeKey).filter((key): key is string => Boolean(key)))]
+    .filter(key => !remaining.has(key));
+}
+
+/** localStorage key: the moment shows at most once per person per household day on a device. */
+export function personDoneStorageKey(householdId: string, uid: string, day: string): string {
+  return `homehub.personDone.${householdId}.${uid}.${day}`;
+}
+
+/** "Your chores are done, Sam!" (first name only). */
+export function personDoneTitle(name: string | null | undefined): string {
+  const first = (name ?? '').trim().split(/\s+/)[0];
+  return first ? `Your chores are done, ${first}!` : 'Your chores are done!';
 }
