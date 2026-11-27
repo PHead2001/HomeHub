@@ -12,6 +12,8 @@ import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRec
 import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
 import { focusAfterCompleting, sameRowEntry } from '@/lib/chores/row-focus';
+import { disabledCheckHint, mayRemoveChore } from '@/lib/chores/rights';
+import type { ChoreTemplate } from '@/lib/types';
 import type { MemberColor } from '@/lib/member-colors';
 import { SPRING_UI } from '@/lib/motion';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
@@ -47,6 +49,9 @@ type ChoreListProps = ChoreListHandlers & {
   selectedIds: ReadonlySet<string>;
   /** CH-13: the room view's large cards (bigger name, the assignee's avatar and name always shown). */
   large?: boolean;
+  /** CH-24: the reader and the library chores, for who may remove what. */
+  currentUid: string;
+  templatesById: Map<string, ChoreTemplate>;
 };
 
 type RowHandlers = ChoreListHandlers;
@@ -68,6 +73,8 @@ type RowProps = {
   layoutKey: string;
   /** Reduced motion (system or in-app): no layout animation at all. */
   reduced: boolean;
+  currentUid: string;
+  templatesById: Map<string, ChoreTemplate>;
   handlers: RowHandlers;
 };
 
@@ -97,6 +104,11 @@ function ChoreRow(props: RowProps) {
   const user = chore.assignedToUid ? props.usersByUid.get(chore.assignedToUid) : undefined;
   const name = user ? memberName(user) : publicDisplayName(chore.assignedToDisplayName, 'Unassigned');
   const uid = user?.uid || chore.id;
+  // CH-24: creators manage their own chores; mirrors the rules.
+  const template = chore.templateId ? props.templatesById.get(chore.templateId) : undefined;
+  const canRemove = mayRemoveChore(chore, template, props.currentUid, capabilities);
+  const canClearMissed = missed.length > 0 && missed.every(day => mayRemoveChore(day, template, props.currentUid, capabilities));
+  const checkHint = isCompleted ? null : disabledCheckHint({ canComplete: capabilities.canComplete, isFuture, dueLabel: dueLabel(due, today) });
   const remaining = openSubTasks(chore).length;
   const total = chore.subTasks?.length || 0;
   const completedAt = completionInstant(chore);
@@ -155,6 +167,7 @@ function ChoreRow(props: RowProps) {
             rowCheck
             checked={isCompleted}
             disabled={!capabilities.canComplete || isFuture}
+            hint={checkHint}
             label={isCompleted ? `Mark ${chore.task} not done` : `Mark ${chore.task} done`}
             onToggle={() => {
               // CH-16: completing moves focus to the next row's check instead of dropping it.
@@ -186,7 +199,7 @@ function ChoreRow(props: RowProps) {
             {missed.length > 0 && (
               <span className="flex items-center gap-1 font-medium text-foreground">
                 +{missed.length} earlier missed
-                {capabilities.canDelete && (
+                {canClearMissed && (
                   <button
                     type="button"
                     className="inline-flex min-h-[var(--target-min)] min-w-[var(--target-min)] items-center justify-center rounded px-1 font-medium text-primary underline-offset-2 hover:underline"
@@ -237,7 +250,7 @@ function ChoreRow(props: RowProps) {
           </span>
         )}
 
-        {capabilities.canDelete && (
+        {canRemove && (
           // CH-16: delete sits behind a menu (and still confirms), never beside Done.
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -324,6 +337,8 @@ export function ChoreList(props: ChoreListProps) {
             large={props.large === true}
             layoutKey={layoutKey}
             reduced={reduced}
+            currentUid={props.currentUid}
+            templatesById={props.templatesById}
             handlers={handlers}
           />
         ))}

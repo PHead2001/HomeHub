@@ -62,6 +62,8 @@ export type RepeatingChoreTemplate = {
   subTasks: string[];
   recurrence: Recurrence;
   assignedToUid: string;
+  /** CH-24: the writer, so the creator manages the chore like one added in Chores. */
+  createdByUid?: string;
 };
 
 export function repeatingChoreTemplate({
@@ -69,6 +71,7 @@ export function repeatingChoreTemplate({
   roomId,
   recurrence,
   assignee,
+  creatorUid,
 }: {
   task: string;
   /** null or "general" is "Around the house" (no room), as in the dialog. */
@@ -76,6 +79,8 @@ export function repeatingChoreTemplate({
   recurrence: Omit<Recurrence, 'assignedToEmail'>;
   /** Stored by uid only; an email the caller knows is never written (functions/src/shared/assignee.ts). */
   assignee: { uid: string; email?: string | null };
+  /** CH-24: who is adding it (the rules require the writer). */
+  creatorUid?: string;
 }): RepeatingChoreTemplate {
   return {
     task,
@@ -84,6 +89,7 @@ export function repeatingChoreTemplate({
     subTasks: [],
     recurrence: { ...recurrence },
     ...assigneeFields(assignee),
+    ...(creatorUid ? { createdByUid: creatorUid } : {}),
   };
 }
 

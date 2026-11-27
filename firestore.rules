@@ -559,11 +559,38 @@ service cloud.firestore {
         (!('completedByName' in keys) || optionalString(data.completedByName, 200)) &&
         (!('completionId' in keys) || optionalString(data.completionId, 100)) &&
         (!('occurrenceKey' in keys) || boundedString(data.occurrenceKey, 700)) &&
-        // Who added the chore (CH-20: a one-time chore you add for yourself earns no
-        // points): the writer, set only on create, then neither changed nor removed.
-        // Optional, so chores of older clients stay valid.
-        (!('createdByUid' in keys) || (resource == null && data.createdByUid == request.auth.uid)) &&
+        choreCreatorKept(data, keys);
+    }
+
+    // CH-24: createdByUid (chores and chore templates) is optional, so older clients
+    // and quick add keep working; when written it is the writer, on create only, and
+    // afterwards it is neither changed nor removed.
+    function choreCreatorKept(data, keys) {
+      return (!('createdByUid' in keys) || (resource == null && data.createdByUid == request.auth.uid)) &&
         (resource == null || data.get('createdByUid', null) == resource.data.get('createdByUid', null));
+    }
+
+    // CH-24: the creator of a library chore (with chores.create) manages it without
+    // chores.edit or chores.delete: edit it, stop or change its repeat, delete it.
+    function choreTemplateCreatedByCaller(householdId, templateId) {
+      let path = /databases/$(database)/documents/households/$(householdId)/chore-templates/$(templateId);
+      return hasHouseholdPermission(householdId, 'chores.create') &&
+        exists(path) && get(path).data.get('createdByUid', '') == request.auth.uid;
+    }
+
+    // CH-24: without chores.delete, a member with chores.create may delete an OPEN chore
+    // they created (a one-time chore) or an open generated day of a library chore they
+    // created (upkeep writes those without sourceType). Completed chores hold someone's
+    // points and stay. get() reads the template as it was before this request, so a
+    // transaction that stops the repeat and removes its days in one go is judged on the
+    // stored creator.
+    function choreCreatorMayDelete(householdId) {
+      return resource.data.get('isCompleted', false) != true && (
+        (hasHouseholdPermission(householdId, 'chores.create') &&
+          resource.data.get('createdByUid', '') == request.auth.uid) ||
+        (resource.data.get('templateId', '') is string && resource.data.get('templateId', '') != '' &&
+          resource.data.get('sourceType', null) == null &&
+          choreTemplateCreatedByCaller(householdId, resource.data.templateId)));
     }
 
     // Completion attribution (H3, rules stage R1). Who completed a chore and the
@@ -644,7 +671,8 @@ service cloud.firestore {
     }
 
     function validChoreTemplateFields(data, keys) {
-      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid', 'skippedOccurrences', 'rotation', 'rotationStart']) &&
+      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid', 'skippedOccurrences', 'rotation', 'rotationStart', 'createdByUid']) &&
+        choreCreatorKept(data, keys) &&
         // Rotation (CH-28): member uids taking turns, in order, from rotationStart.
         (!('rotation' in keys) || data.rotation == null ||
           (boundedList(data.rotation, 8) && data.rotation.size() >= 2)) &&
@@ -2058,7 +2086,8 @@ service cloud.firestore {
             hasHouseholdPermission(householdId, 'chores.edit')
           ) &&
           choreReassignmentAllowed(householdId);
-        allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
+        allow delete: if hasHouseholdPermission(householdId, 'chores.delete') ||
+          choreCreatorMayDelete(householdId);
       }
 
       // Points and streaks are derived from completion times, so every completion is
@@ -2105,10 +2134,15 @@ service cloud.firestore {
             // Deleting one day of a repeating chore records the skip on its template
             // (CH-3): a chores.delete holder may change that list and nothing else.
             (hasHouseholdPermission(householdId, 'chores.delete') &&
-              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['skippedOccurrences']))) &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['skippedOccurrences'])) ||
+            // CH-24: its creator (with chores.create) manages it.
+            (hasHouseholdPermission(householdId, 'chores.create') &&
+              resource.data.get('createdByUid', '') == request.auth.uid)) &&
           validChoreTemplateFields(request.resource.data, writtenKeys()) &&
           templateAssignmentAllowed(householdId);
-        allow delete: if hasHouseholdPermission(householdId, 'chores.delete');
+        allow delete: if hasHouseholdPermission(householdId, 'chores.delete') ||
+          (hasHouseholdPermission(householdId, 'chores.create') &&
+            resource.data.get('createdByUid', '') == request.auth.uid);
       }
 
       match /rooms/{roomId} {
