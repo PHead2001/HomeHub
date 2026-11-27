@@ -3,7 +3,8 @@
  * the household's chore history. Nothing here is stored: every number is
  * recomputed from chore documents, so there is no score field anyone could
  * write. The point rules (base, steps, on time, what earns points, the daily
- * cap) live in `functions/src/shared/chore-points.ts`. Completion times come from
+ * cap) live in `functions/src/shared/chore-points.ts`, shared with server
+ * upkeep, which snapshots each closed week (CH-29). Completion times come from
  * the server-stamped `completedAtServer` when present, else `completedAt`.
  * Days are the household's (D-6) when a time zone is given.
  */
@@ -259,17 +260,27 @@ export function podiumWeekStart(today: string): string | null {
   return diffDayKeys(thisWeek, today) < PODIUM_DAYS ? addDaysToKey(thisWeek, -7) : null;
 }
 
-/** A closed week's results computed from the retained chores (household days). */
+/**
+ * A closed week's results computed from the retained chores, the same rule upkeep
+ * snapshots into `stats/week-{weekStart}` (CH-29). The page uses it only until
+ * that snapshot exists.
+ */
 export function closedWeekSummary(
   chores: readonly ChoreRecord[],
   members: readonly StatsMember[],
   weekStart: string,
+  centsPerPoint: number,
   timeZone?: string | null,
 ): WeekSummary {
-  return weekSummary(chores, members, weekStart, dayReader(timeZone));
+  return weekSummary(chores, members, weekStart, dayReader(timeZone), centsPerPoint);
 }
 
 /** Up to three members with points in a closed week, best first (index 0 is the MVP). */
 export function weekPodium(summary: WeekSummary): WeekSummary['members'] {
   return summary.members.filter(member => member.points > 0).slice(0, 3);
+}
+
+/** Cents as money ("$4.50"). HomeHub reads money as US dollars (see maintenance costs). */
+export function formatPayout(cents: number): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
 }

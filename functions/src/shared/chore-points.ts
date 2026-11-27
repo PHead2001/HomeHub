@@ -26,6 +26,9 @@ export const POINTS = {
 /** Most points one person earns in one day (CH-20). */
 export const DAILY_POINT_CAP = 100;
 
+/** Highest allowance rate an owner can set, in cents per point (CH-29). */
+export const MAX_CENTS_PER_POINT = 100;
+
 /** The day ("YYYY-MM-DD") of an instant, in the reader's time zone. */
 export type DayOf = (instant: Date) => string;
 
@@ -194,23 +197,46 @@ export const cappedDayPoints = (day: PointsDay | undefined): number =>
 export const weekStartDay = (day: string): string =>
   addDays(day, -((dayOfWeek(day) + 6) % 7));
 
+/**
+ * A stored allowance rate, read defensively (0 when unset or invalid).
+ * @param {unknown} data Chore preferences document data.
+ * @return {number} Whole cents per point.
+ */
+export const centsPerPointFrom = (data: unknown): number => {
+  const value = data && typeof data === "object" ?
+    (data as Record<string, unknown>).centsPerPoint : undefined;
+  return typeof value === "number" && Number.isInteger(value) &&
+    value >= 0 && value <= MAX_CENTS_PER_POINT ? value : 0;
+};
+
 /** One person's result for a closed week. */
 export type WeekMemberResult = {
   uid: string;
   name: string;
-  /** Child accounts collect stickers on the page. */
+  /** Child accounts collect stickers on the page; they are paid the same. */
   stickerMode: boolean;
   points: number;
   completed: number;
+  /** points x centsPerPoint. */
+  payoutCents: number;
 };
 
-/** A closed week's results (Monday to Sunday). */
+/** A closed week's results (Monday to Sunday), as upkeep snapshots them. */
 export type WeekSummary = {
   weekStart: string;
   weekEnd: string;
+  centsPerPoint: number;
   /** Members who earned points, best first. */
   members: WeekMemberResult[];
 };
+
+/**
+ * Document id of a closed week's snapshot under households/{id}/stats.
+ * @param {string} weekStart Monday of the week.
+ * @return {string} Document id.
+ */
+export const weekSnapshotDocId = (weekStart: string): string =>
+  `week-${weekStart}`;
 
 const label = (value: unknown): string => {
   const name = typeof value === "string" ? value.trim() : "";
@@ -219,11 +245,13 @@ const label = (value: unknown): string => {
 
 /**
  * The results of the week starting `weekStart`: each member's capped
- * points and completions, best first. Members with no points are left out.
+ * points, completions and payout at `centsPerPoint`, best first. Members
+ * with no points are left out.
  * @param {PointsChore[]} chores Retained chores.
  * @param {PointsMember[]} members Household members.
  * @param {string} weekStart Monday of the week.
  * @param {DayOf} dayOf Day of an instant (household time zone).
+ * @param {number} centsPerPoint Allowance rate.
  * @return {WeekSummary} The week's results.
  */
 export const weekSummary = (
@@ -231,9 +259,11 @@ export const weekSummary = (
   members: readonly PointsMember[],
   weekStart: string,
   dayOf: DayOf,
+  centsPerPoint: number,
 ): WeekSummary => {
   const weekEnd = addDays(weekStart, 6);
   const ledger = pointsLedger(chores, members, dayOf, weekEnd);
+  const rate = centsPerPointFrom({centsPerPoint});
   const results: WeekMemberResult[] = [];
   for (const member of members) {
     let points = 0;
@@ -250,9 +280,44 @@ export const weekSummary = (
       stickerMode: member.role === "child",
       points,
       completed,
+      payoutCents: points * rate,
     });
   }
   results.sort((a, b) => b.points - a.points ||
     b.completed - a.completed || a.name.localeCompare(b.name));
-  return {weekStart, weekEnd, members: results};
+  return {weekStart, weekEnd, centsPerPoint: rate, members: results};
+};
+
+/**
+ * A stored week snapshot, read defensively; null when it is not one.
+ * @param {unknown} data Stored document data.
+ * @return {WeekSummary | null} The summary.
+ */
+export const readWeekSummary = (data: unknown): WeekSummary | null => {
+  if (!data || typeof data !== "object") return null;
+  const raw = data as Record<string, unknown>;
+  if (!isDayString(raw.weekStart) || !isDayString(raw.weekEnd)) return null;
+  const list = Array.isArray(raw.members) ? raw.members : [];
+  const number = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ?
+      value : 0;
+  const members = list.flatMap((item): WeekMemberResult[] => {
+    if (!item || typeof item !== "object") return [];
+    const m = item as Record<string, unknown>;
+    if (typeof m.uid !== "string" || !m.uid) return [];
+    return [{
+      uid: m.uid,
+      name: label(m.name),
+      stickerMode: m.stickerMode === true,
+      points: number(m.points),
+      completed: number(m.completed),
+      payoutCents: number(m.payoutCents),
+    }];
+  });
+  return {
+    weekStart: raw.weekStart,
+    weekEnd: raw.weekEnd,
+    centsPerPoint: centsPerPointFrom(raw),
+    members,
+  };
 };

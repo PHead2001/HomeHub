@@ -118,7 +118,7 @@ describe('computeChoreStats', () => {
   });
 
   it('ranks the closed week podium by points', () => {
-    const summary = closedWeekSummary(chores, members, '2026-08-03');
+    const summary = closedWeekSummary(chores, members, '2026-08-03', 0);
     const podium = weekPodium(summary);
     assert.equal(podium[0].uid, 'sam');
     assert.ok(podium.length <= 3);
