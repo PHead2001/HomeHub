@@ -127,15 +127,66 @@ export const overdueTitle = (
  * @param {number} onDay Chores due that day.
  * @param {number} late Chores overdue.
  * @param {string} when "today" or "yesterday".
+ * @param {number} doses Pet doses due (NO-22).
  * @return {string} Title.
  */
 export const dailyReminderTitle = (
   onDay: number,
   late: number,
   when: string,
+  doses = 0,
 ): string => onDay > 0 ?
   `${plural(onDay, "chore")} due ${when}` :
-  `${plural(late, "chore")} still overdue`;
+  late > 0 ? `${plural(late, "chore")} still overdue` :
+    `${plural(doses, "pet dose")} due ${when}`;
+
+/**
+ * One person's daily digest for `day` (NO-22): their chores due that day and
+ * overdue, and the pet doses due or overdue that day when they can see pets.
+ * Null when there is nothing. The same document (`<uid>-reminder-<day>`) is
+ * created at the person's reminder time and then kept up to date by upkeep:
+ * rewritten as things get done and resolved when nothing is left.
+ * @param {ReminderPerson} person Recipient with settings and timezone.
+ * @param {ChoreInput[]} chores Household chores.
+ * @param {string} day The digest's day.
+ * @param {string} today The household's day now.
+ * @param {number} doses Pet doses due or overdue (0 without pets.view).
+ * @return {ChoreNotification | null} The digest, or null.
+ */
+export const dailyDigestFor = (
+  person: ReminderPerson,
+  chores: ChoreInput[],
+  day: string,
+  today: string,
+  doses = 0,
+): ChoreNotification | null => {
+  const mine = chores.filter(isMine(person));
+  const dueDay = dueDayFor(person);
+  const late = mine.filter((c) => {
+    const due = dueDay(c);
+    return due !== null && due < day;
+  });
+  const onDay = mine.filter((c) => dueDay(c) === day);
+  if (late.length + onDay.length + doses === 0) return null;
+  const sourceId = `reminder-${day}`;
+  const when = day === today ? "today" : "yesterday";
+  const chorePart = late.length + onDay.length === 0 ? "" :
+    onDay.length > 0 && late.length > 0 ?
+      `${plural(onDay.length, "chore")} due ${when} and ` +
+        `${late.length} overdue.` :
+      onDay.length > 0 ?
+        `${plural(onDay.length, "chore")} due ${when}.` :
+        `${plural(late.length, "chore")} still overdue.`;
+  const dosePart = doses > 0 ?
+    `${plural(doses, "pet dose")} due ${when}.` : "";
+  return {
+    id: `${person.uid}-${sourceId}`,
+    targetUserUid: person.uid,
+    title: dailyReminderTitle(onDay.length, late.length, when, doses),
+    message: [chorePart, dosePart].filter(Boolean).join(" "),
+    sourceId,
+  };
+};
 
 /**
  * The overdue notification's message for these chores.
@@ -159,6 +210,7 @@ export const overdueMessage = (
  * @param {ChoreInput[]} chores Household chores.
  * @param {Date} now Current instant.
  * @param {number} runIntervalMs Time since the previous scheduled run.
+ * @param {number} dosesToday Pet doses due today for this person (NO-22).
  * @return {ChoreNotification[]} Notifications to ensure exist.
  */
 export const choreNotificationsFor = (
@@ -166,36 +218,17 @@ export const choreNotificationsFor = (
   chores: ChoreInput[],
   now: Date,
   runIntervalMs = UPKEEP_INTERVAL_MS,
+  dosesToday = 0,
 ): ChoreNotification[] => {
   const today = localDay(now, person.timeZone);
   const minutes = localMinutes(now, person.timeZone);
-  const mine = chores.filter(isMine(person));
-  const dueDay = dueDayFor(person);
   const notes: ChoreNotification[] = [];
 
   const reminderAt = parseTimeOfDay(person.reminderTime);
-  const dailyReminder = (day: string): ChoreNotification | null => {
-    const late = mine.filter((c) => {
-      const due = dueDay(c);
-      return due !== null && due < day;
-    });
-    const onDay = mine.filter((c) => dueDay(c) === day);
-    if (late.length + onDay.length === 0) return null;
-    const sourceId = `reminder-${day}`;
-    const when = day === today ? "today" : "yesterday";
-    return {
-      id: `${person.uid}-${sourceId}`,
-      targetUserUid: person.uid,
-      title: dailyReminderTitle(onDay.length, late.length, when),
-      message: onDay.length > 0 && late.length > 0 ?
-        `${plural(onDay.length, "chore")} due ${when} and ` +
-          `${late.length} overdue.` :
-        onDay.length > 0 ?
-          `${plural(onDay.length, "chore")} due ${when}.` :
-          `${plural(late.length, "chore")} still overdue.`,
-      sourceId,
-    };
-  };
+  // Doses are counted for today only (the late run for yesterday carries
+  // chores only: yesterday's doses are today's overdue ones).
+  const dailyReminder = (day: string): ChoreNotification | null =>
+    dailyDigestFor(person, chores, day, today, day === today ? dosesToday : 0);
   if (person.reminderEnabled && reminderAt !== null) {
     if (minutes >= reminderAt) {
       const note = dailyReminder(today);
