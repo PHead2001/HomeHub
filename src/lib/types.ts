@@ -500,7 +500,11 @@ export type HouseholdPermission =
 export type PermissionOverrides = Partial<Record<HouseholdPermission, boolean>>;
 
 // 'deleting': the household is being deleted; rules grant nothing to non-active members.
-export type HouseholdMemberStatus = 'active' | 'pending' | 'deleting';
+/**
+ * `expired` is never stored: the server and the client derive it for a record whose guest
+ * pass (`accessUntil`) has ended (HO-14), which then counts as inactive everywhere.
+ */
+export type HouseholdMemberStatus = 'active' | 'pending' | 'deleting' | 'expired';
 
 export type HouseholdMember = {
   uid: string;
@@ -532,6 +536,14 @@ export type HouseholdMember = {
    */
   kind?: 'account' | 'identity';
   createdByUid?: string;
+  /**
+   * Guest passes (HO-14, HO-24; `src/lib/guest-pass.ts`): when the pass ends (a Firestore
+   * Timestamp; the client may hold it as one). Server-written; the rules treat the record
+   * as inactive from then on.
+   */
+  accessUntil?: unknown;
+  /** Pending people invited with a guest pass: its length in hours (4, 24 or 168), started at approval. */
+  guestPassHours?: number;
 };
 
 export type HomeAssistantCredentials = {
@@ -639,6 +651,8 @@ export type InviteCode = {
   useCount?: number;
   /** A role suggested to whoever approves (HO-16); server-written, never granted by itself. */
   suggestedRole?: HouseholdRole;
+  /** A guest-pass invite (HO-14): hours of access from approval as Guest (4, 24 or 168). */
+  guestPassHours?: number;
 };
 
 export type AuditLog = {

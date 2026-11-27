@@ -11,6 +11,8 @@ export type MemberRecord = {
   email?: unknown;
   role?: unknown;
   status?: unknown;
+  /** Guest pass end (HO-14): a Timestamp; none for everyone else. */
+  accessUntil?: unknown;
 };
 
 const APPROVED_ROLES = new Set(["owner", "admin", "member", "child", "guest"]);
@@ -21,9 +23,38 @@ const APPROVED_ROLES = new Set(["owner", "admin", "member", "child", "guest"]);
  * @return {boolean} True for approved active members.
  */
 export const isApprovedMember = (member: MemberRecord): boolean =>
+  isApprovedMemberAt(member, Date.now());
+
+/**
+ * `isApprovedMember` at a given time (tests).
+ * @param {MemberRecord} member Membership record.
+ * @param {number} nowMs The current time in milliseconds.
+ * @return {boolean} True for approved active members.
+ */
+export const isApprovedMemberAt = (
+  member: MemberRecord,
+  nowMs: number,
+): boolean =>
   typeof member.role === "string" &&
   APPROVED_ROLES.has(member.role) &&
-  (member.status === undefined || member.status === "active");
+  (member.status === undefined || member.status === "active") &&
+  guestPassCurrent(member.accessUntil, nowMs);
+
+/**
+ * Whether a guest pass (HO-14) is still running: no `accessUntil`, or one
+ * later than now. An unreadable value counts as ended, as in the rules.
+ * @param {unknown} value The record's `accessUntil`.
+ * @param {number} nowMs The current time in milliseconds.
+ * @return {boolean} True when the pass has not ended.
+ */
+export const guestPassCurrent = (value: unknown, nowMs: number): boolean => {
+  if (value === undefined || value === null) return true;
+  const toMillis = (value as {toMillis?: unknown}).toMillis;
+  const ms = typeof toMillis === "function" ?
+    (toMillis as () => number).call(value) :
+    NaN;
+  return Number.isFinite(ms) && ms > nowMs;
+};
 
 const emailOf = (member: MemberRecord): string[] =>
   typeof member.email === "string" && member.email ? [member.email] : [];

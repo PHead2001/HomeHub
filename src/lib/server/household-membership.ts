@@ -5,6 +5,13 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { INVITE_CHARS, normalizeInviteCode } from '@/lib/invite-codes';
 import { suggestedRoleFor } from '@/lib/invite-link';
+import {
+  accessUntilMs,
+  guestPassEnded,
+  hasGuestPass,
+  isGuestIdentityUid,
+  readGuestPassHours,
+} from '@/lib/guest-pass';
 import { foldLegacyStatsKeys, readChoreStats } from '@functions/shared/chore-stats';
 import { formerMemberKey } from '@functions/shared/former-member';
 import { randomBytes } from 'node:crypto';
@@ -225,10 +232,12 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     if (memberSnap.exists) throw new MembershipError('You are already part of this household.');
     // The code stops working once its creator may no longer invite: removed, left,
     // demoted, or their invite permission taken away (HO-8; device codes: D-T14).
-    const creator = toStoredMember(creatorSnap);
+    const creator = toStoredMember(creatorSnap, null, now);
     if (!canManageInvites(creator).ok) throw new MembershipError(INVITE_NO_LONGER_VALID);
     // The role the invite suggests, checked again against its creator's current role (HO-16).
     const suggestedRole = suggestedRoleFor(invite.suggestedRole, rank(creator!.role), rank);
+    // A guest-pass invite (HO-14): the length waits on the pending record until approval.
+    const guestPassHours = suggestedRole === 'guest' ? readGuestPassHours(invite.guestPassHours) : null;
 
     const currentHouseholdId = profileSnap.exists ? profileSnap.data()?.householdId : null;
     if (typeof currentHouseholdId === 'string' && currentHouseholdId && currentHouseholdId !== householdId) {
@@ -254,6 +263,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
       joinedAt,
       // Only a default for the approval banner; the approver chooses (HO-16).
       ...(suggestedRole ? { suggestedRole } : {}),
+      ...(guestPassHours ? { guestPassHours } : {}),
       // The waiting screen reads this from the person's own record instead of the household document.
       ...(householdName ? { householdName } : {}),
     } as HouseholdMember;
@@ -491,7 +501,7 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
       transaction.get(memberRef),
       transaction.get(profileRef),
     ]);
-    const member = toStoredMember(memberSnap);
+    const member = toStoredMember(memberSnap, null, now);
     if (!member) throw new MembershipError('You are not part of this household.');
     const deleting = Boolean(householdSnap.get('deletingAt'));
     const allowed = canLeaveHousehold(member, { deleting });
@@ -677,7 +687,7 @@ const INVITE_CODE_ATTEMPTS = 6;
 type Tx = FirebaseFirestore.Transaction;
 type DocRef = FirebaseFirestore.DocumentReference;
 /** A membership record as the server uses it; `email` is read from the contact document ("" when none). */
-type StoredMember = PolicyMember & { email: string; displayName?: string };
+type StoredMember = PolicyMember & { email: string; displayName?: string; guestPassHours?: number };
 
 const requireId = (value: unknown, message: string): string => {
   if (typeof value !== 'string' || !value || value.length > 200 || value.includes('/')) {
@@ -694,13 +704,21 @@ const KNOWN_ROLES: readonly HouseholdRole[] = ['owner', 'admin', 'member', 'chil
 
 // A role the rules do not recognize (legacy names included) grants nothing here either.
 // The email comes from the member's contact document, never from the record.
-const toStoredMember = (snapshot: FirebaseFirestore.DocumentSnapshot, contact?: FirebaseFirestore.DocumentSnapshot | null): StoredMember | null => {
+// A guest pass that has ended (HO-14) makes the record inactive here, as in the rules.
+const toStoredMember = (
+  snapshot: FirebaseFirestore.DocumentSnapshot,
+  contact?: FirebaseFirestore.DocumentSnapshot | null,
+  now = new Date(),
+): StoredMember | null => {
   const data = snapshot.exists ? snapshot.data() : null;
   if (!data) return null;
+  const ended = guestPassEnded(data, now.getTime());
   return {
     uid: snapshot.id,
     role: KNOWN_ROLES.includes(data.role) ? data.role as HouseholdRole : 'newuser',
-    status: data.status || 'active',
+    status: ended && (data.status || 'active') === 'active' ? 'expired' : data.status || 'active',
+    guestPass: hasGuestPass(data),
+    ...(readGuestPassHours(data.guestPassHours) ? { guestPassHours: readGuestPassHours(data.guestPassHours)! } : {}),
     permissions: (data.permissions && typeof data.permissions === 'object' ? data.permissions : {}) as PermissionOverrides,
     email: contactEmail(contact),
     displayName: typeof data.displayName === 'string' && data.displayName ? data.displayName : undefined,
@@ -715,7 +733,7 @@ type ActorContext = {
 };
 
 /** Reads the household and the caller's membership inside the transaction. */
-const loadActor = async (transaction: Tx, caller: VerifiedCaller, householdId: unknown): Promise<ActorContext> => {
+const loadActor = async (transaction: Tx, caller: VerifiedCaller, householdId: unknown, now = new Date()): Promise<ActorContext> => {
   const id = requireId(householdId, 'That household no longer exists.');
   const householdRef = adminDb.collection('households').doc(id);
   const [householdSnap, actorSnap] = await Promise.all([
@@ -724,17 +742,17 @@ const loadActor = async (transaction: Tx, caller: VerifiedCaller, householdId: u
   ]);
   if (!householdSnap.exists) throw new MembershipError('That household no longer exists.', 'not_found');
   if (householdSnap.get('deletingAt')) throw new MembershipError('This household is being deleted.', 'household_deleting');
-  const actor = toStoredMember(actorSnap);
+  const actor = toStoredMember(actorSnap, null, now);
   if (!actor) throw new MembershipError('You are not part of this household.', 'not_member');
   // The actor's own email is the verified one from their token.
   return { householdRef, household: householdSnap.data() || {}, actor: { ...actor, email: caller.email } };
 };
 
-const loadTarget = async (transaction: Tx, householdRef: DocRef, targetUid: unknown): Promise<{ ref: DocRef; target: StoredMember }> => {
+const loadTarget = async (transaction: Tx, householdRef: DocRef, targetUid: unknown, now = new Date()): Promise<{ ref: DocRef; target: StoredMember }> => {
   const uid = requireId(targetUid, 'That person is no longer in this household.');
   const ref = householdRef.collection('members').doc(uid);
   const [memberSnap, contactSnap] = await Promise.all([transaction.get(ref), transaction.get(memberContactRef(householdRef, uid))]);
-  const target = toStoredMember(memberSnap, contactSnap);
+  const target = toStoredMember(memberSnap, contactSnap, now);
   if (!target) throw new MembershipError('That person is no longer in this household.', 'not_found');
   return { ref, target };
 };
@@ -901,7 +919,7 @@ const resolvePendingNotices = (transaction: Tx, aboutPerson: FirebaseFirestore.Q
  */
 export const remindPendingMembers = async (caller: VerifiedCaller, householdId: string, now = new Date()): Promise<{ count: number }> => {
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
+    const context = await loadActor(transaction, caller, householdId, now);
     enforce(canRemindPendingMembers(context.actor));
     const members = await transaction.get(context.householdRef.collection('members'));
     const pending = members.docs.filter(d => d.get('role') === 'newuser');
@@ -952,7 +970,7 @@ export const updateHouseholdTimeZone = async (
   const timeZone = normalizeTimeZone(rawTimeZone);
   if (!timeZone) throw new MembershipError("That time zone isn't recognized. Pick one from the list.", 'invalid_input');
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
+    const context = await loadActor(transaction, caller, householdId, now);
     const actor = context.actor;
     if ((actor.status || 'active') !== 'active' || (actor.role !== 'owner' && actor.role !== 'admin')) {
       throw new MembershipError('Only owners and admins can change the time zone.', 'missing_permission');
@@ -972,7 +990,7 @@ export const updateHouseholdTimeZone = async (
 export const renameHousehold = async (caller: VerifiedCaller, householdId: string, rawName: string, now = new Date()): Promise<{ name: string }> => {
   const name = requireHouseholdName(rawName);
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
+    const context = await loadActor(transaction, caller, householdId, now);
     enforce(canRenameHousehold(context.actor));
     const previousName = typeof context.household.name === 'string' ? context.household.name : '';
     if (previousName === name) return { name };
@@ -1007,15 +1025,21 @@ export const createInvite = async (
   caller: VerifiedCaller,
   householdId: string,
   now = new Date(),
-  options: { suggestedRole?: unknown } = {},
+  options: { suggestedRole?: unknown; guestPassHours?: unknown } = {},
 ): Promise<InviteCode> => {
+  // A guest pass (HO-14): 4 hours, 1 day or 1 week, started when someone approves the
+  // person as Guest. It always suggests Guest.
+  const wantsPass = options.guestPassHours !== undefined && options.guestPassHours !== null;
+  const guestPassHours = wantsPass ? readGuestPassHours(options.guestPassHours) : null;
+  if (wantsPass && !guestPassHours) throw new MembershipError('Choose 4 hours, 1 day or 1 week for a guest pass.', 'invalid_input');
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
+    const context = await loadActor(transaction, caller, householdId, now);
     enforce(canManageInvites(context.actor));
     // An optional role to suggest to whoever approves (HO-16): assignable and strictly
     // below the creator's own. Approval still applies the approver's own policy.
-    const wantsRole = options.suggestedRole !== undefined && options.suggestedRole !== null && options.suggestedRole !== '';
-    const suggestedRole = wantsRole ? suggestedRoleFor(options.suggestedRole, rank(context.actor.role), rank) : null;
+    const requestedRole = guestPassHours ? 'guest' : options.suggestedRole;
+    const wantsRole = requestedRole !== undefined && requestedRole !== null && requestedRole !== '';
+    const suggestedRole = wantsRole ? suggestedRoleFor(requestedRole, rank(context.actor.role), rank) : null;
     if (wantsRole && !suggestedRole) throw new MembershipError(refusalMessage('role_too_high'), 'role_too_high');
     let inviteRef: DocRef | null = null;
     for (let attempt = 0; attempt < INVITE_CODE_ATTEMPTS && !inviteRef; attempt++) {
@@ -1036,11 +1060,12 @@ export const createInvite = async (
       maxUses: 1,
       useCount: 0,
       ...(suggestedRole ? { suggestedRole } : {}),
+      ...(guestPassHours ? { guestPassHours } : {}),
     };
     transaction.set(inviteRef, { ...invite, expiresAt: Timestamp.fromDate(expiresAt) });
     writeAudit(transaction, context, caller, now, {
       action: 'invite.generated',
-      details: { code: invite.code, ...(suggestedRole ? { suggestedRole } : {}) },
+      details: { code: invite.code, ...(suggestedRole ? { suggestedRole } : {}), ...(guestPassHours ? { guestPassHours } : {}) },
     });
     return invite;
   });
@@ -1051,7 +1076,7 @@ export const revokeInvite = async (caller: VerifiedCaller, householdId: string, 
   const code = normalizeInviteCode(typeof rawCode === 'string' ? rawCode : '');
   if (!code) throw new MembershipError('That invite code was not found.', 'not_found');
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
+    const context = await loadActor(transaction, caller, householdId, now);
     enforce(canManageInvites(context.actor));
     const inviteRef = adminDb.collection('inviteCodes').doc(code);
     const inviteSnap = await transaction.get(inviteRef);
@@ -1069,7 +1094,7 @@ export const revokeInvite = async (caller: VerifiedCaller, householdId: string, 
 /** Revoke every invite code that could still be used (`household.manageInvites`). */
 export const revokeAllInvites = async (caller: VerifiedCaller, householdId: string, now = new Date()): Promise<{ count: number }> => {
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
+    const context = await loadActor(transaction, caller, householdId, now);
     enforce(canManageInvites(context.actor));
     const invites = await transaction.get(adminDb.collection('inviteCodes').where('householdId', '==', context.householdRef.id));
     const active = invites.docs.filter(d => inviteIsActive(d.data(), now));
@@ -1096,26 +1121,37 @@ export const changeMemberRole = async (
     throw new MembershipError(refusalMessage('role_not_assignable'), 'role_not_assignable');
   }
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
-    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
+    const context = await loadActor(transaction, caller, householdId, now);
+    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid, now);
     enforce(canAssignRole(context.actor, target, nextRole));
     const approving = target.role === 'newuser';
     if (target.role === nextRole && target.status === 'active') return { role: nextRole, approved: false };
     const aboutTarget = approving ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
     const cacheProfile = await profileCachedHere(transaction, target.email, context.householdRef.id);
     const iso = now.toISOString();
+    // Guest passes (HO-14): approving a guest-pass invitee as Guest starts the pass; any
+    // other role (on approval or later) makes them a full member with no end time.
+    const startsPass = approving && nextRole === 'guest' && target.guestPassHours;
+    const accessUntil = startsPass ? Timestamp.fromMillis(now.getTime() + target.guestPassHours! * 60 * 60 * 1000) : null;
+    const keepsPass = !approving && nextRole === 'guest' && target.guestPass;
     transaction.update(ref, {
       role: nextRole,
       status: 'active',
       permissions: {},
       approvedAt: iso,
       approvedByUid: caller.uid,
+      ...(accessUntil ? { accessUntil } : keepsPass ? {} : { accessUntil: FieldValue.delete() }),
+      ...(approving ? { guestPassHours: FieldValue.delete(), suggestedRole: FieldValue.delete() } : {}),
     });
     if (cacheProfile) setProfileCache(transaction, target.email, { role: nextRole, permissions: {} });
     writeAudit(transaction, context, caller, now, {
       action: approving ? 'member.approved' : 'member.role_changed',
       target,
-      details: { role: nextRole, previousRole: target.role },
+      details: {
+        role: nextRole,
+        previousRole: target.role,
+        ...(accessUntil ? { accessUntil: accessUntil.toDate().toISOString() } : {}),
+      },
     });
     if (aboutTarget) resolvePendingNotices(transaction, aboutTarget, now);
     // The person themself is told, wherever they are signed in (HO-1, HO-28): addressed
@@ -1179,8 +1215,8 @@ export const updateMemberPermissions = async (
 ): Promise<{ permissions: PermissionOverrides }> => {
   const requested = readOverrides(overrides);
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
-    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
+    const context = await loadActor(transaction, caller, householdId, now);
+    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid, now);
     // Who may edit whom comes first, so that refusal never depends on the payload.
     enforce(canEditPermissions(context.actor, target));
     if (expectedRole !== undefined && expectedRole !== target.role) {
@@ -1211,13 +1247,78 @@ export const updateMemberPermissions = async (
  * strictly below the actor; the owner can never be removed). Their open chores
  * and recurring templates become unassigned; completed chores keep their history.
  */
+/**
+ * The removal body for an account (not a kid profile or tablet pass), inside the caller's
+ * transaction: all reads first, then the record, contact, PIN and tablet state go, open
+ * chores and recurring templates are unassigned, stats are folded, the profile pointer
+ * is cleared and the activity entry is written by `audit`. Shared by `removeMember`
+ * and the guest-pass sweep (`expireGuestPasses`).
+ */
+const removeAccountInTransaction = async (
+  transaction: Tx,
+  context: ActorContext,
+  ref: DocRef,
+  target: StoredMember,
+  now: Date,
+  audit: (denied: boolean) => void,
+): Promise<{ denied: boolean }> => {
+  const profileRef = target.email ? adminDb.collection('users').doc(target.email) : null;
+  // Assigned by email (older records) or by uid. Chores: open ones only (HO-5, HO-22), so a
+  // long-standing member's history is neither read nor touched.
+  const openOnly = (name: string, query: FirebaseFirestore.Query) => name === 'chores' ? query.where('isCompleted', '==', false) : query;
+  const byEmail = (name: string) => target.email
+    ? transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToEmail', '==', target.email)))
+    : Promise.resolve(null);
+  const byUid = (name: string) => transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToUid', '==', target.uid)));
+  const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap, statsSnap, opsSnap] = await Promise.all([
+    profileRef ? transaction.get(profileRef) : Promise.resolve(null),
+    byEmail('chores'),
+    byUid('chores'),
+    byEmail('chore-templates'),
+    byUid('chore-templates'),
+    transaction.get(memberContactRef(context.householdRef, target.uid)),
+    transaction.get(context.householdRef.collection('stats')),
+    transaction.get(formerMembersRef(context.householdRef)),
+  ]);
+  const chores = assignedDocs(choresByEmail, choresByUid, target.email);
+  const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
+  const tabletState = await readMemberTabletState(transaction, context.householdRef, target.uid);
+  const denied = target.role === 'newuser';
+  const aboutTarget = denied ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
+
+  const iso = now.toISOString();
+  transaction.delete(ref);
+  transaction.delete(memberContactRef(context.householdRef, target.uid));
+  memberPinRefs(context.householdRef, target.uid).forEach(pinRef => transaction.delete(pinRef));
+  tabletState.forEach(stateRef => transaction.delete(stateRef));
+  // The email upkeep credited them by: the contact document's, else the record's.
+  const departingEmail = contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email;
+  if (!denied) {
+    foldDepartingStatsKey(transaction, statsSnap, target.uid, departingEmail);
+    recordDepartedIdentity(transaction, context.householdRef, opsSnap, target.uid, departingEmail, now);
+  }
+  transaction.update(context.householdRef, {
+    ...legacyMemberEmailRemoval(context.household, target.email),
+    updatedAt: iso,
+  });
+  // Only a profile that still points here is cleared.
+  if (profileRef && profileSnap?.exists && profileSnap.data()?.householdId === context.householdRef.id) {
+    setProfileCache(transaction, target.email, { householdId: null, role: 'member', permissions: {} });
+  }
+  chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
+  templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
+  audit(denied);
+  if (aboutTarget) resolvePendingNotices(transaction, aboutTarget, now);
+  return { denied };
+};
+
 export const removeMember = async (caller: VerifiedCaller, householdId: string, targetUid: string, now = new Date()): Promise<{ denied: boolean }> => {
   let removedIdentity: string | null = null;
   const result = await adminDb.runTransaction(async transaction => {
     removedIdentity = null;
-    const context = await loadActor(transaction, caller, householdId);
-    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
-    // A kid profile is removed by the kid-profile body, with its authority (owner or admin role).
+    const context = await loadActor(transaction, caller, householdId, now);
+    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid, now);
+    // A kid profile or tablet guest pass is removed by the identity body, with its authority (owner or admin role).
     if (target.kind === 'identity') {
       requireIdentityManager(context.actor);
       await removeIdentityInTransaction(transaction, context.householdRef, target, {
@@ -1227,61 +1328,65 @@ export const removeMember = async (caller: VerifiedCaller, householdId: string, 
       return { denied: false };
     }
     enforce(canManageMember(context.actor, target));
-    const profileRef = target.email ? adminDb.collection('users').doc(target.email) : null;
-    // Assigned by email (older records) or by uid. Chores: open ones only (HO-5, HO-22), so a
-    // long-standing member's history is neither read nor touched.
-    const openOnly = (name: string, query: FirebaseFirestore.Query) => name === 'chores' ? query.where('isCompleted', '==', false) : query;
-    const byEmail = (name: string) => target.email
-      ? transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToEmail', '==', target.email)))
-      : Promise.resolve(null);
-    const byUid = (name: string) => transaction.get(openOnly(name, context.householdRef.collection(name).where('assignedToUid', '==', target.uid)));
-    const [profileSnap, choresByEmail, choresByUid, templatesByEmail, templatesByUid, contactSnap, statsSnap, opsSnap] = await Promise.all([
-      profileRef ? transaction.get(profileRef) : Promise.resolve(null),
-      byEmail('chores'),
-      byUid('chores'),
-      byEmail('chore-templates'),
-      byUid('chore-templates'),
-      transaction.get(memberContactRef(context.householdRef, target.uid)),
-      transaction.get(context.householdRef.collection('stats')),
-      transaction.get(formerMembersRef(context.householdRef)),
-    ]);
-    const chores = assignedDocs(choresByEmail, choresByUid, target.email);
-    const templates = assignedDocs(templatesByEmail, templatesByUid, target.email);
-    const tabletState = await readMemberTabletState(transaction, context.householdRef, target.uid);
-    const denied = target.role === 'newuser';
-    const aboutTarget = denied ? await readPendingNotices(transaction, context.householdRef, target.uid) : null;
-
-    const iso = now.toISOString();
-    transaction.delete(ref);
-    transaction.delete(memberContactRef(context.householdRef, target.uid));
-    memberPinRefs(context.householdRef, target.uid).forEach(pinRef => transaction.delete(pinRef));
-    tabletState.forEach(stateRef => transaction.delete(stateRef));
-    // The email upkeep credited them by: the contact document's, else the record's.
-    const departingEmail = contactEmailOf(contactSnap.exists ? contactSnap.data() : undefined) || target.email;
-    if (!denied) {
-      foldDepartingStatsKey(transaction, statsSnap, target.uid, departingEmail);
-      recordDepartedIdentity(transaction, context.householdRef, opsSnap, target.uid, departingEmail, now);
-    }
-    transaction.update(context.householdRef, {
-      ...legacyMemberEmailRemoval(context.household, target.email),
-      updatedAt: iso,
-    });
-    // Only a profile that still points here is cleared.
-    if (profileRef && profileSnap?.exists && profileSnap.data()?.householdId === context.householdRef.id) {
-      setProfileCache(transaction, target.email, { householdId: null, role: 'member', permissions: {} });
-    }
-    chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
-    templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
-    writeAudit(transaction, context, caller, now, {
+    return removeAccountInTransaction(transaction, context, ref, target, now, denied => writeAudit(transaction, context, caller, now, {
       action: 'member.removed',
       target,
       ...(denied ? { details: { pending: true } } : {}),
-    });
-    if (aboutTarget) resolvePendingNotices(transaction, aboutTarget, now);
-    return { denied };
+    }));
   });
   if (removedIdentity) await deleteIdentityAvatarFiles(householdId, removedIdentity);
   return result;
+};
+
+/**
+ * Removes every guest pass that has ended (HO-14, HO-24): account passes through the
+ * account removal body, tablet passes through the identity body, each in its own
+ * transaction that re-reads the record and removes it only if its pass has still ended
+ * (a pass extended or promoted meanwhile is kept). Logged as `member.guest_pass_ended`
+ * with no person as the actor ("HomeHub"). Any approved member may trigger it: it only
+ * does what time already decided, and the rules and server refuse an ended pass anyway.
+ */
+export const expireGuestPasses = async (caller: VerifiedCaller, householdId: string, now = new Date()): Promise<{ count: number }> => {
+  const id = requireId(householdId, 'That household no longer exists.');
+  const householdRef = adminDb.collection('households').doc(id);
+  const callerSnap = await householdRef.collection('members').doc(caller.uid).get();
+  const callerMember = toStoredMember(callerSnap, null, now);
+  if (!callerMember || callerMember.status !== 'active' || callerMember.role === 'newuser') {
+    throw new MembershipError('You are not part of this household.', 'not_member');
+  }
+  const candidates = await householdRef.collection('members').where('accessUntil', '<=', Timestamp.fromDate(now)).get();
+  let count = 0;
+  for (const candidate of candidates.docs) {
+    const removed = await adminDb.runTransaction(async transaction => {
+      const householdSnap = await transaction.get(householdRef);
+      if (!householdSnap.exists || householdSnap.get('deletingAt')) return false;
+      const [snap, contactSnap] = await Promise.all([transaction.get(candidate.ref), transaction.get(memberContactRef(householdRef, candidate.id))]);
+      if (!snap.exists || !guestPassEnded(snap.data(), now.getTime())) return false;
+      const target = toStoredMember(snap, contactSnap, now)!;
+      const context: ActorContext = { householdRef, household: householdSnap.data() || {}, actor: callerMember };
+      const until = accessUntilMs(snap.get('accessUntil'));
+      const auditEntry = () => transaction.set(householdRef.collection('auditLogs').doc(), {
+        actorUid: null,
+        actorEmail: null,
+        actorName: null,
+        action: 'member.guest_pass_ended',
+        targetUid: target.uid,
+        targetEmail: target.email || null,
+        targetName: target.displayName || null,
+        createdAt: now.toISOString(),
+        details: { accessUntil: until === null ? null : new Date(until).toISOString(), tablet: target.kind === 'identity' },
+      });
+      if (target.kind === 'identity') {
+        await removeIdentityInTransaction(transaction, householdRef, target, { uid: '', name: null }, now, { silent: true });
+        auditEntry();
+        return true;
+      }
+      await removeAccountInTransaction(transaction, context, candidate.ref, target, now, auditEntry);
+      return true;
+    });
+    if (removed) count += 1;
+  }
+  return { count };
 };
 
 // ---------------------------------------------------------------------------
@@ -1312,6 +1417,8 @@ export const removeIdentityInTransaction = async (
   target: { uid: string; displayName?: string },
   actor: { uid: string; name: string | null },
   now: Date,
+  // The guest-pass sweep writes its own activity entry (member.guest_pass_ended).
+  options: { silent?: boolean } = {},
 ) => {
   const [chores, templates, tabletState] = await Promise.all([
     transaction.get(householdRef.collection('chores').where('assignedToUid', '==', target.uid).where('isCompleted', '==', false)),
@@ -1324,8 +1431,9 @@ export const removeIdentityInTransaction = async (
   chores.docs.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
   templates.docs.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
   transaction.update(householdRef, { updatedAt: now.toISOString() });
+  if (options.silent) return;
   writeDeviceAudit(transaction, householdRef, {
-    action: 'child.removed', actorUid: actor.uid, actorName: actor.name, via: 'members',
+    action: isGuestIdentityUid(target.uid) ? 'guest.removed' : 'child.removed', actorUid: actor.uid, actorName: actor.name, via: 'members',
     targetUid: target.uid, targetName: target.displayName ?? null,
   }, now);
 };
@@ -1345,8 +1453,8 @@ export const deleteIdentityAvatarFiles = async (householdId: string, uid: string
  */
 export const transferOwnership = async (caller: VerifiedCaller, householdId: string, targetUid: string, now = new Date()): Promise<{ ownerUid: string }> => {
   return adminDb.runTransaction(async transaction => {
-    const context = await loadActor(transaction, caller, householdId);
-    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid);
+    const context = await loadActor(transaction, caller, householdId, now);
+    const { ref, target } = await loadTarget(transaction, context.householdRef, targetUid, now);
     enforce(canTransferOwnership(context.actor, target));
     const [cacheTarget, cacheCaller] = await Promise.all([
       profileCachedHere(transaction, target.email, context.householdRef.id),

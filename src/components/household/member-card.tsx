@@ -18,6 +18,7 @@ import type { MemberColor } from '@/lib/member-colors';
 import type { HouseholdMember, HouseholdRole } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { customizedPermissions, memberName, relativeTime, roleLabel, type MemberChoreStats } from './household-model';
+import { accessUntilMs, passUntilText } from '@/lib/guest-pass';
 import type { MemberTabletAction, MemberTabletActions } from './member-tablet-controls';
 
 const TABLET_ACTION_LABELS: Record<MemberTabletAction, string> = {
@@ -59,6 +60,8 @@ export function MemberCard({
   onRemove,
   tablet,
   onTablet,
+  nowMs = 0,
+  timeZone,
 }: {
   member: HouseholdMember;
   color: MemberColor;
@@ -76,10 +79,15 @@ export function MemberCard({
   /** Wall-tablet controls (kid profiles, tablet PINs); only with the devices flag on. */
   tablet?: MemberTabletActions;
   onTablet?: (member: HouseholdMember, action: MemberTabletAction) => void;
+  /** The page's clock (for the guest-pass chip). */
+  nowMs?: number;
+  timeZone?: string;
 }) {
   const name = memberName(member);
   const isKid = member.kind === 'identity';
   const customized = showCustom ? customizedPermissions(member.role, member.permissions).length : 0;
+  // A guest pass (HO-14, WT-21): when it ends, in the household's time zone.
+  const passUntil = accessUntilMs(member.accessUntil);
   const joined = relativeTime(member.joinedAt);
   const hasMenu = memberActionCount(actions, tablet) > 0;
   const tabletActions = onTablet ? tablet?.actions ?? [] : [];
@@ -108,6 +116,11 @@ export function MemberCard({
             ) : tablet?.hasPin ? (
               <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">Tablet PIN set</span>
             ) : null}
+            {passUntil !== null && (
+              <span className="rounded-full border border-warning/60 px-2 py-0.5 text-xs" data-testid="guest-pass-chip">
+                {passUntil > nowMs ? `Guest pass ${passUntilText(passUntil, nowMs, timeZone)}` : 'Guest pass ended'}
+              </span>
+            )}
             {customized > 0 && (
               <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
                 {customized} custom {customized === 1 ? 'permission' : 'permissions'}

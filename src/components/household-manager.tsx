@@ -19,6 +19,7 @@ import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { deletionNameField, deletionNameSuggestion, finishDeletingError, finishDeletingName } from '@/lib/auth/live-membership';
 import { HOUSEHOLD_NAME_MAX, formatInviteInput, householdNameError, inviteCodeError } from '@/components/household/household-model';
 import { JOIN_CODE_EVENT, forgetJoinCode, pendingJoinCode } from '@/lib/invite-link';
+import { accessUntilMs, guestPassEnded } from '@/lib/guest-pass';
 import {
   Card,
   CardContent,
@@ -336,6 +337,16 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   }
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
+  // Re-render when a guest pass ends (no snapshot arrives when time passes).
+  const passUntil = accessUntilMs(currentMember?.accessUntil);
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (passUntil === null) return;
+    const wait = Math.max(0, passUntil - Date.now() + 250);
+    const timer = window.setTimeout(() => setClock(Date.now()), Math.min(wait, 2 ** 31 - 1));
+    return () => window.clearTimeout(timer);
+  }, [passUntil]);
+  const passEnded = Boolean(currentMember && currentMember.status === 'active' && guestPassEnded(currentMember, clock));
 
   // Access ended while this page was open (or since the last visit): the household's
   // data is already gone from this device. Explain it once, then onboarding.
@@ -362,6 +373,35 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
             >
               Continue
             </Button>
+            <Button variant="link" className="text-primary" onClick={logout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign Out
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  // A guest pass that has ended (HO-14): the rules already refuse everything; say so,
+  // and let the person leave (the household's sweep removes the record anyway).
+  if (currentUser && passEnded && currentMember) {
+    return (
+      <Dialog open={true} onOpenChange={() => {}}>
+        <DialogContent
+          className="max-w-md"
+          onInteractOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          hideClose
+        >
+          <DialogHeader>
+            <DialogTitle className="font-headline text-2xl text-center">Your guest pass has ended</DialogTitle>
+            <DialogDescription className="text-center text-base">
+              {`Your access to ${household?.name || 'this household'} was time-limited and has run out. Ask an owner or admin if you need another pass.`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 pt-2">
+            <Button onClick={() => { void leaveHousehold(); }}>Continue</Button>
             <Button variant="link" className="text-primary" onClick={logout}>
               <LogOut className="mr-2 h-4 w-4" />
               Sign Out

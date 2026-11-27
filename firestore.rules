@@ -98,9 +98,17 @@ service cloud.firestore {
       return get(memberPath(householdId, request.auth.uid)).data;
     }
 
+    // A guest pass (HO-14, src/lib/guest-pass.ts) ends at `accessUntil`, a timestamp the
+    // server writes; from then on the record grants nothing, before any sweep removes it.
     function isApprovedMemberData(member) {
       return member.role in ['owner', 'admin', 'member', 'child', 'guest'] &&
-        member.get('status', 'active') == 'active';
+        member.get('status', 'active') == 'active' &&
+        guestPassCurrent(member);
+    }
+
+    function guestPassCurrent(member) {
+      return member.get('accessUntil', null) == null ||
+        (member.accessUntil is timestamp && member.accessUntil > request.time);
     }
 
     function isApprovedMember(householdId) {

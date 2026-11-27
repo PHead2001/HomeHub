@@ -6,6 +6,7 @@ import {
   createHousehold,
   createInvite,
   deleteHousehold,
+  expireGuestPasses,
   leaveHousehold,
   redeemInvite,
   remindPendingMembers,
@@ -105,8 +106,22 @@ export async function updateHouseholdTimeZoneAction(input: { idToken: string; ho
   return manage(input?.idToken, caller => updateHouseholdTimeZone(caller, input.householdId, input.timeZone));
 }
 
-export async function createInviteAction(input: { idToken: string; householdId: string; suggestedRole?: HouseholdRole | null }): Promise<HouseholdActionResult<InviteCode>> {
-  return manage(input?.idToken, caller => createInvite(caller, input.householdId, new Date(), { suggestedRole: input?.suggestedRole }));
+export async function createInviteAction(input: {
+  idToken: string;
+  householdId: string;
+  suggestedRole?: HouseholdRole | null;
+  /** A guest pass (HO-14): 4, 24 or 168 hours from approval as Guest. */
+  guestPassHours?: number | null;
+}): Promise<HouseholdActionResult<InviteCode>> {
+  return manage(input?.idToken, caller => createInvite(caller, input.householdId, new Date(), {
+    suggestedRole: input?.suggestedRole,
+    guestPassHours: input?.guestPassHours,
+  }));
+}
+
+/** Removes guest passes that have ended (HO-14); any approved member may trigger it. */
+export async function expireGuestPassesAction(input: { idToken: string; householdId: string }): Promise<HouseholdActionResult<{ count: number }>> {
+  return manage(input?.idToken, caller => expireGuestPasses(caller, input.householdId));
 }
 
 export async function revokeInviteAction(input: { idToken: string; householdId: string; code: string }): Promise<HouseholdActionResult<{ code: string }>> {

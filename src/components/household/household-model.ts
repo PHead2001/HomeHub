@@ -356,6 +356,9 @@ const AUDIT_LABELS: Record<string, string> = {
   'member.removed': 'Removed a member',
   'member.left': 'Left the household',
   'member.request_cancelled': 'Cancelled a request to join',
+  'member.guest_pass_ended': 'Guest pass ended; access removed',
+  'guest.created': 'Added a tablet guest pass',
+  'guest.removed': 'Removed a tablet guest pass',
   'ownership.transferred': 'Transferred ownership',
   'device.code_created': 'Created a wall-tablet code',
   'device.repair_code_created': 'Created a code to re-pair a wall tablet',
@@ -424,7 +427,8 @@ export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): 
     if (parts.length > 0) return `Customized permissions: ${parts.join('; ')}`;
   }
   if (log.action === 'member.approved' && typeof details.role === 'string') {
-    return `Approved a member as ${roleLabel(details.role as HouseholdRole)}`;
+    const pass = typeof details.accessUntil === 'string' && details.accessUntil ? ' with a guest pass' : '';
+    return `Approved a member as ${roleLabel(details.role as HouseholdRole)}${pass}`;
   }
   if (log.action === 'member.removed' && details.pending === true) return 'Denied a request to join';
   if (log.action === 'pet.deleted' && typeof details.petName === 'string' && details.petName.trim()) return `Deleted the pet ${details.petName.trim()}`;
