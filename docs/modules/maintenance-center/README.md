@@ -37,6 +37,7 @@ This module owns home assets, vehicles, maintenance logs, embedded service sched
 ## Entry Points
 
 - `src/app/maintenance/page.tsx`
+- `src/app/maintenance/error.tsx` (SL-1: the Maintenance route error boundary; a crash replaces only the Maintenance view with "Maintenance ran into a problem", "Services, logs and reminders already saved are safe.", **Try again** and **Go home**, using the shared crash recovery: one automatic reload for a stale build, a repeated crash stays manual with its time)
 - `src/app/maintenance/actions.ts` (server actions: complete, snooze, renew a registration or inspection, their Undo, saving logs, assets and vehicles, Update mileage and its Undo, deleting a record with its files, removing an orphaned upload)
 - `src/lib/server/maintenance-delete.ts` (binds `functions/src/shared/maintenance-delete.ts`, the resumable delete cascade shared with the hourly upkeep), `src/lib/server/maintenance-files.ts` (orphaned-upload cleanup), `src/lib/server/maintenance-summary.ts` (stored AI summaries)
 - `src/ai/flows/read-receipt-flow.ts` and `src/ai/tasks/read-receipt.ts` (the receipt reader, MA-30)
