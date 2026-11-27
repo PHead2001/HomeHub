@@ -199,6 +199,8 @@ const ACTION_WORDS: Partial<Record<DeviceCapability, string>> = {
   'maintenance.complete': 'mark maintenance done',
   'maintenance.log': 'log maintenance',
   'maintenance.snooze': 'snooze maintenance',
+  'shopping.add': 'add shopping items',
+  'shopping.tick': 'tick shopping items',
 };
 
 /** The one plain notice for dropped entries ("1 change from this tablet couldn't be saved: …"). */

@@ -282,7 +282,7 @@ export function BentoGrid({
   timeZone?: string;
   onRetry?: () => void;
 }) {
-  const { permissions } = useDashboardScope();
+  const { permissions, kind: scopeKind } = useDashboardScope();
   const liveChoreIds = facts.chores && sections.chores && sections.chores.status !== 'loading'
     ? (facts.chores.todayWork ?? []).map((chore) => chore.id)
     : undefined;
@@ -375,7 +375,8 @@ export function BentoGrid({
         icon={ShoppingCart}
         testId="dashboard-tile-shopping"
         hint={hint('shopping')}
-        quickAdd={permissions['shopping.edit'] ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
+        // A wall tablet adds from its Shopping view (kitchen mode) and its Add button, never the palette.
+        quickAdd={permissions['shopping.edit'] && scopeKind !== 'device' ? { shortcut: 'add-item', label: 'Add a shopping item' } : undefined}
         details={shopping.lists.map((list) => ({ key: list.id, label: list.name, value: String(list.needed) }))}
         // HP-36a/HP-33c: the needed items with a tick replace the inline list rows.
         inlineDetails={list.rows.length > 0 ? [] : undefined}

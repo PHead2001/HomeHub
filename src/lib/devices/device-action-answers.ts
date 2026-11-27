@@ -22,6 +22,9 @@ export const UNDO_CAPABILITY_OF: Partial<Record<DeviceCapability, DeviceCapabili
   'maintenance.complete': 'maintenance.complete.undo',
   'maintenance.log': 'maintenance.log.undo',
   'maintenance.snooze': 'maintenance.snooze.undo',
+  // Shopping: adding items and ticking one.
+  'shopping.add': 'shopping.add.undo',
+  'shopping.tick': 'shopping.tick.undo',
 };
 
 /**
@@ -39,7 +42,27 @@ export const SENDABLE_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<Devi
   // Maintenance (M8b): face actions with their Undo, and the PIN-level schedule edit and deletes.
   'maintenance.complete', 'maintenance.complete.undo', 'maintenance.log', 'maintenance.log.undo', 'maintenance.snooze', 'maintenance.snooze.undo',
   'maintenance.editSchedules', 'maintenance.log.delete', 'maintenance.record.delete',
+  // Shopping: add and tick with their Undo (face).
+  'shopping.add', 'shopping.add.undo', 'shopping.tick', 'shopping.tick.undo',
 ]);
+
+/** Plain words for a shopping answer that changed nothing (also the queue's drop notice). */
+const shoppingNoop = (capability: DeviceCapability, result: Record<string, unknown>): string => {
+  if (result.status === 'already') {
+    const by = publicDisplayName(str(result.byName), '');
+    return by ? `Already in the cart: ${by} ticked it.` : 'Already in the cart.';
+  }
+  if (result.status === 'gone') return capability === 'shopping.add' ? 'That list was removed meanwhile.' : 'That item was removed meanwhile.';
+  return "Couldn't save. Try again.";
+};
+
+/** "Milk", "Milk and Eggs", "Milk, Eggs and 2 more". */
+export function addedNames(items: ReadonlyArray<{ name?: unknown }>): string {
+  const names = items.map((item) => str(item.name)).filter(Boolean);
+  if (names.length <= 1) return names[0] ?? 'Items';
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more`;
+}
 
 /** The PIN-level maintenance actions (M8a): no Undo of their own. */
 export const MAINTENANCE_PIN_CAPABILITIES: ReadonlySet<DeviceCapability> = new Set<DeviceCapability>([
@@ -248,6 +271,16 @@ export function choreAnswerMeaning(capability: DeviceCapability, data: unknown, 
     if (result.status === 'already') return { undoable: false, notice: true, message: 'That was removed meanwhile.' };
     return { undoable: false, notice: true, message: maintenanceNoop(result) };
   }
+  if (capability === 'shopping.add') {
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'added') return { undoable: true, message: `${addedNames(Array.isArray(result.items) ? result.items as Array<{ name?: unknown }> : [])} added.` };
+    return { undoable: false, notice: true, message: shoppingNoop(capability, result) };
+  }
+  if (capability === 'shopping.tick') {
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'ticked') return { undoable: true, message: `${label} is in the cart.` };
+    return { undoable: false, notice: true, message: shoppingNoop(capability, result) };
+  }
   if (capability === 'chores.complete') {
     const outcome = (value.outcome ?? {}) as Record<string, unknown>;
     if (outcome.status === 'completed') return { undoable: true, message: `${label}: done.` };
@@ -321,6 +354,16 @@ export function queuedSendResult(capability: DeviceCapability, answer: { ok: tru
   }
   if (capability === 'maintenance.complete.undo' || capability === 'maintenance.log.undo' || capability === 'maintenance.snooze.undo') {
     return MAINTENANCE_UNDONE.includes(str(value.status)) ? { ok: true } : { ok: false, code: 'changed_since' };
+  }
+  if (capability === 'shopping.add' || capability === 'shopping.tick') {
+    // A queued tick someone else made first, or an item or list removed meanwhile: dropped with a notice that says why.
+    const result = (value.result ?? {}) as Record<string, unknown>;
+    if (result.status === 'added' || result.status === 'ticked') return { ok: true };
+    const why = shoppingNoop(capability, result);
+    return { ok: false, code: result.status === 'already' ? 'conflict' : 'invalid_input', reason: `${why.charAt(0).toLowerCase()}${why.slice(1)}` };
+  }
+  if (capability === 'shopping.add.undo' || capability === 'shopping.tick.undo') {
+    return ['undone', 'already', 'not_applied'].includes(str(value.status)) ? { ok: true } : { ok: false, code: 'changed_since' };
   }
   if (capability === 'chores.complete.undo' || capability === 'chores.take.undo' || capability === 'pets.feed.undo' || capability === 'pets.care.undo'
     || capability === 'pets.dose.undo' || capability === 'pets.note.undo' || capability === 'pets.weight.undo') {

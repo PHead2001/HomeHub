@@ -44,15 +44,17 @@ export const weatherFromRecord = (display: DeviceSettings['display']): { enabled
 });
 
 /**
- * What the tablet's views offer, from the record's sections: viewing, and Done on chores
- * (sent as a device action; the server decides for the person chosen in "Who's here?").
- * Nothing else is offered as writable (Pets follow in F4b).
+ * What the tablet's views offer, from the record's sections: viewing, Done on chores and
+ * ticking shopping items (the dashboard tile's Tick; each sent as a device action, the server
+ * decides for the person chosen in "Who's here?"). Pets and maintenance offer their actions
+ * through the device runtime without a permission here; nothing else is offered as writable.
  */
 export function devicePermissions(sections: DeviceSettings['sections']): Record<HouseholdPermission, boolean> {
   const permissions = Object.fromEntries(householdPermissions.map((permission) => [permission, false])) as Record<HouseholdPermission, boolean>;
   permissions['chores.view'] = sections.chores;
   permissions['chores.complete'] = sections.chores;
   permissions['shopping.view'] = sections.shopping;
+  permissions['shopping.edit'] = sections.shopping;
   permissions['pets.view'] = sections.pets;
   permissions['maintenance.view'] = sections.maintenance;
   return permissions;

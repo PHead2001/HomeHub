@@ -105,8 +105,11 @@ describe('policy table', () => {
     }
   });
 
-  it('shopping, AI, household admin and automation are not on tablets; personal things never', () => {
+  it('AI, household admin, automation and the rest of shopping are not on tablets; personal things never', () => {
+    // Shopping add and tick (and their Undo) are face* actions; every other shopping write stays off tablets.
+    const shoppingOnTablets = new Set(['shopping.add', 'shopping.add.undo', 'shopping.tick', 'shopping.tick.undo']);
     for (const capability of DEVICE_CAPABILITIES) {
+      if (shoppingOnTablets.has(capability)) continue;
       if (/^(shopping|ai|household|automation)\./.test(capability)) assert.equal(policy(capability).levelClass, 'not_on_tablets', capability);
     }
     for (const capability of ['profile.edit', 'push.register', 'notifications.targeted', 'reminders.personal'] as const) {
@@ -129,12 +132,13 @@ describe('policy table', () => {
     assert.equal(isDeviceCapability(undefined), false);
   });
 
-  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care, F4b-2 doses, notes and weights, M8a maintenance Done, Log service and Snooze)', () => {
+  it('UNDO_PROVEN holds exactly the capabilities whose 10.4 proof is recorded (F4a chores, F4b-1 pets feeding and care, F4b-2 doses, notes and weights, M8a maintenance Done, Log service and Snooze, shopping add and tick)', () => {
     assert.deepEqual([...UNDO_PROVEN].sort(), [
       'chores.complete', 'chores.complete.undo', 'chores.take', 'chores.take.undo',
       'maintenance.complete', 'maintenance.complete.undo', 'maintenance.log', 'maintenance.log.undo', 'maintenance.snooze', 'maintenance.snooze.undo',
       'pets.care.add', 'pets.care.undo', 'pets.dose.give', 'pets.dose.undo', 'pets.feed', 'pets.feed.backdated', 'pets.feed.undo',
       'pets.note.add', 'pets.note.undo', 'pets.weight.add', 'pets.weight.undo',
+      'shopping.add', 'shopping.add.undo', 'shopping.tick', 'shopping.tick.undo',
     ]);
   });
 
@@ -181,6 +185,8 @@ describe('Undo targets (Codex P2: explicit map, no prefix matching)', () => {
     'maintenance.complete.undo': ['maintenance.complete'],
     'maintenance.log.undo': ['maintenance.log'],
     'maintenance.snooze.undo': ['maintenance.snooze'],
+    'shopping.add.undo': ['shopping.add'],
+    'shopping.tick.undo': ['shopping.tick'],
   };
 
   it('every Undo capability has an explicit list of the actions it reverses, and nothing else is a key', () => {
@@ -223,7 +229,8 @@ describe('required level', () => {
     assert.equal(requiredLevel('pets.pet.delete', adult, proven), 'pin');
     assert.equal(requiredLevel('device.settings', adult), 'admin-pin');
     assert.equal(requiredLevel('device.comfort', adult), 'device');
-    assert.equal(requiredLevel('shopping.add', adult), 'not_on_tablets');
+    assert.equal(requiredLevel('shopping.add', adult), 'face');
+    assert.equal(requiredLevel('shopping.remove', adult), 'not_on_tablets');
     assert.equal(requiredLevel('profile.edit', adult), 'never');
   });
 

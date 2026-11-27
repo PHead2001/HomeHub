@@ -804,6 +804,16 @@ service cloud.firestore {
         request.resource.data.get('restoredByUid', null) == resource.data.get('restoredByUid', null);
     }
 
+    // A wall tablet's stamps on an item (docs/modules/devices/README.md, section 12):
+    // `deviceAttribution` on an item a tablet added and `purchaseDeviceAttribution` on one it
+    // ticked (bound to that tick's purchaseOpId) are written only by the server's device
+    // actions. No personal client may add them (validShoppingItemFields leaves them out),
+    // change them or remove them.
+    function shoppingDeviceStampsKept() {
+      return deviceAttributionKept() &&
+        request.resource.data.get('purchaseDeviceAttribution', null) == resource.data.get('purchaseDeviceAttribution', null);
+    }
+
     // list: the categories as older clients write them (rewritten whole). ordered:
     // the categories in aisle order, added and removed with arrayUnion/arrayRemove
     // and reordered in a transaction; checked after the transform is applied.
@@ -2100,7 +2110,8 @@ service cloud.firestore {
             shoppingListExists(householdId, listId) &&
             validShoppingItemFields(request.resource.data, writtenKeys()) &&
             validShoppingItemStamps(request.resource.data, writtenKeys()) &&
-            shoppingAdderUnchanged();
+            shoppingAdderUnchanged() &&
+            shoppingDeviceStampsKept();
           allow delete: if hasHouseholdPermission(householdId, 'shopping.delete');
         }
 

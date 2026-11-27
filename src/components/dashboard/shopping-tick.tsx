@@ -12,8 +12,13 @@
  * too), so a ticked row leaves the tile by itself; a failed tick comes back with Retry.
  * Focus after a keyboard tick (SH-26a) is the dashboard's shared rule for one-tap
  * actions (`ActionButton` and `focus-after-action.ts`).
+ *
+ * On a registered wall tablet (HP-33, HP-36) Tick is the device action `shopping.tick` for
+ * the person chosen in "Who's here?": the server records them as the buyer with the tablet,
+ * and the tablet's runtime shows the result and its Undo (docs/modules/devices/README.md).
  */
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useContext, useEffect, useRef } from 'react';
+import { TabletContext } from '@/components/devices/tablet-context';
 import Link from 'next/link';
 import { ToastAction } from '@/components/ui/toast';
 import { useAuth } from '@/hooks/use-auth';
@@ -45,6 +50,7 @@ export function useShoppingTick(liveKeys?: readonly string[]) {
   const liveKey = liveKeys?.join('|');
   const householdId = currentUser?.householdId ?? null;
   const uid = currentUser?.uid ?? null;
+  const tablet = useContext(TabletContext);
 
   useEffect(() => {
     live.current = new Set(liveKeys ?? []);
@@ -69,6 +75,28 @@ export function useShoppingTick(liveKeys?: readonly string[]) {
 
   const tick = useCallback(async (item: ShoppingTileItem) => {
     const key = shoppingRowKey(item);
+    if (tablet) {
+      // A wall tablet has no signed-in person: the device action credits the chosen face.
+      if (busy.current.has(key)) return;
+      if (!live.current.has(key)) {
+        set(key, null);
+        toast({ title: 'Already changed', description: `${item.name} was ticked or removed on another device.` });
+        return;
+      }
+      busy.current.add(key);
+      set(key, 'saving');
+      try {
+        // Undone later (or a queued tick dropped at sync): the row's Tick works again.
+        const result = await tablet.runAction({ capability: 'shopping.tick', label: item.name, intent: { listId: item.listId, itemId: item.id }, onReverted: () => set(key, null) });
+        if (result.ok) {
+          playFeedback('complete');
+          settle(key);
+        } else set(key, null);
+      } finally {
+        busy.current.delete(key);
+      }
+      return;
+    }
     if (!householdId || !uid || busy.current.has(key)) return;
     // The live list lists needed items only: a row no longer in it was ticked or removed elsewhere.
     const started = tickShoppingItem(shoppingTickIO, {
@@ -113,7 +141,7 @@ export function useShoppingTick(liveKeys?: readonly string[]) {
     } finally {
       busy.current.delete(key);
     }
-  }, [householdId, uid, set, settle, toast, undo]);
+  }, [householdId, uid, set, settle, toast, undo, tablet]);
 
   return { states, tick };
 }
