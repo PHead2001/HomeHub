@@ -30,5 +30,8 @@ describe('the pinned message on a wall tablet', () => {
     assert.equal(pinnedAnnouncement(list, now)?.id, 'new');
     assert.equal(pinnedAnnouncement(list, Date.parse('2026-11-13T19:30:00Z'))?.id, 'old', 'an expired one unpins while the screen stays on');
     assert.equal(pinnedAnnouncement([list[2]], now), null);
+    // A member may create a household-wide pets or chores notice with any sourceType; it never pins.
+    const spoof = notice('spoof', { category: 'pets', sourceType: 'house-announcement', message: 'Fake', createdAt: '2026-11-13T17:59:00Z' });
+    assert.equal(pinnedAnnouncement([...list, spoof], now)?.id, 'new');
   });
 });

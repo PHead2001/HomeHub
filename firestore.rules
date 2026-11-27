@@ -233,11 +233,29 @@ service cloud.firestore {
         );
     }
 
+    // NO-24: the member's own push preferences (functions/src/shared/push-prefs.ts).
+    function validPushTime(value) {
+      return value is string && value.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$');
+    }
+
+    function validPushPrefs(prefs) {
+      return prefs is map && prefs.keys().hasOnly(['mutedCategories', 'quietHours']) &&
+        (!('mutedCategories' in prefs) || (prefs.mutedCategories is list && prefs.mutedCategories.size() <= 7 &&
+          prefs.mutedCategories.hasOnly(['chores', 'pets', 'shopping', 'maintenance', 'automation', 'system', 'general']))) &&
+        (!('quietHours' in prefs) || prefs.quietHours == null ||
+          (prefs.quietHours is map && prefs.quietHours.keys().hasOnly(['start', 'end']) &&
+            validPushTime(prefs.quietHours.start) && validPushTime(prefs.quietHours.end) &&
+            prefs.quietHours.start != prefs.quietHours.end));
+    }
+
     // updatedAt, when written, is the server time; an update may leave it as is.
+    // NO-26: `devices` describes each token's device (label, last seen) for "My devices".
     function validPushTokenDoc(data, previous) {
-      return data.keys().hasOnly(['fcmTokens', 'updatedAt']) &&
+      return data.keys().hasOnly(['fcmTokens', 'updatedAt', 'prefs', 'devices']) &&
         data.fcmTokens is list &&
         data.fcmTokens.size() <= 20 &&
+        (!('prefs' in data) || validPushPrefs(data.prefs)) &&
+        (!('devices' in data) || (data.devices is map && data.devices.size() <= 20)) &&
         (
           !('updatedAt' in data) ||
           data.updatedAt == request.time ||

@@ -85,6 +85,21 @@ export async function GET() {
       const withId = safePushLink(pushOpenLink(base, id));
       return withId === '/' && base !== '/' ? base : withId;
     };
+    // NO-23: action buttons from the server, re-checked: a short id, a short title, and an
+    // in-app link (with the notification's ID). At most two. The worker never writes.
+    const pushActions = (raw, id) => {
+      let list = [];
+      try {
+        list = JSON.parse(typeof raw === 'string' ? raw : '[]');
+      } catch (error) {
+        return [];
+      }
+      if (!Array.isArray(list)) return [];
+      return list.filter((entry) => entry && typeof entry.action === 'string' && /^[a-z]{1,20}$/.test(entry.action)
+        && typeof entry.title === 'string' && entry.title.length > 0 && entry.title.length <= 30)
+        .slice(0, 2)
+        .map((entry) => ({ action: entry.action, title: entry.title, link: openLinkFor(entry.link, id) }));
+    };
     // NO-27: the app icon's badge counts HomeHub's notifications in the tray while
     // the app is closed; an open page sets the exact unread count itself.
     const updateBadge = async () => {
@@ -136,6 +151,11 @@ export async function GET() {
           const image = safePushImage(notification.image);
           if (image) notificationOptions.image = image;
           if (typeof data.tag === 'string' && data.tag) notificationOptions.tag = data.tag;
+          const actions = pushActions(data.actions, data.tag);
+          if (actions.length > 0) {
+            notificationOptions.actions = actions.map((entry) => ({ action: entry.action, title: entry.title }));
+            notificationOptions.data.actions = Object.fromEntries(actions.map((entry) => [entry.action, entry.link]));
+          }
 
           return self.registration.showNotification(notificationTitle, notificationOptions).then(updateBadge);
         });
@@ -156,7 +176,9 @@ export async function GET() {
     self.addEventListener('notificationclick', (event) => {
         event.notification.close();
 
-        const targetUrl = safePushLink(event.notification.data?.link);
+        const data = event.notification.data || {};
+        const chosen = event.action && data.actions && typeof data.actions[event.action] === 'string' ? data.actions[event.action] : data.link;
+        const targetUrl = safePushLink(chosen);
 
         event.waitUntil((async () => {
             const clientList = await clients.matchAll({ type: 'window', includeUncontrolled: true });

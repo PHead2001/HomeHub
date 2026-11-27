@@ -23,6 +23,7 @@ import { AVATAR_ACCEPT, avatarFileError } from '@/components/profile/profile-val
 import { PushNotificationSettings } from './PushNotificationSettings';
 import { AppearanceSettings } from './appearance-settings';
 import { TabletPinCard } from '@/components/profile/tablet-pin-card';
+import { NotificationPreferencesCard } from '@/components/profile/notification-preferences-card';
 
 const profileSchema = z.object({
   displayName: z.string().trim().min(2, 'Use at least 2 characters.').max(60, 'Keep it under 60 characters.'),
@@ -284,6 +285,7 @@ export function ProfileClient() {
         <AppearanceSettings />
         <ChoreReminderSettings />
         <PushNotificationSettings />
+        <NotificationPreferencesCard />
         <TabletPinCard />
       </div>
     </div>

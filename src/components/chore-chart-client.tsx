@@ -530,7 +530,7 @@ export function ChoreChartClient() {
       await commit();
       if (shouldNotify(user.uid)) {
         try {
-          await setDoc(doc(db, 'households', currentUser.householdId, 'notifications', assignmentNotificationId(templatesToAssign.map(template => template.id).join(','), user.uid)), buildNotificationDocument({
+          await setDoc(doc(db, 'households', currentUser.householdId, 'notifications', assignmentNotificationId(`${templatesToAssign.map(template => template.id).join(',')}|${schedule.type === 'recurring' ? 'recurring' : format(schedule.dueDate, 'yyyy-MM-dd')}`, user.uid)), buildNotificationDocument({
             householdId: currentUser.householdId,
             category: 'chores',
             title: templatesToAssign.length > 1 ? 'New chores assigned' : 'New chore assigned',

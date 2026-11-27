@@ -28,6 +28,76 @@ export const withoutPushToken = (tokens: unknown, token: string | null | undefin
   tokenList(tokens).filter(stored => stored !== token);
 
 /**
+ * "My devices" (NO-26): each token's device is described in the owner-only push
+ * document under `devices.<key>` (`{ label, lastSeenAt }`), keyed by a short hash of
+ * the token so the key itself never reveals it. Pure helpers.
+ */
+const fnv = (value: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+/** The `devices` key for a token: two 32-bit hashes, letters and digits only. */
+export const pushDeviceKey = (token: string): string => `d${fnv(token)}${fnv([...token].reverse().join(''))}`;
+
+/** A plain label for this browser ("Chrome on Android"), never anything identifying. */
+export function pushDeviceLabel(userAgent: string): string {
+  const ua = userAgent || '';
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /CrOS/.test(ua) ? 'Chromebook' : /Linux/.test(ua) ? 'Linux' : '';
+  const browser = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /Firefox\/|FxiOS/.test(ua) ? 'Firefox'
+    : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  return os ? `${browser} on ${os}` : browser;
+}
+
+export type PushDeviceInfo = { label: string; lastSeenAt: unknown };
+export const MAX_PUSH_DEVICE_LABEL = 60;
+
+/**
+ * The `devices` map to store with `tokens`: entries of tokens no longer stored are
+ * dropped, and this device's entry is written fresh.
+ */
+export function nextPushDevices(stored: unknown, tokens: string[], deviceToken: string, info: PushDeviceInfo): Record<string, PushDeviceInfo> {
+  const keep = new Set(tokens.map(pushDeviceKey));
+  const out: Record<string, PushDeviceInfo> = {};
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+      if (!keep.has(key) || !value || typeof value !== 'object') continue;
+      const entry = value as Record<string, unknown>;
+      out[key] = { label: typeof entry.label === 'string' ? entry.label.slice(0, MAX_PUSH_DEVICE_LABEL) : 'Device', lastSeenAt: entry.lastSeenAt ?? null };
+    }
+  }
+  out[pushDeviceKey(deviceToken)] = { label: info.label.slice(0, MAX_PUSH_DEVICE_LABEL), lastSeenAt: info.lastSeenAt };
+  return out;
+}
+
+export type MyPushDevice = { key: string; token: string; label: string; lastSeenAt: Date | null; thisDevice: boolean };
+
+/** The member's devices getting pushes (one per stored token), newest first. */
+export function myPushDevices(storedTokens: unknown, devices: unknown, thisToken: string | null): MyPushDevice[] {
+  const map = devices && typeof devices === 'object' && !Array.isArray(devices) ? devices as Record<string, Record<string, unknown> | undefined> : {};
+  const toDate = (value: unknown): Date | null => {
+    if (value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function') return (value as { toDate: () => Date }).toDate();
+    if (value instanceof Date) return value;
+    return null;
+  };
+  return tokenList(storedTokens).map((token) => {
+    const key = pushDeviceKey(token);
+    const info = map[key];
+    return {
+      key, token,
+      label: typeof info?.label === 'string' && info.label ? info.label : 'Unknown device',
+      lastSeenAt: toDate(info?.lastSeenAt),
+      thisDevice: token === thisToken,
+    };
+  }).sort((a, b) => (b.lastSeenAt?.getTime() ?? 0) - (a.lastSeenAt?.getTime() ?? 0));
+}
+
+/**
  * This device's push registration, remembered on the device
  * (`localStorage["homehub.push-device"]`) so sign-out can remove the token from
  * the account without asking FCM for it. `email` is the account whose private

@@ -287,7 +287,8 @@ describe('overdue chores notification (NO-1)', () => {
     // and at 20:00 Chicago it is Nov 6 in Tokyo. The household day is still Nov 5 in Chicago.
     await adminDb.collection('users').doc(EMAIL).set({ email: EMAIL, timeZone: 'Asia/Tokyo', choreSettings: { reminderEnabled: false } });
     await chore('due-5th', 'Mop', '2026-11-05');
-    await run(at('2026-11-05', 20));
+    // 20:00 in Chicago (at() only covers hours that stay on the same UTC day).
+    await run(new Date('2026-11-06T02:00:00Z'));
     const data = (await stable().get()).data()!;
     assert.deepEqual(data.overdueChoreIds, ['sweep'], 'the chore due on the household day is not overdue yet');
     assert.equal(data.lastPushDay, '2026-11-05');
@@ -301,16 +302,16 @@ describe('overdue chores notification (NO-1)', () => {
     assert.equal((await ref.get()).data()!.message, '1 chore due today and 1 overdue.');
     await ref.update({ 'readBy.o1': { at: 'x' } });
     await house().collection('chores').doc('sweep').update({ isCompleted: true });
-    await run(at('2026-11-05', 18));
+    await run(new Date('2026-11-06T00:00:00Z')); // 18:00 Chicago
     let data = (await ref.get()).data()!;
     assert.equal(data.message, '1 chore due today.', 'rewritten in place');
     assert.deepEqual(data.readBy, { o1: { at: 'x' } }, 'read state kept; no new push (an update)');
     await house().collection('chores').doc('today').update({ isCompleted: true });
-    await run(at('2026-11-05', 19));
+    await run(new Date('2026-11-06T01:00:00Z')); // 19:00 Chicago
     data = (await ref.get()).data()!;
     assert.ok(data.resolvedAt, 'resolved when everything is done');
     await house().collection('chores').doc('today').update({ isCompleted: false });
-    await run(at('2026-11-05', 20));
+    await run(new Date('2026-11-06T02:00:00Z')); // 20:00 Chicago
     data = (await ref.get()).data()!;
     assert.equal(data.resolvedAt, null, 'back when a chore comes back');
   });

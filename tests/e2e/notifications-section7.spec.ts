@@ -1,6 +1,6 @@
 import { expect, test, type TestInfo } from '@playwright/test';
 import { getApps, initializeApp } from 'firebase-admin/app';
-import { Timestamp, getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { fixedNow } from './test-helpers';
 
 // Audit section 7 in the browser: the bell is a real list reachable with Tab and has
@@ -28,12 +28,19 @@ async function seed(testInfo: TestInfo, label: string, fields: Record<string, un
   return { id, title };
 }
 
+// Mark all read touches every notice the owner can see in the shared emulator; the
+// ones that were unread are put back afterwards so other specs' counts hold.
+const markedByThisSpec: string[] = [];
 const readByOwner = async (id: string) => Boolean((await notifications.doc(id).get()).data()?.readBy?.[ownerUid]);
 
 test.describe('notifications (audit section 7)', () => {
   test.afterAll(async () => {
     const seeded = await notifications.where('message', '==', MESSAGE).get();
     await Promise.all(seeded.docs.map((doc) => doc.ref.delete()));
+    await Promise.all(markedByThisSpec.map(async (id) => {
+      const ref = notifications.doc(id);
+      if ((await ref.get()).exists) await ref.update({ [`readBy.${ownerUid}`]: FieldValue.delete() });
+    }));
   });
 
   test('the bell: Tab reaches each dismiss button, and Mark all read clears the badge', async ({ page }, testInfo) => {
@@ -47,6 +54,8 @@ test.describe('notifications (audit section 7)', () => {
     await panel.getByRole('link', { name: new RegExp(title) }).focus();
     await page.keyboard.press('Tab');
     await expect(panel.getByRole('button', { name: `Dismiss ${title}` })).toBeFocused();
+    const before = await notifications.get();
+    markedByThisSpec.push(...before.docs.filter((d) => !d.data().readBy?.[ownerUid]).map((d) => d.id));
     await panel.getByRole('button', { name: 'Mark all read' }).click();
     await expect.poll(() => readByOwner(id)).toBe(true);
   });

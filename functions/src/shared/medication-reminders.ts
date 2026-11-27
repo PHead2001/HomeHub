@@ -57,8 +57,9 @@ export type MedicationReminder = {
   message: string;
   deepLink: string;
   /**
-   * Due at a set time of day (a course occurrence with a time). Others
-   * become due at local midnight and wait for the morning to push (NO-3).
+   * Due at a set time of day (a course occurrence with a time, while it is
+   * "due"). Others change state at local midnight and wait for the morning
+   * to push (NO-3).
    */
   timed: boolean;
 };
@@ -193,7 +194,8 @@ const courseReminders = (pet: PetInput, clock: ReminderClock):
       `${name}'s ${medication} dose is overdue`,
     message: `${dosage}Tap to record it once it's given.`,
     deepLink: medicationDeepLink(pet.id, course.id),
-    timed: Boolean(due.occurrence.time),
+    // Overdue turns at the household's midnight: that reminder waits too.
+    timed: state === "due" && Boolean(due.occurrence.time),
   }];
 });
 
