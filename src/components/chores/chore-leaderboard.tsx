@@ -30,7 +30,7 @@ function ContributionRing({ member, color, total }: { member: MemberChoreStats; 
   const percent = Math.round(member.contributionShare * 100);
   const label = `${member.name} did ${member.weekCompleted} of the ${total} chores done this week (${percent}%), and ${member.weekAssignedDone} of their ${member.weekAssigned} assigned are done`;
   return (
-    <span role="img" aria-label={label} title={label} className="relative grid h-10 w-10 shrink-0 place-items-center">
+    <span role="img" aria-label={label} title={label} className="relative grid h-12 w-12 shrink-0 place-items-center">
       <svg viewBox="0 0 40 40" className="absolute inset-0 -rotate-90" aria-hidden>
         <circle cx="20" cy="20" r={radius} fill="none" className="stroke-muted" strokeWidth={4} />
         <circle
@@ -39,7 +39,7 @@ function ContributionRing({ member, color, total }: { member: MemberChoreStats; 
           strokeDasharray={`${circumference * member.contributionShare} ${circumference}`}
         />
       </svg>
-      <span aria-hidden className="text-[10px] font-semibold tabular-nums text-foreground">{percent}%</span>
+      <span aria-hidden className="text-xs font-semibold tabular-nums text-foreground">{percent}%</span>
     </span>
   );
 }
