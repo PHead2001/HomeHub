@@ -29,7 +29,8 @@ describe('auto-complete on the last step (CH-33)', () => {
 
   it('goes through the server completion from the step toggle', () => {
     const page = readFileSync(resolve(process.cwd(), 'src/components/chore-chart-client.tsx'), 'utf8');
-    assert.match(page, /if \(tickCompletesChore\(chore, subTask\) && !isDueAfterHouseholdDay\(chore, householdDay, household\?\.timeZone\)\) \{/);
+    // CH-30: a kid's last step on a photo chore only records the step.
+    assert.match(page, /if \(tickCompletesChore\(chore, subTask\) && !needsPhoto\(chore\) && !isDueAfterHouseholdDay\(chore, householdDay, household\?\.timeZone\)\) \{/);
     assert.match(page, /void completeChores\(\[chore\], check\?\.getBoundingClientRect\(\) \?\? null\);/);
   });
 });

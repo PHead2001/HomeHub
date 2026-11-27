@@ -203,7 +203,9 @@ export type ChoreCompletionOutcome =
   | { choreId: string; status: 'completed'; completion: CompletionRecord; previousCompletedSubTasks: string[] | null }
   | { choreId: string; status: 'already'; completion: CompletionRecord }
   | { choreId: string; status: 'refused'; refused: 'early'; dueDay: string }
-  | { choreId: string; status: 'refused'; refused: 'missing' };
+  | { choreId: string; status: 'refused'; refused: 'missing' }
+  /** CH-30: a kid completing a chore whose library chore asks for a photo sends one instead. */
+  | { choreId: string; status: 'refused'; refused: 'photo' };
 
 /** `undone` carries the stored steps after the Undo (restored or preserved), which the page applies. */
 export type UndoOutcome =

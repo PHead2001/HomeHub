@@ -46,6 +46,8 @@ import { ChoreDetailSheet } from '@/components/chores/chore-detail-sheet';
 import type { DetailEdit } from '@/lib/chores/detail';
 import { oneTimeChoreRooms } from '@/lib/chores/add-chore';
 import { mayRemoveChore, templateRights } from '@/lib/chores/rights';
+import { needsPhotoProof, pendingProofs, readProof } from '@/lib/chores/proof';
+import { PhotoProofDialog, ProofReviewList } from '@/components/chores/photo-proof';
 import { PauseChoresDialog } from '@/components/chores/pause-dialog';
 import { pauseChoresOnServer, pauseMessage, type PauseRequest } from '@/lib/chores/pause-client';
 import { isQuietAt, readQuietHours } from '@/lib/devices/quiet-hours';
@@ -151,6 +153,8 @@ export function ChoreChartClient() {
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   // CH-32: "Away or sick" pauses someone's repeating chores for a range of days.
   const [isPauseOpen, setIsPauseOpen] = useState(false);
+  // CH-30: the chore a kid is sending a photo for.
+  const [proofChore, setProofChore] = useState<ChoreRecord | null>(null);
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -864,8 +868,15 @@ export function ChoreChartClient() {
       const outcome = outcomes.get(chore.id);
       return outcome?.status === 'refused' && outcome.refused === 'early';
     });
+    const photo = chores.filter(chore => {
+      const outcome = outcomes.get(chore.id);
+      return outcome?.status === 'refused' && outcome.refused === 'photo';
+    });
     const notDone = chores.filter(chore => !outcomes.has(chore.id) || outcomes.get(chore.id)?.status === 'refused');
-    if (early.length > 0) {
+    if (photo.length > 0) {
+      // CH-30: Select mode can include chores that ask a kid for a photo.
+      toast({ title: photo.length === 1 ? `${photo[0].task} needs a photo` : `${pluralize(photo.length, 'chore')} need a photo`, description: 'Tap its box to send one.' });
+    } else if (early.length > 0) {
       const first = early[0];
       toast({
         title: early.length === 1 ? 'Not due yet' : `${pluralize(early.length, 'chore')} not due yet`,
@@ -932,6 +943,9 @@ export function ChoreChartClient() {
     }
   }, [currentUser?.householdId, patchChores, toast, hold]);
 
+  // CH-30: whether the reader must send a photo for this chore (a kid, a library chore that asks for one).
+  const needsPhoto = useCallback((chore: ChoreRecord) => needsPhotoProof(currentMember?.role, chore.templateId ? templatesById.get(chore.templateId) : null), [currentMember?.role, templatesById]);
+
   const handleToggleDone = useCallback((chore: ChoreRecord, origin: HTMLElement | null) => {
     if (!capabilities.canComplete) return;
     if (chore.isCompleted) {
@@ -943,9 +957,14 @@ export function ChoreChartClient() {
       }
       setChoreToReopen(chore);
     }
+    // CH-30: a kid's Done on a chore that asks for a photo sends a photo instead.
+    else if (needsPhoto(chore)) {
+      if (readProof(chore.proof)?.status === 'pending') toast({ title: 'Waiting for a parent', description: `Your photo for ${chore.task} is waiting to be checked.` });
+      else setProofChore(chore);
+    }
     // Measure now: the row leaves the To Do list before the write finishes.
     else void completeChores([chore], origin?.getBoundingClientRect() ?? null);
-  }, [capabilities.canComplete, completeChores, currentUser, permissions, toast]);
+  }, [capabilities.canComplete, completeChores, currentUser, permissions, toast, needsPhoto]);
 
   const selectedChores = assignedChores.filter(chore => selectedChoreIds.includes(chore.id) && !chore.isCompleted);
 
@@ -969,7 +988,7 @@ export function ChoreChartClient() {
     // server like every completion (points, completer), with the usual Undo, which puts
     // the steps back as they were before this tick. Only this device's tick does this,
     // never a snapshot. A chore not due yet just records the step.
-    if (tickCompletesChore(chore, subTask) && !isDueAfterHouseholdDay(chore, householdDay, household?.timeZone)) {
+    if (tickCompletesChore(chore, subTask) && !needsPhoto(chore) && !isDueAfterHouseholdDay(chore, householdDay, household?.timeZone)) {
       const check = document.querySelector<HTMLElement>(`[data-chore-id="${CSS.escape(chore.id)}"] button[role="checkbox"]`);
       void completeChores([chore], check?.getBoundingClientRect() ?? null);
       return;
@@ -987,7 +1006,7 @@ export function ChoreChartClient() {
     } finally {
       release();
     }
-  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError, hold, completeChores, householdDay, household?.timeZone]);
+  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError, hold, completeChores, householdDay, household?.timeZone, needsPhoto]);
 
   const deleteChores = async (ids: string[], title: string) => {
     const choresCollection = getCollectionRef('chores');
@@ -1189,6 +1208,8 @@ export function ChoreChartClient() {
     // CH-24: who may remove what (creators manage their own chores).
     currentUid: currentUser.uid,
     templatesById,
+    // CH-30: a kid's photo waiting for a parent keeps their check disabled.
+    isKid: currentMember?.role === 'child',
   };
 
   const roomGroups = (prefix: string, entries: ToDoEntry[], openByDefault: boolean) => {
@@ -1331,6 +1352,15 @@ export function ChoreChartClient() {
         ownTemplate={seriesToEdit ? templateRights(seriesToEdit, currentUser.uid, capabilities).own : false}
         onSave={handleSaveChoreTemplate}
       />
+      {currentUser.householdId && (
+        <PhotoProofDialog
+          chore={proofChore}
+          householdId={currentUser.householdId}
+          uid={currentUser.uid}
+          onClose={() => setProofChore(null)}
+          onSent={chore => toast({ title: 'Photo sent', description: `A parent will check ${chore.task}. It counts once they approve it.` })}
+        />
+      )}
       <PauseChoresDialog
         isOpen={isPauseOpen}
         onOpenChange={setIsPauseOpen}
@@ -1580,6 +1610,14 @@ export function ChoreChartClient() {
                     <p className="mb-2 rounded-md bg-muted/60 px-3 py-2 text-sm text-muted-foreground" data-testid="chores-read-only">
                       You can see chores here but not tick them. Ask an admin if you should.
                     </p>
+                  )}
+                  {capabilities.canEdit && currentUser.householdId && (
+                    <ProofReviewList
+                      chores={pendingProofs(assignedChores)}
+                      householdId={currentUser.householdId}
+                      currentUid={currentUser.uid}
+                      onReviewed={(title, description, failed) => toast({ ...(failed ? { variant: 'destructive' as const } : {}), title, description })}
+                    />
                   )}
                   {todoEntries.length > 0 ? roomGroups('todo', todoEntries, true) : (
                     <EmptyState

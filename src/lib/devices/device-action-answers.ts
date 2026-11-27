@@ -289,6 +289,8 @@ export function choreAnswerMeaning(capability: DeviceCapability, data: unknown, 
       return { undoable: false, notice: true, message: by ? `Already done by ${by}.` : 'Already done.' };
     }
     if (outcome.status === 'refused' && outcome.refused === 'early') return { undoable: false, notice: true, message: "That chore isn't due yet." };
+    // CH-30: a kid's chore that asks for a photo is sent from a phone, or done by a parent.
+    if (outcome.status === 'refused' && outcome.refused === 'photo') return { undoable: false, notice: true, message: 'That chore needs a photo. Send it from a phone, or ask a parent.' };
     return { undoable: false, notice: true, message: 'That chore is gone.' };
   }
   if (capability === 'chores.take') {
@@ -318,6 +320,7 @@ export function queuedSendResult(capability: DeviceCapability, answer: { ok: tru
       return { ok: false, code: 'conflict', reason: by ? `it was already done by ${by}.` : 'it was already done.' };
     }
     if (outcome.status === 'refused' && outcome.refused === 'early') return { ok: false, code: 'invalid_input', reason: "that chore isn't due yet." };
+    if (outcome.status === 'refused' && outcome.refused === 'photo') return { ok: false, code: 'invalid_input', reason: 'that chore needs a photo.' };
     return { ok: false, code: 'invalid_input', reason: 'that chore is gone.' };
   }
   if (capability === 'chores.take') {

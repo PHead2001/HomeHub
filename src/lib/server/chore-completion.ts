@@ -25,6 +25,7 @@ import { assertUndoable, type DeviceOp } from '@/lib/server/device-ops';
 import { getMemberPermissions } from '@/lib/permissions';
 import type { HouseholdMember } from '@/lib/types';
 import { mayReopen } from '@/lib/chores/completion';
+import { needsPhotoProof } from '@/lib/chores/proof';
 
 /**
  * Chore completion through the Admin SDK (H3). The caller is whoever the ID token
@@ -126,10 +127,21 @@ async function completeWith(db: Firestore, householdId: string, input: CompleteI
       // Shown to every member ("Done by Sam"): a name, never an email (HO-9).
       name: publicDisplayName(memberName, '') || publicDisplayName(actor.name),
     };
+    // CH-30: a kid (a child account, or a kid profile on a tablet) cannot complete a chore
+    // whose library chore asks for a photo; they send one (chore-proof.ts) and a parent
+    // approves it. Read before any write; adults never pay for the extra reads.
+    const isKid = member.get('role') === 'child';
+    const templateIds = isKid ? [...new Set(chores.flatMap(snap => {
+      const templateId = snap.exists && snap.get('isCompleted') !== true ? snap.get('templateId') : null;
+      return typeof templateId === 'string' && isDocId(templateId) ? [templateId] : [];
+    }))] : [];
+    const templates = templateIds.length > 0 ? await tx.getAll(...templateIds.map(id => house.collection('chore-templates').doc(id))) : [];
+    const photoTemplates = new Set(templates.filter(snap => snap.exists && needsPhotoProof('child', snap.data())).map(snap => snap.id));
     let completedPath: string | null = null;
     const outcomes = chores.map((snap, index): ChoreCompletionOutcome => {
       const choreId = choreIds[index];
       if (!snap.exists) return { choreId, status: 'refused', refused: 'missing' };
+      if (snap.get('isCompleted') !== true && photoTemplates.has(snap.get('templateId'))) return { choreId, status: 'refused', refused: 'photo' };
       const completionId = ctx.hooks && ctx.opId ? ctx.opId : randomUUID();
       const plan = planCompletion(snap.data()!, { completer, now, timeZone, completeSubTasks, completionId });
       if (plan.kind === 'early') return { choreId, status: 'refused', refused: 'early', dueDay: plan.dueDay };
@@ -144,6 +156,8 @@ async function completeWith(db: Firestore, householdId: string, input: CompleteI
         // A device completion records the tablet, the person and the level; any older
         // attribution goes (it described an earlier completion).
         deviceAttribution: actor.device ?? FieldValue.delete(),
+        // A photo sent back earlier (CH-30) no longer applies once someone completes it.
+        proof: FieldValue.delete(),
       });
       completedPath = snap.ref.path;
       return { choreId, status: 'completed', completion: plan.completion, previousCompletedSubTasks: plan.previousCompletedSubTasks };

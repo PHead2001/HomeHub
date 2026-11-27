@@ -11,6 +11,9 @@ import { personalOperationContext } from '@/lib/server/operation-context';
 import { PlannedMoveError, movePlannedOccurrence, undoPlannedMove } from '@/lib/server/planned-chore-move';
 import { ChoreSkipError, skipChoreDays, undoSkipChoreDays } from '@/lib/server/chore-day-skips';
 import { ChorePauseError, pauseChoresAs, type PauseOutcome } from '@/lib/server/chore-pause';
+import { ChoreProofError, reviewChoreProofAs, submitChoreProofAs, type ProofBucket } from '@/lib/server/chore-proof';
+import { adminStorageBucket } from '@/lib/server/firebase-admin';
+import type { ReviewOutcome, SubmitOutcome } from '@/lib/chores/proof';
 
 // functions/ pins its own firebase-admin version; the Firestore calls used are
 // identical across versions, so the instance is passed through untyped.
@@ -155,5 +158,40 @@ export async function pauseChores(input: ChoreActionContext & { memberUid: strin
     if (error instanceof ChorePauseError) return { ok: false, code: error.code };
     console.error('Chore pause failed', error);
     return { ok: false, code: 'failed' };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Photo proof for kids (CH-30)                                                */
+/* -------------------------------------------------------------------------- */
+
+const proofBucket = () => adminStorageBucket() as unknown as ProofBucket | null;
+
+const proofFailure = (error: unknown): ChoreActionFailure => {
+  if (error instanceof HomeHubAiError) {
+    return { ok: false, code: error.code === 'forbidden' ? 'forbidden' : error.code === 'unauthenticated' ? 'unauthenticated' : 'failed' };
+  }
+  if (error instanceof ChoreProofError) return { ok: false, code: error.code };
+  console.error('Chore photo proof failed', error);
+  return { ok: false, code: 'failed' };
+};
+
+/** A kid sends the photo they uploaded for a chore that asks for one; it waits for a parent. */
+export async function submitChoreProof(input: ChoreActionContext & { choreId: string; photoPath: string }): Promise<ChoreActionResult<SubmitOutcome>> {
+  try {
+    const user = await authorizeHouseholdAction({ idToken: input?.idToken, householdId: input?.householdId }, 'chores.complete');
+    return { ok: true, data: await submitChoreProofAs(adminDb, proofBucket(), user.householdId, { uid: user.uid }, input, upkeepNow()) };
+  } catch (error) {
+    return proofFailure(error);
+  }
+}
+
+/** A member who may edit chores approves the photo (the chore is completed for the kid) or sends it back. */
+export async function reviewChoreProof(input: ChoreActionContext & { choreId: string; approve: boolean }): Promise<ChoreActionResult<ReviewOutcome>> {
+  try {
+    const user = await authorizeHouseholdAction({ idToken: input?.idToken, householdId: input?.householdId }, 'chores.edit');
+    return { ok: true, data: await reviewChoreProofAs(adminDb, proofBucket(), user.householdId, { uid: user.uid }, input) };
+  } catch (error) {
+    return proofFailure(error);
   }
 }

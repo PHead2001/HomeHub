@@ -598,14 +598,31 @@ service cloud.firestore {
     // and a generated chore's occurrenceKey only by server upkeep: clients may not
     // set, change or remove them. Clients may still toggle isCompleted (older
     // releases complete with client writes) until stage R2 removes that.
+    // CH-30: `proof` (a kid's photo waiting for approval) is written only by the proof
+    // server operations, like the completion attribution.
     function choreServerFieldsAbsent() {
       return !request.resource.data.keys().hasAny(
-        ['completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey']);
+        ['completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey', 'proof']);
     }
 
     function choreServerFieldsUnchanged() {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-        ['completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey']);
+        ['completedByUid', 'completedByEmail', 'completedByName', 'completionId', 'occurrenceKey', 'proof']);
+    }
+
+    // CH-30: a chore whose library chore asks for a photo is never completed by a client
+    // write (older releases complete that way): only the server completes it, where a kid
+    // must send a photo and a parent approves it.
+    function choreClientCompletionNeedsNoPhoto(householdId) {
+      return request.resource.data.get('isCompleted', false) != true ||
+        resource.data.get('isCompleted', false) == true ||
+        !(resource.data.get('templateId', '') is string) || resource.data.get('templateId', '') == '' ||
+        !choreTemplateRequiresPhoto(householdId, resource.data.templateId);
+    }
+
+    function choreTemplateRequiresPhoto(householdId, templateId) {
+      return exists(/databases/$(database)/documents/households/$(householdId)/chore-templates/$(templateId)) &&
+        get(/databases/$(database)/documents/households/$(householdId)/chore-templates/$(templateId)).data.get('requiresPhoto', false) == true;
     }
 
     // A client completion (older releases) must not leave another person's
@@ -671,7 +688,9 @@ service cloud.firestore {
     }
 
     function validChoreTemplateFields(data, keys) {
-      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid', 'skippedOccurrences', 'rotation', 'rotationStart', 'createdByUid']) &&
+      return keys.hasOnly(['task', 'notes', 'roomIds', 'subTasks', 'recurrence', 'assignedToEmail', 'assignedToUid', 'skippedOccurrences', 'rotation', 'rotationStart', 'createdByUid', 'requiresPhoto']) &&
+        // CH-30: kids send a photo for this chore and a parent approves it.
+        (!('requiresPhoto' in keys) || data.requiresPhoto is bool) &&
         choreCreatorKept(data, keys) &&
         // Rotation (CH-28): member uids taking turns, in order, from rotationStart.
         (!('rotation' in keys) || data.rotation == null ||
@@ -2078,6 +2097,7 @@ service cloud.firestore {
           choreServerFieldsUnchanged() &&
           choreDeviceAttributionKept() &&
           choreClientCompletionUnattributed() &&
+          choreClientCompletionNeedsNoPhoto(householdId) &&
           (
             // A reopen by a chores.complete holder may also remove the device attribution of
             // the completion it clears (choreDeviceAttributionKept allows removal only then).
