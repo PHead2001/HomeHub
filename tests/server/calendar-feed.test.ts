@@ -68,6 +68,8 @@ describe('phone calendar feed', () => {
   });
 
   test('the URL serves the household calendar as iCalendar, without emails', async () => {
+    // An older pantry item: an ISO timestamp expiry and no packages field (read through readPantryBatch).
+    await house().collection('pantry-inventory').doc('milk').set({ name: 'Milk', unit: 'items', quantity: 1, expiryDate: `${today()}T18:00:00.000Z` });
     const { token } = await rotateCalendarFeed(adminDb, owner, HOUSE);
     const response = await fetchFeed(token);
     assert.equal(response.status, 200);
@@ -79,6 +81,7 @@ describe('phone calendar feed', () => {
     assert.match(body, /SUMMARY:Dishes\\, then dry \(Max\)/);
     assert.match(body, new RegExp(`DTSTART;VALUE=DATE:${today().replace(/-/g, '')}`));
     assert.doesNotMatch(body, /@example\.test/);
+    assert.match(body, /SUMMARY:Milk expires/);
     assert.equal((await fetchFeed(`${token}.ics`)).status, 200, 'a trailing .ics is accepted');
   });
 

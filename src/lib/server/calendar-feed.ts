@@ -9,7 +9,8 @@ import { isDocId } from '@functions/shared/push-media';
 import { buildIcs } from '@/lib/calendar/ics';
 import { feedEvents, type FeedSources } from '@/lib/calendar/feed-events';
 import type { ChoreRecord } from '@/lib/chores/dates';
-import type { CalendarMember, CourseEntry, MedicationEntry, RecurringTemplate } from '@/lib/chores/calendar';
+import { pantryExpiryInputs, type CalendarMember, type CourseEntry, type MedicationEntry, type RecurringTemplate } from '@/lib/chores/calendar';
+import { safeTimeZone } from '@functions/shared/calendar';
 import type { VerifiedCaller } from '@/lib/server/household-membership';
 
 /**
@@ -176,7 +177,8 @@ export async function readFeedSources(db: Firestore, householdId: string): Promi
       vehicles: vehicles.docs.map(d => ({ ...(d.data() as { nickname: string }), id: d.id })),
       medication: petData.flatMap(p => p.medication),
       courses: petData.flatMap(p => p.courses),
-      pantry: pantry.docs.map(d => ({ id: d.id, name: d.get('name'), expiryDate: d.get('expiryDate'), packages: d.get('packages') })),
+      // The pantry's own reader, as the calendar page: legacy timestamp expiries and quantities count.
+      pantry: pantryExpiryInputs(pantry.docs.map(d => ({ id: d.id, data: d.data() })), safeTimeZone(home.get('timeZone'))),
     },
   };
 }
