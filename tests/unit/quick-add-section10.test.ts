@@ -281,3 +281,12 @@ describe('QA-5 and QA-12: grouping and the index cache key', () => {
     assert.notEqual(one, indexCacheKey('h1', 'u1', { 'chores.view': true, 'pets.view': true }));
   });
 });
+
+describe('QA-4: the e2e AI-fallback sentence stays with the AI reader', () => {
+  it('reads "on tuesdays" itself, and leaves the e2e sentence unread', () => {
+    // tests/e2e/shell-wave4.spec.ts used this sentence to reach "Read with AI"; the parser now reads it.
+    assert.equal(parse('could sam deal with the recycling on tuesdays')?.kind, 'chore');
+    // The spec's sentence: no whole weekday word, a pronoun-free verb phrase the guess filter rejects.
+    assert.equal(parse('could sam deal with the recycling, a tuesdayish job'), null);
+  });
+});
