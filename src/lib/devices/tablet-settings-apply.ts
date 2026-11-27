@@ -71,8 +71,8 @@ export type TabletApplication = {
   rail: { rail: TabletNavItem[]; more: TabletNavItem[] };
   noticeCategories: DeviceNotificationCategory[];
   permissions: Record<HouseholdPermission, boolean>;
-  /** Scanning camera: no scanning on the tablet shell yet (kitchen scan station is out of scope). */
-  camera: 'not-used';
+  /** Scanning camera (BL-2, WT-4): the camera the kitchen view's scanner starts on. */
+  camera: DeviceSettings['camera'];
 };
 
 export const tabletApplication = (settings: DeviceSettings): TabletApplication => ({
@@ -85,5 +85,5 @@ export const tabletApplication = (settings: DeviceSettings): TabletApplication =
   rail: tabletNavItems(settings.sections),
   noticeCategories: deviceNotificationCategories(settings.sections),
   permissions: devicePermissions(settings.sections),
-  camera: 'not-used',
+  camera: settings.camera,
 });

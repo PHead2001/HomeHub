@@ -15,7 +15,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { ToastAction } from '@/components/ui/toast';
-import { PlusCircle, ScanBarcode, Loader2, Search } from 'lucide-react';
+import { PlusCircle, ScanBarcode, ScanLine, Loader2, Search } from 'lucide-react';
+import Link from 'next/link';
 import type { BarcodeLibraryItem } from '@/lib/types';
 import { Skeleton } from './ui/skeleton';
 import { BarcodeScanner } from './barcode-scanner';
@@ -650,6 +651,12 @@ export function BarcodeLibraryClient() {
                   {LIBRARY_SORTS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}
                 </SelectContent>
               </Select>
+            )}
+            {/* BL-20: the kitchen scan station (used up, restock, add to list). */}
+            {canEdit && (
+              <Button asChild variant="outline">
+                <Link href="/library/scan"><ScanLine className="mr-2 h-4 w-4" aria-hidden /> Scan station</Link>
+              </Button>
             )}
             {/* BL-15: an empty library offers one button, the empty state's own. */}
             {canEdit && items.length > 0 && <Button onClick={openDialogToAdd}><PlusCircle className="mr-2 h-4 w-4" aria-hidden /> Add Item</Button>}
