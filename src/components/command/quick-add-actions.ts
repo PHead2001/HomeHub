@@ -39,7 +39,7 @@ import { feedPet, type FeedPetResult } from '@/lib/pets/feed-operation';
 import { foodTypeFromLatest } from '@/lib/dashboard/quick-add';
 import type { RawDoc } from '@/lib/dashboard/facts';
 import { loggerName } from '@/lib/pets/care';
-import type { PortionUnit } from '@/lib/pets/types';
+import type { FoodType, PortionUnit } from '@/lib/pets/types';
 import type { QuickAddEntry } from '@/lib/shopping/items';
 import { addItemsToList } from '@/lib/shopping/add-items';
 import { shoppingAddOutcome, type ShoppingAddOutcome } from '@/lib/dashboard/quick-add';
@@ -106,10 +106,13 @@ export async function logFeeding({
   opId,
   confirm = null,
   portionFromSlot = false,
+  food: namedFood = null,
   onLateError,
 }: {
   householdId: string;
   petId: string;
+  /** The food the sentence named ("wet"); null reuses the latest feeding's (QA-4). */
+  food?: FoodType | null;
   amount: number;
   unit: PortionUnit;
   viewer: User;
@@ -124,7 +127,9 @@ export async function logFeeding({
 }): Promise<FeedPetResult> {
   // Same fields as the Pets one-tap feed: the planned or given portion, the food
   // type of the pet's latest feeding, and no comment.
-  const { food, known } = await feedingHistory(householdId, petId, timeZone);
+  const history = await feedingHistory(householdId, petId, timeZone);
+  const food = namedFood ?? history.food;
+  const known = history.known;
   return feedPet({
     householdId,
     petId,

@@ -53,6 +53,7 @@ import { assignableMembers, describeRepeat, parseQuickAdd, createSettlementGuard
 import { buildAiParseRequest, createRevisionGuard, intentFromAiParse, shouldOfferAiParse } from '@/lib/dashboard/quick-add-ai';
 import { mileageNote, type QuickMaintenanceRequest } from '@/lib/dashboard/quick-add-writes';
 import { NO_ANSWER_MESSAGE } from '@/components/maintenance/maintenance-action-client';
+import { canSplitChip, joinChips, removeChip, splitChip } from '@/lib/dashboard/quick-add-preview';
 import { defaultMaintenanceTarget, describeIntent, failedSectionsFor, feedingPortion, maintenanceTargetName as targetName, quickAddConfirmBlocker, type IndexSection } from '@/lib/dashboard/quick-add-preview';
 import { choreCapabilities } from '@/lib/chores/list';
 import { friendlyError } from '@/lib/friendly-error';
@@ -502,6 +503,7 @@ export function CommandPalette({
           confirm: feedAgain && feedAgain.intent === current ? feedAgain.confirm : null,
           // No amount typed: the meal slot's own portion (PE-22d); a typed amount is kept.
           portionFromSlot: current.amount === null,
+          food: current.food ?? null,
           onLateError: lateError,
         });
         if (result.status === 'needsConfirm') {
@@ -723,6 +725,11 @@ export function CommandPalette({
               window.setTimeout(() => inputRef.current?.focus(), 0);
             }}
             onConfirm={(choices) => void confirm(choices)}
+            // Editable chips (QA-19): an edited intent is a new preview (its own feed op, retry state).
+            onEdit={(next) => {
+              setRetryMessage(null);
+              setPending(next);
+            }}
           />
         ) : mode === 'feeding' ? (
           <FeedingMode
@@ -895,7 +902,10 @@ function QuickAddPreview({
   confirmLabel = 'Confirm',
   onBack,
   onConfirm,
+  onEdit,
 }: {
+  /** The member edited the suggestion in place (split, join or remove items: QA-19). */
+  onEdit?: (intent: QuickAddIntent) => void;
   /** Context shown before saving (the feeding's "Last fed 10 min ago by Sam (wet)"). */
   context?: string | null;
   intent: QuickAddIntent;
@@ -976,6 +986,38 @@ function QuickAddPreview({
         <p className="font-medium">{description.title}</p>
         <p className="text-sm text-muted-foreground">{description.detail}</p>
       </div>
+      {intent.kind === 'shopping' && onEdit && !saving && (intent.items.length > 1 || intent.items.some(canSplitChip)) && (
+        <div className="mt-2" data-testid="quick-add-chips">
+          <p className="mb-1 text-xs text-muted-foreground">Not quite right? Split, join or remove items.</p>
+          <ul className="flex flex-wrap gap-2" aria-label="Items">
+            {intent.items.map((item, at) => (
+              <li key={`${item.name}-${at}`} className="flex items-center gap-1 rounded-full border bg-background py-0.5 pl-3 pr-1 text-sm">
+                <span>{item.quantity > 1 ? `${item.quantity} × ${item.name}` : item.name}</span>
+                {canSplitChip(item) && (
+                  <Button type="button" variant="ghost" size="sm" className="touch-target h-7 px-2 text-xs" onClick={() => onEdit({ ...intent, items: splitChip(intent.items, at) })} aria-label={`Split ${item.name}`}>
+                    Split
+                  </Button>
+                )}
+                {intent.items.length > 1 && (
+                  <Button type="button" variant="ghost" size="icon" className="touch-target h-7 w-7" onClick={() => onEdit({ ...intent, items: removeChip(intent.items, at) })} aria-label={`Remove ${item.name}`}>
+                    <X aria-hidden className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {intent.items.length > 1 && (
+            <Button type="button" variant="link" size="sm" className="touch-target mt-1 h-auto px-0 text-xs" onClick={() => onEdit({ ...intent, items: joinChips(intent.items) })}>
+              Make it one item
+            </Button>
+          )}
+        </div>
+      )}
+      {intent.kind === 'feeding' && intent.alsoPets && intent.alsoPets.length > 0 && (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="quick-add-also-pets">
+          This logs {intent.pet.name} only. Log {intent.alsoPets.map((pet) => pet.name).join(' and ')} next, one at a time.
+        </p>
+      )}
       {intent.kind === 'chore' && intent.repeatNote && (
         <p className="mt-2 text-sm text-muted-foreground" data-testid="quick-add-repeat-note">{intent.repeatNote}</p>
       )}
