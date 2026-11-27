@@ -60,6 +60,7 @@ import { FEED_UNDO_MS, feedAgainPrompt, petFeedToastGroup } from '@/lib/pets/fee
 import { feedConfirmOf, newFeedOpId, type FeedConfirm } from '@/lib/pets/feed-plan';
 import { undoFeed } from '@/lib/pets/feed-operation';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
+import { householdWallClock } from '@/lib/household-zone';
 import { matchScore, useCommandIndex } from './use-command-index';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
@@ -203,7 +204,7 @@ export function CommandPalette({
   }, [close, router]);
 
   const quickContext = useMemo<QuickAddContext | null>(() => (currentUser ? {
-    now: new Date(),
+    now: householdWallClock(household?.timeZone),
     viewer: { uid: currentUser.uid, email: currentUser.email },
     members: index.members,
     pets: index.pets,
@@ -211,7 +212,7 @@ export function CommandPalette({
     rooms: index.rooms,
     vehicles: index.vehicles,
     assets: index.assets,
-  } : null), [currentUser, index.members, index.pets, index.lists, index.rooms, index.vehicles, index.assets]);
+  } : null), [currentUser, household?.timeZone, index.members, index.pets, index.lists, index.rooms, index.vehicles, index.assets]);
 
   /** Only intents the member may save (the same permissions as the module screens). */
   const permitted = useCallback((candidate: QuickAddIntent | null): QuickAddIntent | null => {
@@ -225,8 +226,8 @@ export function CommandPalette({
   // no) assignee, room, list or vehicle. Each new sentence is read against the
   // current time, so "tomorrow" stays right if the palette is open past midnight.
   const intent = useMemo(
-    () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, { ...quickContext, now: new Date() })) : null),
-    [text, quickContext, permitted, index.loading],
+    () => (quickContext && !index.loading ? permitted(parseQuickAdd(text, { ...quickContext, now: householdWallClock(household?.timeZone) })) : null),
+    [text, quickContext, permitted, index.loading, household?.timeZone],
   );
 
   // AI reading (H13 fallback): only on request, for a sentence the parser could not read.
@@ -257,7 +258,7 @@ export function CommandPalette({
     // would discard the first, already charged answer; wait for it instead.
     if (aiRequests.isPending()) return;
     const revision = aiRequests.next();
-    const context = { ...quickContext, now: new Date() };
+    const context = { ...quickContext, now: householdWallClock(household?.timeZone) };
     setAiState({ status: 'reading' });
     try {
       const { input, refs } = buildAiParseRequest(text, context);
@@ -278,7 +279,7 @@ export function CommandPalette({
     } finally {
       aiRequests.settle(revision);
     }
-  }, [currentUser?.householdId, quickContext, text, permitted, aiRequests]);
+  }, [currentUser?.householdId, quickContext, text, permitted, aiRequests, household?.timeZone]);
 
   const options = useMemo<Option[]>(() => {
     const search = text.trim();
