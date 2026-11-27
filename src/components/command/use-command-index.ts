@@ -6,19 +6,31 @@
  * pets, lists, rooms, vehicles and assets the quick-add parser resolves names
  * against.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { DATA_CHANGED_EVENT } from '@/lib/data-changed';
+import { indexCacheKey } from '@/lib/dashboard/command-search';
 import { collection, query, where, type DocumentData, type QuerySnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { getDocsOfflineAware } from '@/lib/firestore-offline';
 import { useAuth } from '@/hooks/use-auth';
 import type { QuickAddAsset, QuickAddList, QuickAddMember, QuickAddPet, QuickAddRoom, QuickAddVehicle } from '@/lib/dashboard/quick-add';
 import { INDEX_SECTIONS, sectionUnreadable, type IndexSection } from '@/lib/dashboard/quick-add-preview';
-import { shoppingListHref } from '@/lib/dashboard/links';
+import { choresRoomHref, PANTRY_HREF, shoppingListHref } from '@/lib/dashboard/links';
 import { feedingPlan } from '@/lib/pets/care';
 import type { PetProfile } from '@/lib/pets/types';
 import { publicDisplayName } from '@/lib/member-directory';
 
-export type IndexEntry = { id: string; label: string; detail?: string; href: string; group: 'Chores' | 'Shopping' | 'Pets' | 'Maintenance' };
+export type IndexEntry = {
+  id: string;
+  label: string;
+  detail?: string;
+  /** More words that find it (vehicle make and model, the chore's assignee and room): QA-11. */
+  keywords?: string;
+  href: string;
+  /** The row to outline once the page opens (`data-row-id`, QA-12). */
+  hitId?: string;
+  group: 'Chores' | 'Rooms' | 'Shopping' | 'Pantry' | 'Pets' | 'Maintenance';
+};
 
 export type CommandIndex = {
   entries: IndexEntry[];
@@ -45,22 +57,37 @@ const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(va
 const str = (value: unknown, fallback = '') => (typeof value === 'string' && value.trim() ? value.trim() : fallback);
 const rows = (snapshot: QuerySnapshot<DocumentData>) => snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Record<string, unknown> & { id: string }));
 
+/**
+ * The last fully read index, reused for a minute by the next open (QA-12, QA-21: an
+ * always-on tablet no longer pays every read on every open). Keyed by household,
+ * person and view permissions; an index with a failed section is never kept; any
+ * quick-add write (`notifyDataChanged`) clears it.
+ */
+const CACHE_MS = 60_000;
+let cache: { key: string; at: number; value: Omit<CommandIndex, 'retry'> } | null = null;
+if (typeof window !== 'undefined') window.addEventListener(DATA_CHANGED_EVENT, () => { cache = null; });
+const cached = (key: string | null) => (key && cache && cache.key === key && Date.now() - cache.at < CACHE_MS ? cache.value : null);
+
 export function useCommandIndex(open: boolean): CommandIndex {
   const { currentUser, currentMember, permissions } = useAuth();
   const householdId = currentUser?.householdId ?? null;
-  const [index, setIndex] = useState<Omit<CommandIndex, 'retry'>>(EMPTY);
-  const [loaded, setLoaded] = useState(false);
+  const cacheKey = householdId && currentUser ? indexCacheKey(householdId, currentUser.uid, permissions) : null;
+  // The palette remounts on every open, so a fresh cache is used from the first render.
+  const [index, setIndex] = useState<Omit<CommandIndex, 'retry'>>(() => cached(cacheKey) ?? EMPTY);
+  const [loaded, setLoaded] = useState(() => cached(cacheKey) !== null);
   const [attempt, setAttempt] = useState(0);
   const approved = Boolean(currentMember && currentMember.role !== 'newuser');
+  const fromCache = useRef(loaded);
 
   useEffect(() => {
     if (!open || !householdId || !approved) return;
+    if (fromCache.current && attempt === 0) return;
     let cancelled = false;
     const base = (...path: string[]) => collection(db, 'households', householdId, ...path);
     const safe = <T,>(promise: Promise<T>) => promise.catch(() => null);
 
     (async () => {
-      const [members, lists, pets, chores, assets, vehicles, rooms] = await Promise.all([
+      const [members, lists, pets, chores, assets, vehicles, rooms, pantry] = await Promise.all([
         safe(getDocsOfflineAware(base('members'))),
         permissions['shopping.view'] ? safe(getDocsOfflineAware(base('shopping-lists'))) : null,
         permissions['pets.view'] ? safe(getDocsOfflineAware(base('pets'))) : null,
@@ -68,6 +95,8 @@ export function useCommandIndex(open: boolean): CommandIndex {
         permissions['maintenance.view'] ? safe(getDocsOfflineAware(base('home-assets'))) : null,
         permissions['maintenance.view'] ? safe(getDocsOfflineAware(base('vehicles'))) : null,
         permissions['chores.view'] ? safe(getDocsOfflineAware(base('rooms'))) : null,
+        // Pantry (QA-10): read under the same permission as the Pantry tab.
+        permissions['shopping.view'] ? safe(getDocsOfflineAware(base('pantry-inventory'))) : null,
       ]);
       // A section that was asked for and failed, or came back empty from the offline
       // cache (which cannot prove there are none), is unknown, never "empty".
@@ -90,23 +119,35 @@ export function useCommandIndex(open: boolean): CommandIndex {
         : [];
       if (cancelled) return;
 
+      const roomRows = rooms ? rows(rooms) : [];
+      const roomName = new Map(roomRows.map((room) => [room.id, str(room.name, 'Room')]));
       const entries: IndexEntry[] = [
-        ...(chores ? rows(chores).map((chore) => ({
-          id: `chore-${chore.id}`,
-          label: str(chore.task, 'Chore'),
-          detail: str(chore.assignedToDisplayName) || undefined,
-          href: '/chores',
-          group: 'Chores' as const,
-        })) : []),
+        ...(chores ? rows(chores).map((chore) => {
+          const roomIds = Array.isArray(chore.roomIds) ? chore.roomIds.filter((id): id is string => typeof id === 'string') : [];
+          const roomNames = roomIds.map((id) => roomName.get(id)).filter((name): name is string => Boolean(name));
+          const who = publicDisplayName(str(chore.assignedToDisplayName));
+          return {
+            id: `chore-${chore.id}`,
+            label: str(chore.task, 'Chore'),
+            // "Sam" finds Sam's chores and "kitchen" the kitchen's (QA-11).
+            detail: [str(chore.assignedToDisplayName) ? who : '', ...roomNames].filter(Boolean).join(' · ') || undefined,
+            // Opens Chores on its room when it has one (QA-12).
+            href: roomIds.length === 1 ? choresRoomHref(roomIds[0]) : '/chores',
+            group: 'Chores' as const,
+          };
+        }) : []),
+        // Rooms open Chores filtered to that room (QA-10).
+        ...roomRows.map((room) => ({ id: `room-${room.id}`, label: str(room.name, 'Room'), detail: 'Room · chores', href: choresRoomHref(room.id), group: 'Rooms' as const })),
+        ...(pantry ? rows(pantry).filter((item) => str(item.name)).map((item) => ({ id: `pantry-${item.id}`, label: str(item.name), detail: 'Pantry', href: PANTRY_HREF, group: 'Pantry' as const })) : []),
         // Shopping's own URL scheme (`?list=<id>`), so a result opens the list that holds it.
         ...listRows.map((list) => ({ id: `list-${list.id}`, label: str(list.name, 'Shopping list'), detail: 'List', href: shoppingListHref(list.id), group: 'Shopping' as const })),
-        ...items.map(({ item, list }) => ({ id: `item-${list.id}-${item.id}`, label: str(item.name, 'Item'), detail: str(list.name), href: shoppingListHref(list.id), group: 'Shopping' as const })),
+        ...items.map(({ item, list }) => ({ id: `item-${list.id}-${item.id}`, label: str(item.name, 'Item'), detail: str(list.name), href: shoppingListHref(list.id), hitId: item.id, group: 'Shopping' as const })),
         ...(pets ? rows(pets).map((pet) => ({ id: `pet-${pet.id}`, label: str(pet.name, 'Pet'), detail: str(pet.type) || undefined, href: `/pets/${encodeURIComponent(pet.id)}`, group: 'Pets' as const })) : []),
         ...(assets ? rows(assets).map((asset) => ({ id: `asset-${asset.id}`, label: str(asset.name, 'Home asset'), detail: str(asset.location) || 'Home asset', href: `/maintenance?asset=${encodeURIComponent(asset.id)}`, group: 'Maintenance' as const })) : []),
-        ...(vehicles ? rows(vehicles).map((vehicle) => ({ id: `vehicle-${vehicle.id}`, label: str(vehicle.nickname, 'Vehicle'), detail: 'Vehicle', href: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`, group: 'Maintenance' as const })) : []),
+        ...(vehicles ? rows(vehicles).map((vehicle) => ({ id: `vehicle-${vehicle.id}`, label: str(vehicle.nickname, 'Vehicle'), detail: [str(vehicle.year === undefined ? '' : String(vehicle.year)), str(vehicle.make), str(vehicle.model)].filter(Boolean).join(' ') || 'Vehicle', keywords: 'vehicle car', href: `/maintenance?vehicle=${encodeURIComponent(vehicle.id)}`, group: 'Maintenance' as const })) : []),
       ];
 
-      setIndex({
+      const value: Omit<CommandIndex, 'retry'> = {
         entries,
         members: members
           ? rows(members)
@@ -138,7 +179,7 @@ export function useCommandIndex(open: boolean): CommandIndex {
           };
         }) : [],
         lists: listRows.map((list) => ({ id: list.id, name: str(list.name, 'Shopping list'), type: str(list.type) || undefined })),
-        rooms: rooms ? rows(rooms).map((room) => ({ id: room.id, name: str(room.name, 'Room') })) : [],
+        rooms: roomRows.map((room) => ({ id: room.id, name: str(room.name, 'Room') })),
         vehicles: vehicles
           ? rows(vehicles)
               .filter((vehicle) => vehicle.status !== 'retired' && vehicle.status !== 'sold')
@@ -155,7 +196,10 @@ export function useCommandIndex(open: boolean): CommandIndex {
           : [],
         failed,
         loading: false,
-      });
+      };
+      // Pantry is search only, but a failed read still keeps the index out of the cache.
+      if (failed.length === 0 && (!permissions['shopping.view'] || pantry) && cacheKey) cache = { key: cacheKey, at: Date.now(), value };
+      setIndex(value);
       setLoaded(true);
     })().catch(() => {
       if (cancelled) return;
@@ -167,24 +211,15 @@ export function useCommandIndex(open: boolean): CommandIndex {
     return () => {
       cancelled = true;
     };
-  }, [open, householdId, approved, permissions, attempt]);
+  }, [open, householdId, approved, permissions, attempt, cacheKey]);
 
   const retry = useCallback(() => {
+    cache = null;
+    fromCache.current = false;
     setLoaded(false);
     setIndex(EMPTY);
     setAttempt((value) => value + 1);
   }, []);
 
   return { ...index, loading: open && !loaded, retry };
-}
-
-/** Case-insensitive match score: 0 none, higher is better. */
-export function matchScore(label: string, search: string): number {
-  const haystack = label.toLowerCase();
-  const needle = search.trim().toLowerCase();
-  if (!needle) return 0;
-  if (haystack === needle) return 4;
-  if (haystack.startsWith(needle)) return 3;
-  if (haystack.split(/\s+/).some((word) => word.startsWith(needle))) return 2;
-  return haystack.includes(needle) ? 1 : 0;
 }

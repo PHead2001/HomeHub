@@ -4,6 +4,7 @@ import { parseQuickAdd, splitItems, looksLikeItems, namedPets, foodFromText, typ
 import { canSplitChip, describeIntent, joinChips, removeChip, splitChip } from '../../src/lib/dashboard/quick-add-preview';
 import { mileageInText, portionInText, readMileage } from '../../src/lib/dashboard/quick-add-numbers';
 import { householdWallClock } from '../../src/lib/household-zone';
+import { groupContiguous, indexCacheKey, recentUse, searchScore, withinOneEdit } from '../../src/lib/dashboard/command-search';
 import { recognitionLanguage, voiceAutoPreview, voiceErrorMessage } from '../../src/lib/dashboard/voice';
 
 // Saturday, 1 August 2026, local noon.
@@ -233,5 +234,50 @@ describe('QA-19: editable preview chips', () => {
     assert.deepEqual(removeChip(items, 1), [items[0]]);
     assert.deepEqual(removeChip([items[1]], 0), [items[1]]);
     assert.deepEqual(joinChips([{ name: 'Mac', quantity: 1 }, { name: 'Cheese', quantity: 1 }]), [{ name: 'Mac and cheese', quantity: 1 }]);
+  });
+});
+
+describe('QA-11: matching', () => {
+  it('scores every word across label, detail and keywords', () => {
+    assert.ok(searchScore({ label: 'Take out trash', detail: 'Sam Member · Kitchen' }, 'sam') > 0);
+    assert.ok(searchScore({ label: 'Take out trash', detail: 'Sam Member · Kitchen' }, 'trash kitchen') > 0);
+    assert.equal(searchScore({ label: 'Take out trash', detail: 'Sam Member' }, 'trash garage'), 0);
+    assert.ok(searchScore({ label: 'Civic', detail: '2019 Honda Civic', keywords: 'vehicle car' }, 'honda') > 0);
+    assert.ok(searchScore({ label: 'Appearance', keywords: 'dark mode theme' }, 'dark mode') > 0);
+  });
+  it('allows one typo in longer words, and ranks label and prefix matches higher', () => {
+    assert.equal(withinOneEdit('mlik', 'milk'), true);
+    assert.equal(withinOneEdit('dishwaser', 'dishwasher'), true);
+    assert.equal(withinOneEdit('milk', 'mint'), false);
+    assert.ok(searchScore({ label: 'Dishwasher' }, 'dishwaser') > 0);
+    assert.equal(searchScore({ label: 'Mint' }, 'milk'), 0);
+    assert.ok(searchScore({ label: 'Milk' }, 'milk') > searchScore({ label: 'Oat milk' }, 'milk'));
+    assert.ok(searchScore({ label: 'Milk' }, 'mil') > searchScore({ label: 'Chips', detail: 'Milk run' }, 'mil'));
+  });
+  it('boosts what is used often and lately', () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => void store.set(key, value) };
+    const uses = recentUse(storage, 'k');
+    const now = Date.UTC(2026, 7, 1);
+    uses.record(['milk'], now - 30 * 86_400_000);
+    uses.record(['eggs'], now);
+    uses.record(['eggs'], now);
+    assert.deepEqual(uses.top(2, now), ['eggs', 'milk']);
+    assert.ok(uses.boost('eggs', now) > uses.boost('milk', now));
+    assert.equal(uses.boost('bread', now), 0);
+    assert.deepEqual(recentUse({ getItem: () => 'not json', setItem: () => undefined }, 'k').top(3), []);
+  });
+});
+
+describe('QA-5 and QA-12: grouping and the index cache key', () => {
+  it('keeps each group together, in order of its best option', () => {
+    const options = [{ id: 'a', group: 'Chores' }, { id: 'b', group: 'Shopping' }, { id: 'c', group: 'Chores' }, { id: 'd', group: 'Go to' }];
+    assert.deepEqual(groupContiguous(options).map((option) => option.id), ['a', 'c', 'b', 'd']);
+  });
+  it('keys the cache by household, person and permissions', () => {
+    const one = indexCacheKey('h1', 'u1', { 'chores.view': true, 'pets.view': false });
+    assert.equal(one, indexCacheKey('h1', 'u1', { 'pets.view': false, 'chores.view': true }));
+    assert.notEqual(one, indexCacheKey('h1', 'u2', { 'chores.view': true }));
+    assert.notEqual(one, indexCacheKey('h1', 'u1', { 'chores.view': true, 'pets.view': true }));
   });
 });

@@ -411,3 +411,10 @@
 :root[data-kiosk] .ambient-aurora__blob {
   animation: none !important;
 }
+
+/* A palette result's row, outlined for a moment after it opens (QA-12). */
+[data-search-hit] {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}

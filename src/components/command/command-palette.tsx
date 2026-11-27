@@ -33,6 +33,7 @@ import {
   ShoppingCart,
   Sparkles,
   User,
+  Settings,
   Users,
   Wrench,
   X,
@@ -63,7 +64,9 @@ import { feedConfirmOf, newFeedOpId, type FeedConfirm } from '@/lib/pets/feed-pl
 import { undoFeed } from '@/lib/pets/feed-operation';
 import { GO_TARGETS, isComposingKey } from '@/lib/dashboard/shortcuts';
 import { householdWallClock } from '@/lib/household-zone';
-import { matchScore, useCommandIndex } from './use-command-index';
+import { useCommandIndex } from './use-command-index';
+import { groupContiguous, recentItemsKey, recentPicksKey, recentUse, searchScore } from '@/lib/dashboard/command-search';
+import { highlightRowWhenShown } from './search-hit';
 import { addShoppingItems, createOneTimeChore, createRepeatingChore, feedingPreviewLine, logFeeding, logMaintenance } from './quick-add-actions';
 import { useVoiceInput } from './use-voice-input';
 import { VOICE_DISCLOSURE, voiceAutoPreview } from '@/lib/dashboard/voice';
@@ -84,6 +87,15 @@ const PAGES: Page[] = [
   { href: '/household', label: 'Household', icon: Users, permission: 'household.view', keywords: 'members invite roles' },
   { href: '/library', label: 'Barcode Library', icon: ScanBarcode, keywords: 'products' },
   { href: '/profile', label: 'Profile', icon: User, keywords: 'settings appearance theme' },
+  // Settings by what people call them (QA-10): "dark mode" finds Appearance.
+  { href: '/profile', label: 'Appearance', icon: Settings, keywords: 'dark mode light theme text size font motion colour color settings' },
+  { href: '/profile', label: 'Chore reminders', icon: Settings, keywords: 'reminder time notifications settings' },
+  { href: '/profile', label: 'Push notifications', icon: Settings, keywords: 'push phone alerts settings' },
+  { href: '/household?tab=members', label: 'Members', icon: Users, permission: 'household.view', keywords: 'people family kids household' },
+  { href: '/household?tab=invites', label: 'Invite codes', icon: Users, permission: 'household.view', keywords: 'invite join code' },
+  { href: '/household?tab=devices', label: 'Tablets', icon: Users, permission: 'household.view', keywords: 'devices wall tablet pair' },
+  { href: '/maintenance?tab=reminders', label: 'Maintenance reminders', icon: Wrench, permission: 'maintenance.view', keywords: 'due service schedule' },
+  { href: '/shopping?tab=pantry', label: 'Pantry', icon: ShoppingCart, permission: 'shopping.view', keywords: 'inventory cupboard expiring' },
 ];
 
 const goHint = (href: string) => {
@@ -173,6 +185,9 @@ export function CommandPalette({
   const [lastFed, setLastFed] = useState<{ intent: QuickAddIntent; line: string } | null>(null);
   const lastFedText = lastFed && lastFed.intent === pending ? lastFed.line : null;
   const previewHouseholdId = currentUser?.householdId ?? null;
+  // Device-local use history (QA-11, QA-18): picked results and added items.
+  const picks = useMemo(() => recentUse(typeof window === 'undefined' ? null : window.localStorage, recentPicksKey(previewHouseholdId ?? '')), [previewHouseholdId]);
+  const recentItems = useMemo(() => recentUse(typeof window === 'undefined' ? null : window.localStorage, recentItemsKey(previewHouseholdId ?? '')), [previewHouseholdId]);
   const previewTimeZone = household?.timeZone ?? null;
   useEffect(() => {
     if (!pending || pending.kind !== 'feeding' || !previewHouseholdId) return;
@@ -303,12 +318,14 @@ export function CommandPalette({
     const search = text.trim();
     const pages = PAGES.filter((page) => !page.permission || permissions[page.permission]);
     const pageOptions: Option[] = pages
-      .map((page) => ({ page, score: search ? Math.max(matchScore(page.label, search), matchScore(page.keywords ?? '', search) ? 1 : 0) : 1 }))
+      // Settings entries show only when searched for; the empty list keeps the main pages.
+      .filter((page) => search || !page.href.includes('?') && !['Appearance', 'Chore reminders', 'Push notifications'].includes(page.label))
+      .map((page) => ({ page, score: search ? searchScore({ label: page.label, keywords: page.keywords }, search) : 1 }))
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, search ? 4 : PAGES.length)
       .map(({ page }) => ({
-        id: `page-${page.href}`,
+        id: `page-${page.label}-${page.href}`,
         group: 'Go to',
         label: page.label,
         hint: goHint(page.href),
@@ -316,11 +333,14 @@ export function CommandPalette({
         run: () => navigate(page.href),
       }));
 
-    const groupIcons: Record<string, LucideIcon> = { Chores: CheckSquare, Shopping: ShoppingCart, Pets: PawPrint, Maintenance: Wrench };
+    const groupIcons: Record<string, LucideIcon> = { Chores: CheckSquare, Rooms: Home, Shopping: ShoppingCart, Pantry: ShoppingCart, Pets: PawPrint, Maintenance: Wrench };
+    // Every typed word against label, detail and keywords, one typo allowed, then
+    // what is used often and lately (QA-11).
     const records: Option[] = search
       ? index.entries
-          .map((entry) => ({ entry, score: matchScore(entry.label, search) }))
+          .map((entry) => ({ entry, score: searchScore(entry, search) }))
           .filter((item) => item.score > 0)
+          .map((item) => ({ ...item, score: item.score + picks.boost(item.entry.id) }))
           .sort((a, b) => b.score - a.score)
           .slice(0, 8)
           .map(({ entry }) => ({
@@ -329,7 +349,11 @@ export function CommandPalette({
             label: entry.label,
             detail: entry.detail,
             icon: groupIcons[entry.group],
-            run: () => navigate(entry.href),
+            run: () => {
+              picks.record([entry.id]);
+              navigate(entry.href);
+              if (entry.hitId) highlightRowWhenShown(entry.hitId);
+            },
           }))
       : [];
 
@@ -383,6 +407,41 @@ export function CommandPalette({
         },
       });
     }
+    // An empty palette offers what is added often ("Add again", QA-18) and the
+    // tile actions; a tap goes straight to the preview or the mode.
+    if (!search && quickContext && !index.loading) {
+      const list = quickContext.lists.find((candidate) => candidate.type === 'Grocery') ?? quickContext.lists[0] ?? null;
+      if (list && permissions['shopping.edit']) {
+        for (const name of recentItems.top(3)) {
+          const again: QuickAddIntent = { kind: 'shopping', items: [{ name, quantity: 1 }], list, explicit: true };
+          quick.push({
+            id: `quick-add-again-${name}`,
+            group: 'Add again',
+            label: name,
+            detail: `to ${list.name}`,
+            icon: Plus,
+            run: () => {
+              invalidateAi();
+              setPendingFromAi(false);
+              setPending(again);
+            },
+          });
+        }
+      }
+      for (const target of (['feeding', 'item', 'chore'] as const).filter((candidate) => permissions[MODE_PERMISSION[candidate]])) {
+        quick.push({
+          id: `quick-add-mode-empty-${target}`,
+          group: 'Quick add',
+          label: target === 'feeding' ? 'Log a feeding…' : target === 'item' ? 'Add a shopping item…' : 'Add a chore…',
+          icon: target === 'feeding' ? PawPrint : target === 'item' ? ShoppingCart : CheckSquare,
+          run: () => {
+            invalidateAi();
+            setModeText('');
+            setMode(target);
+          },
+        });
+      }
+    }
     // Reading with AI uses a daily AI request, so Enter picks it first only when
     // nothing else matches; otherwise it is the last choice.
     const others = quick.length + records.length + pageOptions.length;
@@ -394,8 +453,9 @@ export function CommandPalette({
       icon: Sparkles,
       run: () => void readWithAi(),
     }] : [];
-    return [...quick, ...records, ...pageOptions, ...ai];
-  }, [text, permissions, index.entries, intent, self, navigate, offerAi, readWithAi, invalidateAi, bareOffer]);
+    // Group, then rank: each group's options stay together (QA-5).
+    return groupContiguous([...quick, ...records, ...pageOptions, ...ai]);
+  }, [text, permissions, index.entries, index.loading, intent, self, navigate, offerAi, readWithAi, invalidateAi, bareOffer, quickContext, picks, recentItems]);
 
   const active = Math.min(activeChoice, Math.max(0, options.length - 1));
 
@@ -444,6 +504,7 @@ export function CommandPalette({
         const list = current.list;
         const outcome = await addShoppingItems(householdId, list, current.items, lateError);
         if (outcome.saved.length > 0) {
+          recentItems.record(outcome.saved.map((item) => item.name));
           notifyDataChanged({ module: 'shopping', householdId, listId: list.id });
           // Only a durable local copy may say "saved on this device".
           toast({ title: outcome.queued ? 'Saved, will sync' : 'Added to the list', description: outcome.queued
@@ -841,6 +902,10 @@ export function CommandPalette({
                 <p className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
                   <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />
                   Reading it with AI…
+                  {/* Cancel drops the answer (QA-21); the request already sent still counts toward the daily limit. */}
+                  <Button type="button" variant="ghost" size="sm" className="touch-target ml-auto h-7 px-2 text-xs" onClick={invalidateAi} data-testid="palette-ai-cancel">
+                    Cancel
+                  </Button>
                 </p>
               )}
               {aiState.status === 'none' && (
