@@ -43,6 +43,7 @@ import { normalizeRecurrence } from '@/components/chores/recurrence-fields';
 import { ChoreList } from '@/components/chores/chore-list';
 import { ChoreDetailSheet } from '@/components/chores/chore-detail-sheet';
 import type { DetailEdit } from '@/lib/chores/detail';
+import { oneTimeChoreRooms } from '@/lib/chores/add-chore';
 import { rescheduleFields } from '@/lib/chores/calendar';
 import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
@@ -318,29 +319,32 @@ export function ChoreChartClient() {
       return false;
     }
     const assigneeName = memberName(assignee);
-    const roomIds = input.roomId === 'general' ? [] : [input.roomId];
+    // CH-25: one or more rooms (none: Around the house).
+    const roomIds = input.roomIds.filter(roomId => roomId !== 'general');
 
     try {
       if (!input.repeat) {
-        // One-time: a direct chore plus (for someone else) its assignment notification, atomically.
-        const choreRef = doc(choresCollection);
+        // One-time: a direct chore per room (CH-25) plus (for someone else) one assignment
+        // notification, atomically.
+        const choreRefs = oneTimeChoreRooms(roomIds).map(rooms => ({ ref: doc(choresCollection), rooms }));
+        const choreRef = choreRefs[0].ref;
         // Keyed by uid: notification state keys are readable by every member.
         const stateKey = `assigned|${input.dueDate}|${assignee.uid}`;
         const batch = writeBatch(db);
-        batch.set(choreRef, {
+        choreRefs.forEach(({ ref, rooms }) => batch.set(ref, {
           task: input.task,
           notes: input.notes,
           ...assigneeFields(assignee),
           assignedToDisplayName: assigneeName,
           dueDate: new Date(`${input.dueDate}T12:00:00`).toISOString(),
           originalDueDate: input.dueDate,
-          roomIds,
+          roomIds: rooms,
           isCompleted: false,
           completedSubTasks: [],
           sourceType: 'temporary',
           // CH-20: a one-time chore you add for yourself earns no points.
           createdByUid: currentUser.uid,
-        });
+        }));
         if (shouldNotify(assignee.uid)) {
           const notificationId = getDeterministicNotificationId({ sourceType: 'chore-assignment', sourceId: choreRef.id, stateKey });
           batch.set(doc(notificationsCollection, notificationId), buildNotificationDocument({
