@@ -282,6 +282,14 @@ test.describe('invite expiry clock (HO-8)', () => {
       }).not.toBe('');
       const row = page.getByRole('listitem').filter({ hasText: code });
       await expect(row.getByText('Active', { exact: true })).toBeVisible();
+      // Creating a code opens nothing on top of the list; its QR button does (HO-16, HO-23).
+      await expect(page.getByRole('dialog', { name: 'Scan to join' })).toHaveCount(0);
+      await row.getByRole('button', { name: `Show QR code and link for ${code}` }).click();
+      const share = page.getByRole('dialog', { name: 'Scan to join' });
+      await expect(share.getByRole('img', { name: `QR code for invite ${code}` })).toBeVisible();
+      await expect(share.getByRole('button', { name: 'Copy link' })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(share).toHaveCount(0);
       // By the server's clock the code has about 30 minutes left (never a date months away).
       // (The pinned clock read the server's time before the code was made: 30 or 31.)
       await expect(row).toContainText(/expires in (30|31) min/);

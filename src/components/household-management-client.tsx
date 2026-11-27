@@ -283,8 +283,6 @@ export function HouseholdManagementClient() {
       const invite = await runAction('Could not create an invite code', (idToken) =>
         createInviteAction({ idToken, householdId, suggestedRole: inviteRole === 'none' ? null : inviteRole }));
       if (!invite) return;
-      // The big QR code and share sheet open at once (HO-16, HO-23).
-      setShareInvite(invite);
       // The code exists now; copying is a convenience that must not turn a successful
       // invite into a reported failure (iOS often blocks clipboard writes after an await).
       const copied = await copyText(invite.code);
