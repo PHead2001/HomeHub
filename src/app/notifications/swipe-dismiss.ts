@@ -172,3 +172,14 @@ export function useSwipeDismiss({
     dragging,
   };
 }
+
+/**
+ * The card's cursor classes (NO-20): "grabbing" while a swipe is in progress, else
+ * "grab" only on a touch screen (coarse pointer), where swiping works; nothing for a
+ * mouse. The two are never set together: the coarse-pointer `grab` rule is a media
+ * variant, so it would override `cursor-grabbing` mid-swipe.
+ */
+export function swipeCursorClass(canSwipe: boolean, dragging: boolean): string {
+  if (!canSwipe) return '';
+  return dragging ? 'cursor-grabbing' : '[@media(pointer:coarse)]:cursor-grab';
+}

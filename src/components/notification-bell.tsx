@@ -15,7 +15,7 @@ import { db } from "@/lib/firebase";
 import { errorEmitter } from '@/lib/error-emitter';
 import { FirestorePermissionError } from '@/lib/errors';
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
-import { useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
+import { swipeCursorClass, useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
 import { useDismissNotifications } from "@/app/notifications/use-dismiss-notifications";
 import { useMarkRead } from "@/app/notifications/use-mark-read";
 import { categoriesKey, notificationWindowQuery, viewableNotificationCategories } from "@/app/notifications/notification-query";
@@ -88,8 +88,7 @@ function NotificationItem({
         "group relative w-full touch-pan-y overflow-hidden rounded-sm",
         !isRead && "bg-accent/50",
         // NO-20: the grab cursor only where a swipe works (touch).
-        canDismiss && "[@media(pointer:coarse)]:cursor-grab",
-        swipe.dragging && "cursor-grabbing",
+        swipeCursorClass(canDismiss, swipe.dragging),
       )}
     >
       <div

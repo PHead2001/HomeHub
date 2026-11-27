@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
-import { useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
+import { swipeCursorClass, useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
 import { useDismissNotifications } from "@/app/notifications/use-dismiss-notifications";
 import { useMarkRead } from "@/app/notifications/use-mark-read";
 import { useNow } from "@/hooks/use-now";
@@ -110,8 +110,7 @@ function NotificationCenterItem({
         "group relative overflow-hidden rounded-lg border bg-background",
         !isDismissed && "touch-pan-y",
         // NO-20: the grab cursor only where a swipe works (touch).
-        !isDismissed && canDismiss && "[@media(pointer:coarse)]:cursor-grab",
-        swipe.dragging && "cursor-grabbing",
+        swipeCursorClass(!isDismissed && canDismiss, swipe.dragging),
       )}
     >
       <div

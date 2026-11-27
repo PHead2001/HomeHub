@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { isHouseholdWide, matchesNotificationFilter, notificationFilterOptions } from '../../src/lib/dashboard/notification-display';
 import type { Notification } from '../../src/lib/types';
+import { swipeCursorClass } from '../../src/app/notifications/swipe-dismiss';
 
 // NO-13 (Household filter), NO-18 (chips from what the member can see), NO-7 (Unread).
 const NOW = new Date('2026-11-12T18:00:00Z');
@@ -36,5 +37,15 @@ describe('center filters', () => {
     assert.equal(matchesNotificationFilter(note({ dismissedBy: { u1: { at: NOW } } }), 'dismissed', 'u1'), true);
     assert.equal(matchesNotificationFilter(note({ category: 'pets' }), 'pets', 'u1'), true);
     assert.equal(matchesNotificationFilter(note({ category: 'pets' }), 'chores', 'u1'), false);
+  });
+});
+
+describe('NO-20: swipe cursor', () => {
+  test('grab only on touch at rest, grabbing alone while a swipe is in progress, nothing when swiping is off', () => {
+    assert.equal(swipeCursorClass(true, false), '[@media(pointer:coarse)]:cursor-grab');
+    // The coarse-pointer grab rule must not be present mid-swipe: as a media variant it would win over grabbing.
+    assert.equal(swipeCursorClass(true, true), 'cursor-grabbing');
+    assert.equal(swipeCursorClass(false, false), '');
+    assert.equal(swipeCursorClass(false, true), '');
   });
 });
