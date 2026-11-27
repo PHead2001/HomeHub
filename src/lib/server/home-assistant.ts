@@ -222,6 +222,7 @@ const trimEntity = (item: unknown): HomeAssistantEntitySummary[] => {
   if (typeof entity.entity_id !== 'string') return [];
   const attributes = (entity.attributes && typeof entity.attributes === 'object' ? entity.attributes : {}) as Record<string, unknown>;
   const pick = (key: string) => (typeof attributes[key] === 'string' ? (attributes[key] as string) : undefined);
+  const temperature = attributes.current_temperature;
   const changed = typeof entity.last_changed === 'string' && Number.isFinite(Date.parse(entity.last_changed)) ? entity.last_changed : undefined;
   return [{
     entity_id: entity.entity_id,
@@ -230,6 +231,7 @@ const trimEntity = (item: unknown): HomeAssistantEntitySummary[] => {
       friendly_name: pick('friendly_name'),
       unit_of_measurement: pick('unit_of_measurement'),
       device_class: pick('device_class'),
+      ...(typeof temperature === 'number' && Number.isFinite(temperature) ? { current_temperature: temperature } : {}),
     },
     ...(changed ? { last_changed: changed } : {}),
   }];

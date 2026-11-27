@@ -10,6 +10,8 @@ export type HomeAssistantEntitySummary = {
     friendly_name?: string;
     unit_of_measurement?: string;
     device_class?: string;
+    /** Climate entities: the measured temperature (AU-15). */
+    current_temperature?: number;
   };
   /** ISO time the state last changed (AU-3), when Home Assistant sent one. */
   last_changed?: string;

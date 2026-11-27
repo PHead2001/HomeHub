@@ -126,9 +126,10 @@ describe('Home Assistant credential storage', () => {
 describe('Home Assistant settings storage', () => {
   test('managers change one setting at a time; members cannot; the privacy choice is logged', async () => {
     await refused(changeConfig(HOUSE, 'member', { kind: 'favorite', entityId: 'light.k', pinned: true }), /no longer have permission/);
-    assert.deepEqual(await changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.k', pinned: true }), { favorites: ['light.k'], showSensitiveToMembers: false });
+    assert.deepEqual(await changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.k', pinned: true }), { favorites: ['light.k'], rooms: {}, showSensitiveToMembers: false });
     await changeConfig(HOUSE, 'owner', { kind: 'showSensitiveToMembers', show: true });
-    assert.deepEqual(await readConfig(HOUSE), { favorites: ['light.k'], showSensitiveToMembers: true });
+    await changeConfig(HOUSE, 'owner', { kind: 'room', entityId: 'light.k', roomId: 'kitchen' });
+    assert.deepEqual(await readConfig(HOUSE), { favorites: ['light.k'], rooms: { 'light.k': 'kitchen' }, showSensitiveToMembers: true });
     const entry = (await audits()).find((e) => e.action === 'automation.settings_changed');
     assert.equal(entry?.details.showSensitiveToMembers, true);
   });
@@ -140,7 +141,7 @@ describe('Home Assistant settings storage', () => {
     await changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.k', pinned: true });
     assert.equal((await readConfig(HOUSE)).showSensitiveToMembers, false);
     await changeConfig(HOUSE, 'owner', { kind: 'favorite', entityId: 'light.k', pinned: false });
-    assert.deepEqual(await readConfig(HOUSE), { favorites: [], showSensitiveToMembers: false });
+    assert.deepEqual(await readConfig(HOUSE), { favorites: [], rooms: {}, showSensitiveToMembers: false });
   });
 
   test('concurrent changes from two pages both survive', async () => {

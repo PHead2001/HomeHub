@@ -31,6 +31,7 @@ import { DashboardSubtitle } from './dashboard-subtitle';
 import { HomeWrapped } from './home-wrapped';
 import { LivingHouse } from './living-house';
 import { MorningBrief } from './morning-brief';
+import { HomeStatusCard, useHomeStatus } from './home-status-card';
 import styles from './dashboard.module.css';
 
 export function Dashboard() {
@@ -43,6 +44,8 @@ export function Dashboard() {
   // page that never reloads turns gold at the 100th chore. Unknown is never gold.
   const golden = facts.completedChores !== undefined && isGoldenRoof(facts.completedChores);
   const houseClean = useHouseClean(facts, sections.chores, scope.householdId, today);
+  // AU-13, AU-15: Home Assistant on the house and as a card (personal accounts only).
+  const homeStatus = useHomeStatus(!tablet);
 
   return (
     <div className={cn('container mx-auto px-4', styles.page)} data-testid="dashboard-page">
@@ -53,7 +56,7 @@ export function Dashboard() {
           <h1 className={cn(styles.wideSrOnly, 'font-headline text-3xl font-bold tracking-tight')}>Welcome Home</h1>
           <DashboardSubtitle householdName={scope.householdName ?? undefined} timeZone={timeZone} />
         </div>
-        <LivingHouse facts={facts} title={scope.householdName || 'Your home'} golden={golden} now={now} rooms={sections.chores} outline={houseOutline} timeZone={timeZone} onRetry={retry} />
+        <LivingHouse facts={facts} title={scope.householdName || 'Your home'} golden={golden} now={now} rooms={sections.chores} outline={houseOutline} timeZone={timeZone} onRetry={retry} devices={homeStatus?.rooms} />
       </div>
 
       <div className={cn(styles.tilesPane, 'min-w-0')}>
@@ -61,6 +64,7 @@ export function Dashboard() {
             rewrite; the household day rolling over does not (HP-4b). */}
         <div className={styles.briefSlot}>
           <MorningBrief key={context} facts={facts} name={tablet ? null : scope.greetingName} household={tablet} now={now} today={today} timeZone={timeZone} ready={!loading} />
+          {homeStatus && <HomeStatusCard data={homeStatus} now={now} />}
         </div>
         <BentoGrid facts={facts} loading={loading} failed={failed} sections={sections} timeZone={timeZone} onRetry={retry} />
 

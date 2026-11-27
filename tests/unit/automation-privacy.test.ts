@@ -39,19 +39,19 @@ describe('AU-11: people, trackers, cameras and locks', () => {
 
 
   it('a viewer gets the privacy choice only as a manager, and sensitive favourites only when allowed', () => {
-    const config = { favorites: ['light.k', 'lock.front'], showSensitiveToMembers: true };
-    assert.deepEqual(configForViewer({ ...config, showSensitiveToMembers: false }, { role: 'member', canManage: false }), { favorites: ['light.k'], showSensitiveToMembers: false });
-    assert.deepEqual(configForViewer(config, { role: 'member', canManage: false }), { favorites: ['light.k', 'lock.front'], showSensitiveToMembers: false });
+    const config = { favorites: ['light.k', 'lock.front'], rooms: { 'light.k': 'r' }, showSensitiveToMembers: false };
+    assert.deepEqual(configForViewer(config, { role: 'member', canManage: false }), { favorites: ['light.k'], rooms: { 'light.k': 'r' }, showSensitiveToMembers: false });
     assert.deepEqual(configForViewer(config, { role: 'owner', canManage: true }), config);
-    assert.deepEqual(configForViewer(config, { role: 'child', canManage: false }).favorites, ['light.k']);
+    assert.deepEqual(configForViewer({ ...config, showSensitiveToMembers: true }, { role: 'child', canManage: false }).favorites, ['light.k']);
   });
 });
 
 describe('automation settings', () => {
-  const good = { favorites: ['light.k'], showSensitiveToMembers: false };
+  const good = { favorites: ['light.k'], rooms: { 'light.k': 'kitchen', 'binary_sensor.back': 'hall' }, showSensitiveToMembers: false };
 
   it('accepts a valid config and refuses bad parts whole', () => {
     assert.deepEqual(validateAutomationConfig(good), { ok: true, value: good });
+    assert.equal(validateAutomationConfig({ ...good, rooms: { 'lock.front': 'hall' } }).ok, false, 'locks never go on the house');
     assert.equal(validateAutomationConfig({ ...good, favorites: ['not an id'] }).ok, false);
     assert.equal(validateAutomationConfig({ ...good, showSensitiveToMembers: 'yes' }).ok, false);
     assert.equal(validateAutomationConfig(null).ok, false);
@@ -60,7 +60,9 @@ describe('automation settings', () => {
   it('reads stored config tolerantly, with privacy off by default', () => {
     assert.deepEqual(readAutomationConfig(undefined), EMPTY_AUTOMATION_CONFIG);
     assert.equal(readAutomationConfig({}).showSensitiveToMembers, false);
-    assert.deepEqual(readAutomationConfig({ favorites: ['light.k', 'bad', 'light.k'] }).favorites, ['light.k']);
+    const read = readAutomationConfig({ favorites: ['light.k', 'bad', 'light.k'], rooms: { 'lock.x': 'a', 'light.k': 'b' } });
+    assert.deepEqual(read.favorites, ['light.k']);
+    assert.deepEqual(read.rooms, { 'light.k': 'b' });
   });
 });
 
@@ -97,16 +99,25 @@ describe('AU-6: the header slot', () => {
 });
 
 describe('one settings change at a time', () => {
-  const stored = { favorites: ['light.a'], showSensitiveToMembers: false };
+  const stored = { favorites: ['light.a'], rooms: {}, showSensitiveToMembers: false };
 
   it('pinning or unpinning a favourite changes only the favourites', () => {
-    assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.b', pinned: true }), { ok: true, value: { favorites: ['light.a', 'light.b'], showSensitiveToMembers: false } });
-    assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.a', pinned: false }), { ok: true, value: { favorites: [], showSensitiveToMembers: false } });
+    assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.b', pinned: true }), { ok: true, value: { favorites: ['light.a', 'light.b'], rooms: {}, showSensitiveToMembers: false } });
+    assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.a', pinned: false }), { ok: true, value: { favorites: [], rooms: {}, showSensitiveToMembers: false } });
     assert.deepEqual(applyConfigChange(stored, { kind: 'favorite', entityId: 'light.a', pinned: true }), { ok: true, value: stored }, 'pinning twice keeps one');
   });
 
+  it('placing a device in a room, or taking it off the house, changes only the rooms', () => {
+    const placed = applyConfigChange(stored, { kind: 'room', entityId: 'light.a', roomId: 'kitchen' });
+    assert.deepEqual(placed, { ok: true, value: { favorites: ['light.a'], rooms: { 'light.a': 'kitchen' }, showSensitiveToMembers: false } });
+    assert.ok(placed.ok);
+    assert.deepEqual(applyConfigChange(placed.value, { kind: 'room', entityId: 'light.a', roomId: null }), { ok: true, value: stored });
+    assert.equal(applyConfigChange(stored, { kind: 'room', entityId: 'lock.front', roomId: 'hall' }).ok, false, 'locks never go on the house');
+    assert.equal(applyConfigChange(stored, { kind: 'room', entityId: 'light.a', roomId: 'a/b' }).ok, false);
+  });
+
   it('the privacy choice changes only itself', () => {
-    assert.deepEqual(applyConfigChange(stored, { kind: 'showSensitiveToMembers', show: true }), { ok: true, value: { favorites: ['light.a'], showSensitiveToMembers: true } });
+    assert.deepEqual(applyConfigChange(stored, { kind: 'showSensitiveToMembers', show: true }), { ok: true, value: { favorites: ['light.a'], rooms: {}, showSensitiveToMembers: true } });
   });
 
   it('refuses anything else, including a whole config', () => {
@@ -116,7 +127,7 @@ describe('one settings change at a time', () => {
   });
 
   it('refuses a favourite past the limit', () => {
-    const full = { favorites: Array.from({ length: 40 }, (_, i) => `light.l${i}`), showSensitiveToMembers: false };
+    const full = { favorites: Array.from({ length: 40 }, (_, i) => `light.l${i}`), rooms: {}, showSensitiveToMembers: false };
     assert.equal(applyConfigChange(full, { kind: 'favorite', entityId: 'light.extra', pinned: true }).ok, false);
   });
 });
