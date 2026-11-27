@@ -34,7 +34,9 @@ import {
   type MemberRecord,
 } from "./push-policy";
 import {filterRecipientsByCategory} from "./shared/push-audience";
-import {pushHoldUntil, readLocalWindow} from "./shared/push-hold";
+import {
+  pushHoldUntil, pushTtlSeconds, readLocalWindow,
+} from "./shared/push-hold";
 import {safeTimeZone} from "./shared/calendar";
 import {releaseHeldPushes} from "./held-pushes";
 import {
@@ -101,12 +103,18 @@ const deliverPush = async (
     .flatMap((m) => typeof m.email === "string" ?
       [[m.email.toLowerCase(), m.uid] as const] : []));
   const only = onlyUids ? new Set(onlyUids) : null;
+  // NO-11: the person who caused it (for example the one who transferred
+  // ownership) is not pushed about it; it is still in their bell.
+  const creator = typeof notificationData.createdByUid === "string" ?
+    notificationData.createdByUid : null;
   const addressed = filterRecipientsByCategory(
     members.filter(isApprovedMember),
     selectRecipientEmails(members, notificationData),
     notificationData.category)
-    .filter((email) => !only ||
-      only.has(uidByEmail.get(email.toLowerCase()) ?? ""));
+    .filter((email) => {
+      const uid = uidByEmail.get(email.toLowerCase()) ?? "";
+      return (!only || only.has(uid)) && uid !== creator;
+    });
   if (addressed.length === 0) {
     logger.log("No approved recipients for notification.");
     return;
@@ -194,6 +202,8 @@ const deliverPush = async (
   const body = clampText(
     notificationData.message, "You have a new notification.", 500);
   const tag = notificationId;
+  const ttl = pushTtlSeconds(notificationData.holdUntilMorning === true,
+    new Date(), timeZone);
   const groups = [true, false]
     .map((withImage) => tokenOwners.filter((o) => o.showImage === withImage))
     .filter((group) => group.length > 0);
@@ -205,6 +215,7 @@ const deliverPush = async (
     const payload: MulticastMessage = {
       notification: {title, body},
       webpush: {
+        headers: {TTL: String(ttl)},
         fcmOptions: {link: safeDeepLink(notificationData.deepLink)},
         notification: options,
         // The service worker's own display reads these (the SDK does not

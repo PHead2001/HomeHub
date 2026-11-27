@@ -8,16 +8,16 @@ import { isNotificationDismissedBy, isNotificationExpired, isNotificationReadBy,
 import type { Notification } from '../types';
 import { canSeeCategory, type ViewPermission } from '@functions/shared/push-audience';
 
-/** The bell shows at most this many active notifications (and counts unread among them). */
+/** The bell lists at most this many active notifications; counts and Dismiss all cover every active one (NO-7). */
 export const BELL_LIMIT = 10;
 
 /**
- * The bell's active list: not expired, meant for this member, not resolved and not
- * dismissed by them, newest first, capped at {@link BELL_LIMIT}. Pass notifications
- * already merged with `deduplicateNotifications`. The dashboard's unread tile uses
- * the same list, so both always show the same number.
+ * Every active notification: not expired, meant for this member, allowed by category,
+ * not resolved and not dismissed by them, newest first, uncapped. The bell's badge,
+ * the dashboard tile and the center's Unread count all count from this (NO-7), and the
+ * bell's Dismiss all dismisses all of it.
  */
-export function activeBellNotifications(
+export function activeNotifications(
   notifications: Notification[],
   user: { uid: string; email: string; canView?: (permission: ViewPermission) => boolean },
   now = new Date(),
@@ -28,17 +28,77 @@ export function activeBellNotifications(
     // A module's notifications need that module's view permission (as pushes do).
     .filter((notification) => !user.canView || canSeeCategory(notification.category, user.canView))
     .filter((notification) => !notification.resolvedAt)
-    .filter((notification) => !isNotificationDismissedBy(notification, user.uid))
-    .slice(0, BELL_LIMIT);
+    .filter((notification) => !isNotificationDismissedBy(notification, user.uid));
 }
+
+/**
+ * The bell's list: {@link activeNotifications} capped at {@link BELL_LIMIT}. Pass
+ * notifications already merged with `deduplicateNotifications`.
+ */
+export function activeBellNotifications(
+  notifications: Notification[],
+  user: { uid: string; email: string; canView?: (permission: ViewPermission) => boolean },
+  now = new Date(),
+): Notification[] {
+  return activeNotifications(notifications, user, now).slice(0, BELL_LIMIT);
+}
+
+/** Unread among the active notifications, counted before any cap (NO-7). */
+export const unreadCount = (active: Notification[], uid: string): number =>
+  active.filter((notification) => !isNotificationReadBy(notification, uid)).length;
+
+/**
+ * Addressed to the whole household (`['*']`, or a legacy untargeted document) rather
+ * than to one member: the center's Household filter (NO-13).
+ */
+export const isHouseholdWide = (notification: Notification): boolean =>
+  notification.audience ? notification.audience.includes('*') : !notification.targetUserUid && !notification.targetUserEmail;
+
+export type NotificationFilter = 'unread' | 'all' | 'household' | 'dismissed' | Notification['category'];
+
+const CATEGORY_FILTERS: Array<{ value: Notification['category']; label: string }> = [
+  { value: 'chores', label: 'Chores' },
+  { value: 'pets', label: 'Pets' },
+  { value: 'shopping', label: 'Shopping' },
+  { value: 'maintenance', label: 'Maintenance' },
+  { value: 'automation', label: 'Automation' },
+];
+
+/**
+ * The center's filter chips (NO-18, NO-13): Unread, All, Household, Dismissed, then
+ * only the module categories this member may see (a child never gets an always-empty
+ * Shopping chip).
+ */
+export function notificationFilterOptions(canView: (permission: ViewPermission) => boolean): Array<{ value: NotificationFilter; label: string }> {
+  return [
+    { value: 'unread', label: 'Unread' },
+    { value: 'all', label: 'All' },
+    { value: 'household', label: 'Household' },
+    { value: 'dismissed', label: 'Dismissed' },
+    ...CATEGORY_FILTERS.filter((option) => canSeeCategory(option.value, canView)),
+  ];
+}
+
+/** Whether a notification (already visible to the member) belongs under a filter. */
+export function matchesNotificationFilter(notification: Notification, filter: NotificationFilter, uid: string): boolean {
+  const dismissed = isNotificationDismissedBy(notification, uid);
+  if (filter === 'unread') return !isNotificationReadBy(notification, uid) && !dismissed && !notification.resolvedAt;
+  if (filter === 'all') return true;
+  if (filter === 'dismissed') return dismissed;
+  if (filter === 'household') return isHouseholdWide(notification);
+  return notification.category === filter;
+}
+
+/** The center's page size (NO-21): it reads this many at a time, with Load more. */
+export const CENTER_PAGE_SIZE = 100;
 
 /** The bell's (and the dashboard's) notification window. */
 export const NOTIFICATION_WINDOW_DAYS = 7;
 
 /**
- * Unread among the bell's active list at `now`: the last {@link NOTIFICATION_WINDOW_DAYS}
- * days, then {@link activeBellNotifications} (expiry, audience, category, resolved,
- * dismissed, cap). Recomputed as time passes from the retained documents, so a notice
+ * Unread among the active notifications at `now`: the last {@link NOTIFICATION_WINDOW_DAYS}
+ * days, then {@link activeNotifications} (expiry, audience, category, resolved,
+ * dismissed), counted before the bell's cap (NO-7). Recomputed as time passes from the retained documents, so a notice
  * that expires (or leaves the window) drops out of the count without a new snapshot.
  */
 export function unreadBellCount(
@@ -48,7 +108,7 @@ export function unreadBellCount(
 ): number {
   const since = now.getTime() - NOTIFICATION_WINDOW_DAYS * 86_400_000;
   const recent = notifications.filter((notification) => notification.createdAt.getTime() >= since);
-  return activeBellNotifications(recent, user, now).filter((notification) => !isNotificationReadBy(notification, user.uid)).length;
+  return unreadCount(activeNotifications(recent, user, now), user.uid);
 }
 
 export type NotificationGroupId = 'today' | 'week' | 'earlier';

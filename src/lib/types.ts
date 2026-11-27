@@ -683,6 +683,8 @@ export type Notification = {
   title?: string;
   message: string;
   createdAt: Date;
+  /** First written (upkeep refreshes move createdAt, not this); absent when equal to createdAt. */
+  firstCreatedAt?: Date;
   expiresAt: Date;
   deepLink?: string;
   href?: string;

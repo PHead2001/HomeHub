@@ -12,9 +12,10 @@ import {
   addDays, localDay, localMinutes, safeTimeZone,
 } from "./shared/calendar";
 import {
-  choreNotificationsFor, overdueChoresFor, UPKEEP_INTERVAL_MS,
+  choreNotificationsFor, dailyDigestFor, overdueChoresFor, UPKEEP_INTERVAL_MS,
   type ChoreInput,
 } from "./shared/chore-reminders";
+import {memberCanView} from "./shared/push-audience";
 import {syncOverdueNotification} from "./overdue-chores";
 import {
   addPurgedChores, choreStatsDocId, completionYear, purgeMustWait,
@@ -142,6 +143,9 @@ const notificationBody = (
 ) => ({
   householdId,
   createdAt: ts(now),
+  // When it was first written: a refresh moves createdAt (to stay listed),
+  // the app shows the age from this (NO-11).
+  firstCreatedAt: ts(now),
   expiresAt: ts(new Date(now.getTime() + NOTIFICATION_TTL_DAYS * 86400000)),
   readBy: {},
   dismissedBy: {},
@@ -631,7 +635,8 @@ export const runHouseholdReminders = async (
       // resolution written while the run was in flight may reflect data the
       // run has not seen. It is an update, so no new push is sent; members
       // already had one for this same reminder, and it is visible in the
-      // bell again. Read and dismissed state is kept, as on refresh.
+      // bell again. It is actionable again, so it is new again for everyone
+      // (NO-11): read and dismissed entries are cleared and its age restarts.
       if (snap.get("resolvedAt")) {
         if (!shouldReopen(snap.updateTime, sourcesReadAt)) {
           return "unchanged";
@@ -641,7 +646,10 @@ export const runHouseholdReminders = async (
           audience,
           resolvedAt: null,
           resolvedBy: null,
+          readBy: {},
+          dismissedBy: {},
           createdAt: ts(now),
+          firstCreatedAt: ts(now),
           expiresAt: freshExpiry,
         });
         return "reopened";
@@ -767,7 +775,8 @@ export const runHouseholdReminders = async (
     };
   }));
   const clock = {now, timeZone};
-  for (const r of buildMedicationReminders(pets, today, clock)) {
+  const medicationDue = buildMedicationReminders(pets, today, clock);
+  for (const r of medicationDue) {
     const kept = await ensure(
       deterministicNotificationId(r.sourceType, r.sourceId, r.stateKey), {
         category: "pets",
@@ -829,6 +838,34 @@ export const runHouseholdReminders = async (
     if (status === "resolved") result.resolvedNotifications++;
   }
 
+  const syncDigest = (
+    uid: string,
+    digest: ReturnType<typeof dailyDigestFor>,
+  ) => db.runTransaction(async (tx) => {
+    const ref = house.collection("notifications")
+      .doc(`${uid}-reminder-${today}`);
+    const [home, snap] = await Promise.all([tx.get(house), tx.get(ref)]);
+    if (!home.exists || home.get("deletingAt")) return "stopped";
+    // Not sent yet (before the reminder time), or written after this run
+    // read its sources: nothing to do.
+    if (!snap.exists || !shouldReopen(snap.updateTime, sourcesReadAt)) {
+      return "unchanged";
+    }
+    const resolved = Boolean(snap.get("resolvedAt"));
+    if (!digest) {
+      if (resolved) return "unchanged";
+      tx.update(ref, {resolvedAt: ts(now)});
+      return "resolved";
+    }
+    if (!resolved && snap.get("title") === digest.title &&
+        snap.get("message") === digest.message) return "unchanged";
+    tx.update(ref, {
+      title: digest.title, message: digest.message,
+      ...(resolved ? {resolvedAt: null, resolvedBy: null} : {}),
+    });
+    return resolved ? "reopened" : "updated";
+  });
+
   // Chore reminders (per person, in their own timezone). Reminder documents
   // are fixed per day once written, so they must see this run's generated
   // and purged chores: re-read when this run changed any.
@@ -862,7 +899,12 @@ export const runHouseholdReminders = async (
       reminderTime: settings.reminderTime,
       overdueAlerts: settings.overdueAlerts !== false,
     };
-    const notes = choreNotificationsFor(person, chores, now);
+    // NO-22: the daily reminder is the person's digest, pet doses included
+    // when they can see pets.
+    const doses = memberCanView(member as {role?: unknown;
+      permissions?: unknown}, "pets.view") ? medicationDue.length : 0;
+    const notes = choreNotificationsFor(person, chores, now,
+      UPKEEP_INTERVAL_MS, doses);
     let reminderSent = false;
     for (const note of notes) {
       const kept = await ensure(note.id, {
@@ -877,6 +919,14 @@ export const runHouseholdReminders = async (
       if (!kept) return result;
       if (kept === "created") reminderSent = true;
     }
+    // Today's digest, once sent, follows what is left: rewritten in place
+    // (no push) as chores are done or doses given, resolved when nothing is
+    // left, active again if something comes back (an Undo).
+    const digest = await syncDigest(member.uid,
+      dailyDigestFor(person, chores, today, today, doses));
+    if (digest === "stopped") return result;
+    if (digest === "resolved") result.resolvedNotifications++;
+    if (digest === "reopened") result.reopenedNotifications++;
     // One overdue notification per person, updated in place
     // (./overdue-chores.ts). A daily reminder sent in this run (at any hour),
     // or still to come today, states the overdue count, so it carries the

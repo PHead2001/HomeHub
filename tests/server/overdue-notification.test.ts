@@ -292,4 +292,26 @@ describe('overdue chores notification (NO-1)', () => {
     assert.deepEqual(data.overdueChoreIds, ['sweep'], 'the chore due on the household day is not overdue yet');
     assert.equal(data.lastPushDay, '2026-11-05');
   });
+  test('NO-22: the daily digest is rewritten as chores are done and resolved when nothing is left', async () => {
+    await adminDb.collection('users').doc(EMAIL).set({ email: EMAIL, choreSettings: { reminderEnabled: true, reminderTime: '17:00' } });
+    await chore('today', 'Dishes', '2026-11-05');
+    await run(at('2026-11-05', 17));
+    const ref = notes().doc('o1-reminder-2026-11-05');
+    assert.equal((await ref.get()).data()!.title, '1 chore due today');
+    assert.equal((await ref.get()).data()!.message, '1 chore due today and 1 overdue.');
+    await ref.update({ 'readBy.o1': { at: 'x' } });
+    await house().collection('chores').doc('sweep').update({ isCompleted: true });
+    await run(at('2026-11-05', 18));
+    let data = (await ref.get()).data()!;
+    assert.equal(data.message, '1 chore due today.', 'rewritten in place');
+    assert.deepEqual(data.readBy, { o1: { at: 'x' } }, 'read state kept; no new push (an update)');
+    await house().collection('chores').doc('today').update({ isCompleted: true });
+    await run(at('2026-11-05', 19));
+    data = (await ref.get()).data()!;
+    assert.ok(data.resolvedAt, 'resolved when everything is done');
+    await house().collection('chores').doc('today').update({ isCompleted: false });
+    await run(at('2026-11-05', 20));
+    data = (await ref.get()).data()!;
+    assert.equal(data.resolvedAt, null, 'back when a chore comes back');
+  });
 });

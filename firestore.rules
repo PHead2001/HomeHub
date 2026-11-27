@@ -368,6 +368,14 @@ service cloud.firestore {
              ownNotificationStateValid(request.resource.data.dismissedBy, resource.data.dismissedBy);
     }
 
+    // NO-8: marking read needs only notifications.view (guests can read their bell
+    // down); dismissing still needs notifications.dismiss.
+    function updatesOnlyOwnReadState() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']) &&
+             request.resource.data.readBy.diff(resource.data.readBy).affectedKeys().hasOnly([request.auth.uid]) &&
+             ownNotificationStateValid(request.resource.data.readBy, resource.data.readBy);
+    }
+
     function resolvesMaintenanceNotification() {
       return resource.data.category == 'maintenance' &&
              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resolvedAt', 'resolvedBy']) &&
@@ -2004,6 +2012,7 @@ service cloud.firestore {
           deviceNotificationReadable(householdId);
         allow create: if validNewNotification(householdId);
         allow update: if notificationAddressedToCaller() && (
+          (hasHouseholdPermission(householdId, 'notifications.view') && updatesOnlyOwnReadState()) ||
           (hasHouseholdPermission(householdId, 'notifications.dismiss') && updatesOnlyOwnNotificationState()) ||
           (hasHouseholdPermission(householdId, 'maintenance.edit') && resolvesMaintenanceNotification()));
         allow delete: if false;

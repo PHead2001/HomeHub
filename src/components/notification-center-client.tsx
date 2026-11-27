@@ -3,18 +3,20 @@
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import Link from "next/link";
-import { format, formatDistanceToNow } from "date-fns";
-import { CheckCheck, Clock, ExternalLink, Loader2, X } from "lucide-react";
+import { format, formatDistance } from "date-fns";
+import { CheckCheck, Clock, ExternalLink, Loader2, MailCheck, X } from "lucide-react";
 import { collection, doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useReducedMotion } from "@/hooks/use-reduced-motion";
-import { useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
+import { swipeCursorClass, useSwipeDismiss } from "@/app/notifications/swipe-dismiss";
 import { useDismissNotifications } from "@/app/notifications/use-dismiss-notifications";
+import { useMarkRead } from "@/app/notifications/use-mark-read";
+import { useNow } from "@/hooks/use-now";
 import { db } from "@/lib/firebase";
-import type { Notification, NotificationCategory, NotificationUserAction } from "@/lib/types";
+import type { Notification, NotificationCategory } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
 import { NumberTicker } from "@/components/motion/number-ticker";
@@ -24,7 +26,17 @@ import { canSeeCategory } from "@functions/shared/push-audience";
 import { categoriesKey, notificationWindowQuery, viewableNotificationCategories } from "@/app/notifications/notification-query";
 import { friendlyError } from "@/lib/friendly-error";
 import { publicDisplayName } from "@/lib/member-directory";
-import { caughtUpLine, groupNotifications, notificationDestination, notificationSourceLabel } from "@/lib/dashboard/notification-display";
+import {
+  CENTER_PAGE_SIZE,
+  caughtUpLine,
+  groupNotifications,
+  matchesNotificationFilter,
+  notificationDestination,
+  notificationFilterOptions,
+  notificationSourceLabel,
+  type NotificationFilter,
+} from "@/lib/dashboard/notification-display";
+import type { NotificationUserAction } from "@/lib/types";
 import {
   createNotificationAction,
   deduplicateNotifications,
@@ -34,25 +46,9 @@ import {
   isNotificationReadBy,
   isNotificationVisibleToUser,
   notificationCategoryLabels,
+  notificationSince,
   parseNotificationDoc,
 } from "@/lib/notifications";
-
-type NotificationFilter =
-  | "unread"
-  | "all"
-  | "dismissed"
-  | NotificationCategory;
-
-const filterOptions: { value: NotificationFilter; label: string }[] = [
-  { value: "unread", label: "Unread" },
-  { value: "all", label: "All" },
-  { value: "dismissed", label: "Dismissed" },
-  { value: "chores", label: "Chores" },
-  { value: "pets", label: "Pets" },
-  { value: "shopping", label: "Shopping" },
-  { value: "maintenance", label: "Maintenance" },
-  { value: "automation", label: "Automation" },
-];
 
 const getActionName = (action?: NotificationUserAction) => {
   // Never the email, which older entries may still hold.
@@ -64,27 +60,31 @@ function NotificationCenterItem({
   notification,
   isRead,
   isDismissed,
+  canDismiss,
+  now,
   onDismiss,
   onOpen,
 }: {
   notification: Notification;
   isRead: boolean;
   isDismissed: boolean;
+  /** NO-8: dismissing needs notifications.dismiss (guests only read). */
+  canDismiss: boolean;
+  now: Date;
   onDismiss: (id: string) => void;
-  onOpen: (notification: Notification, event: React.MouseEvent<HTMLAnchorElement>) => void;
+  onOpen: (notification: Notification, event: React.MouseEvent<HTMLElement>) => void;
 }) {
   const reducedMotion = useReducedMotion();
   // The wrapper and the link never move (they are the hit targets); only the
   // card's visual layer slides, so a tap always lands where it was aimed.
   const swipe = useSwipeDismiss({
-    disabled: isDismissed,
+    disabled: isDismissed || !canDismiss,
     reducedMotion,
     onDismiss: () => onDismiss(notification.id),
   });
 
-  const dismissedAction = Object.values(notification.dismissedBy)[0];
+  // NO-11: dismissal is per person, so only the viewer's own is shown.
   const resolvedName = getActionName(notification.resolvedBy);
-  const dismissedName = getActionName(dismissedAction);
   const hasDeepLink = getNotificationLink(notification) !== "#";
   const sourceLabel = notificationSourceLabel(notification.sourceType);
 
@@ -94,7 +94,7 @@ function NotificationCenterItem({
     <PeekFacts
       title={notification.title || "HomeHub"}
       facts={[
-        ["When", format(notification.createdAt, "EEE d MMM, p")],
+        ["When", format(notificationSince(notification), "EEE d MMM, p")],
         ...(destination ? [["Opens", destination] as [string, string]] : []),
         ...(resolvedName ? [["Completed by", resolvedName] as [string, string]] : []),
       ]}
@@ -106,8 +106,12 @@ function NotificationCenterItem({
     <div
       {...swipe.handlers}
       data-testid="notification-card"
-      className={cn("group relative overflow-hidden rounded-lg border bg-background", !isDismissed && "touch-pan-y")}
-      style={{ cursor: isDismissed ? "default" : (swipe.dragging ? "grabbing" : "grab") }}
+      className={cn(
+        "group relative overflow-hidden rounded-lg border bg-background",
+        !isDismissed && "touch-pan-y",
+        // NO-20: the grab cursor only where a swipe works (touch).
+        swipeCursorClass(!isDismissed && canDismiss, swipe.dragging),
+      )}
     >
       <div
         aria-hidden
@@ -118,6 +122,7 @@ function NotificationCenterItem({
       >
         <X className="h-5 w-5" />
       </div>
+      {hasDeepLink ? (
       <Link
         href={getNotificationLink(notification)}
         onClick={(event) => onOpen(notification, event)}
@@ -126,7 +131,7 @@ function NotificationCenterItem({
       >
         <div
           data-swipe-visual
-          className={cn("bg-background p-4 pr-12", isDismissed && "opacity-70")}
+          className={cn("bg-background p-4", canDismiss && !isDismissed && "pr-14", isDismissed && "bg-muted/40")}
           style={swipe.visualStyle}
         >
           <div className="flex flex-wrap items-start gap-2">
@@ -139,7 +144,7 @@ function NotificationCenterItem({
           </div>
           <div className="mt-3 space-y-1">
             <div className="flex items-start justify-between gap-3">
-              <h3 className="font-headline text-base font-semibold leading-tight">{notification.title || "HomeHub"}</h3>
+              <h3 className={cn("font-headline text-base font-semibold leading-tight", isDismissed && "text-muted-foreground")}>{notification.title || "HomeHub"}</h3>
               {hasDeepLink && <ExternalLink aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
             </div>
             <p className="text-sm text-muted-foreground">{notification.message}</p>
@@ -147,15 +152,50 @@ function NotificationCenterItem({
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1">
               <Clock aria-hidden className="h-3 w-3" />
-              {formatDistanceToNow(notification.createdAt, { addSuffix: true })}
+              {formatDistance(notificationSince(notification), now, { addSuffix: true })}
             </span>
             {sourceLabel && <span>{sourceLabel}</span>}
-            {dismissedName && <span>Dismissed by {dismissedName}</span>}
+            {isDismissed && <span>You dismissed this</span>}
             {resolvedName && <span>Completed by {resolvedName}</span>}
           </div>
         </div>
       </Link>
-      {!isDismissed && (
+      ) : (
+        // NO-11, NO-20: nothing to open, so a button that marks it read, never a link to "#".
+        <button type="button" onClick={(event) => onOpen(notification, event)} className="relative block w-full text-left">
+        <div
+          data-swipe-visual
+          className={cn("bg-background p-4", canDismiss && !isDismissed && "pr-14", isDismissed && "bg-muted/40")}
+          style={swipe.visualStyle}
+        >
+          <div className="flex flex-wrap items-start gap-2">
+            <Badge variant={isDismissed ? "outline" : "secondary"}>
+              {notificationCategoryLabels[notification.category]}
+            </Badge>
+            {!isRead && <Badge>Unread</Badge>}
+            {isDismissed && <Badge variant="outline">Dismissed</Badge>}
+            {notification.resolvedAt && <Badge variant="outline">Resolved</Badge>}
+          </div>
+          <div className="mt-3 space-y-1">
+            <div className="flex items-start justify-between gap-3">
+              <h3 className={cn("font-headline text-base font-semibold leading-tight", isDismissed && "text-muted-foreground")}>{notification.title || "HomeHub"}</h3>
+              {hasDeepLink && <ExternalLink aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
+            </div>
+            <p className="text-sm text-muted-foreground">{notification.message}</p>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1">
+              <Clock aria-hidden className="h-3 w-3" />
+              {formatDistance(notificationSince(notification), now, { addSuffix: true })}
+            </span>
+            {sourceLabel && <span>{sourceLabel}</span>}
+            {isDismissed && <span>You dismissed this</span>}
+            {resolvedName && <span>Completed by {resolvedName}</span>}
+          </div>
+        </div>
+        </button>
+      )}
+      {!isDismissed && canDismiss && (
         // The button alternative to swiping. Hover pointers reveal it on hover
         // or keyboard focus; touch screens always show it.
         <Button
@@ -184,10 +224,18 @@ function NotificationCenterItem({
 export function NotificationCenterClient() {
   const { currentUser, permissions } = useAuth();
   const dismissNotifications = useDismissNotifications();
+  const markRead = useMarkRead();
+  const canDismiss = Boolean(permissions['notifications.dismiss']);
+  const now = useNow();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activeFilter, setActiveFilter] = useState<NotificationFilter>("unread");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // NO-21: the center reads a page at a time; Load more widens the window.
+  const [pageSize, setPageSize] = useState(CENTER_PAGE_SIZE);
+  const [hasMore, setHasMore] = useState(false);
+  // NO-18: only the categories this member may see, plus Household (NO-13).
+  const filterOptions = useMemo(() => notificationFilterOptions((permission) => Boolean(permissions[permission])), [permissions]);
   // Same category filter as the bell, applied in the query.
   const viewKey = categoriesKey(viewableNotificationCategories((permission) => Boolean(permissions[permission])));
 
@@ -207,12 +255,14 @@ export function NotificationCenterClient() {
       currentUser.uid,
       sevenDaysAgo,
       categories,
+      pageSize,
     );
 
     const unsubscribe = onSnapshot(
       notificationsQuery,
       (snapshot) => {
         setNotifications(deduplicateNotifications(snapshot.docs.map(parseNotificationDoc)));
+        setHasMore(snapshot.size >= pageSize);
         setIsLoading(false);
       },
       (loadError) => {
@@ -222,11 +272,11 @@ export function NotificationCenterClient() {
     );
 
     return () => unsubscribe();
-  }, [currentUser?.householdId, currentUser?.uid, viewKey]);
+  }, [currentUser?.householdId, currentUser?.uid, viewKey, pageSize]);
 
   const validNotifications = useMemo(() => {
-    return notifications.filter((notification) => !isNotificationExpired(notification));
-  }, [notifications]);
+    return notifications.filter((notification) => !isNotificationExpired(notification, now));
+  }, [notifications, now]);
 
   const filteredNotifications = useMemo(() => {
     if (!currentUser?.uid || !currentUser.email) return [];
@@ -236,13 +286,8 @@ export function NotificationCenterClient() {
       // A module's notifications need that module's view permission (as pushes do).
       if (!canSeeCategory(notification.category, (permission) => Boolean(permissions[permission]))) return false;
 
-      const isDismissed = isNotificationDismissedBy(notification, currentUser.uid);
-      const isRead = isNotificationReadBy(notification, currentUser.uid);
-
-      if (activeFilter === "unread") return !isRead && !isDismissed;
-      if (activeFilter === "all") return true;
-      if (activeFilter === "dismissed") return isDismissed;
-      return notification.category === activeFilter;
+      // NO-7: a resolved notification (a dose already given) is not unread.
+      return matchesNotificationFilter(notification, activeFilter, currentUser.uid);
     });
   }, [activeFilter, currentUser, permissions, validNotifications]);
 
@@ -254,7 +299,7 @@ export function NotificationCenterClient() {
     void dismissNotifications(activeVisibleIds);
   };
 
-  const handleOpenNotification = async (notification: Notification, event: React.MouseEvent<HTMLAnchorElement>) => {
+  const handleOpenNotification = async (notification: Notification, event: React.MouseEvent<HTMLElement>) => {
     if (getNotificationLink(notification) === "#") {
       event.preventDefault();
     }
@@ -277,6 +322,7 @@ export function NotificationCenterClient() {
       isNotificationVisibleToUser(notification, currentUser)
       && canSeeCategory(notification.category, (permission) => Boolean(permissions[permission]))
       && !isNotificationDismissedBy(notification, currentUser.uid)
+      && !notification.resolvedAt
       && !isNotificationReadBy(notification, currentUser.uid)).length;
   }, [currentUser, permissions, validNotifications]);
 
@@ -284,22 +330,46 @@ export function NotificationCenterClient() {
     ? filteredNotifications.filter((notification) => !isNotificationDismissedBy(notification, currentUser.uid)).length
     : 0;
 
+  // NO-14: every unread notification this member can see, whatever the filter.
+  const unreadIds = useMemo(() => {
+    if (!currentUser?.uid || !currentUser.email) return [];
+    return validNotifications.filter((notification) =>
+      isNotificationVisibleToUser(notification, currentUser)
+      && canSeeCategory(notification.category, (permission) => Boolean(permissions[permission]))
+      && matchesNotificationFilter(notification, "unread", currentUser.uid)).map((notification) => notification.id);
+  }, [currentUser, permissions, validNotifications]);
+
   return (
-    <div className="container mx-auto px-4 py-6 md:py-8">
+    // NO-16: a readable column on wide screens, with the dismiss button close to the text.
+    <div className="container mx-auto max-w-3xl px-4 py-6 md:py-8">
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="font-headline text-2xl font-bold tracking-tight md:text-3xl">Notification Center</h1>
-          <p className="text-sm text-muted-foreground">Last 7 days of household notification history.</p>
+          <p className="text-sm text-muted-foreground">Your notifications and the household&apos;s from the last 7 days.</p>
         </div>
-        {activeVisibleCount > 0 && (
-          <Button onClick={handleDismissVisible} className="sm:self-center">
-            <CheckCheck className="mr-2 h-4 w-4" />
-            Dismiss visible
-          </Button>
-        )}
+        <div className="flex flex-wrap gap-2 sm:self-center">
+          {unreadIds.length > 0 && (
+            <Button variant="outline" onClick={() => void markRead(unreadIds)}>
+              <MailCheck className="mr-2 h-4 w-4" aria-hidden />
+              Mark all read
+            </Button>
+          )}
+          {canDismiss && activeVisibleCount > 0 && (
+            <Button onClick={handleDismissVisible}>
+              <CheckCheck className="mr-2 h-4 w-4" />
+              Dismiss visible
+            </Button>
+          )}
+        </div>
       </div>
 
-      <div className="mb-5 flex gap-2 overflow-x-auto pb-2">
+      {/* NO-16: the chips stay in reach while scrolling, and a fade shows there are more to the side. */}
+      <div
+        className="sticky top-0 z-10 -mx-4 mb-5 flex gap-2 overflow-x-auto bg-background/95 px-4 pb-2 pt-1 backdrop-blur [mask-image:linear-gradient(to_right,black_calc(100%-2rem),transparent)] sm:[mask-image:none]"
+        role="group"
+        aria-label="Filter notifications"
+        data-testid="notification-filters"
+      >
         {filterOptions.map((filter) => (
           <Button
             key={filter.value}
@@ -338,7 +408,7 @@ export function NotificationCenterClient() {
       ) : filteredNotifications.length === 0 ? (
         <Card>
           {activeFilter === "unread" ? (
-            <EmptyState kind="notifications" title="All caught up" description={caughtUpLine(new Date())} />
+            <EmptyState kind="notifications" title="All caught up" description={caughtUpLine(now)} />
           ) : (
             <EmptyState
               kind="notifications"
@@ -350,17 +420,19 @@ export function NotificationCenterClient() {
         </Card>
       ) : (
         <div className="space-y-6">
-          {groupNotifications(filteredNotifications, new Date()).map((group) => (
+          {groupNotifications(filteredNotifications, now).map((group) => (
             <section key={group.id} aria-labelledby={`notification-group-${group.id}`}>
               <h2 id={`notification-group-${group.id}`} className="mb-2 text-sm font-medium text-muted-foreground">{group.label}</h2>
               {/* Keyed by filter, so switching filters plays the entrance again. */}
               <Stagger key={activeFilter} className="space-y-3">
                 {group.items.map((notification) => (
                     <NotificationCenterItem
+                      now={now}
                       key={notification.id}
                       notification={notification}
                       isRead={currentUser?.uid ? isNotificationReadBy(notification, currentUser.uid) : false}
                       isDismissed={currentUser?.uid ? isNotificationDismissedBy(notification, currentUser.uid) : false}
+                      canDismiss={canDismiss}
                       onDismiss={(id) => dismissNotifications([id])}
                       onOpen={handleOpenNotification}
                     />
@@ -368,6 +440,13 @@ export function NotificationCenterClient() {
               </Stagger>
             </section>
           ))}
+        </div>
+      )}
+      {!isLoading && !error && hasMore && (
+        <div className="mt-6 flex justify-center">
+          <Button variant="outline" onClick={() => setPageSize((size) => size + CENTER_PAGE_SIZE)} data-testid="notification-load-more">
+            Load more
+          </Button>
         </div>
       )}
     </div>

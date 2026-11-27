@@ -28,7 +28,7 @@ import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
 import { syncHouseholdUpkeep } from '@/app/chores/actions';
 import { auth, db } from '@/lib/firebase';
-import { buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
+import { assignmentNotificationId, buildNotificationDocument, getDeterministicNotificationId } from '@/lib/notifications';
 import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
@@ -364,7 +364,7 @@ export function ChoreChartClient() {
           ...assigneeFields(assignee),
         });
         if (shouldNotify(assignee.uid)) {
-          await setDoc(doc(notificationsCollection), buildNotificationDocument({
+          await setDoc(doc(notificationsCollection, assignmentNotificationId(templateId, assignee.uid)), buildNotificationDocument({
             householdId: currentUser.householdId,
             category: 'chores',
             title: 'New chore assigned',
@@ -530,7 +530,7 @@ export function ChoreChartClient() {
       await commit();
       if (shouldNotify(user.uid)) {
         try {
-          await setDoc(doc(collection(db, 'households', currentUser.householdId, 'notifications')), buildNotificationDocument({
+          await setDoc(doc(db, 'households', currentUser.householdId, 'notifications', assignmentNotificationId(templatesToAssign.map(template => template.id).join(','), user.uid)), buildNotificationDocument({
             householdId: currentUser.householdId,
             category: 'chores',
             title: templatesToAssign.length > 1 ? 'New chores assigned' : 'New chore assigned',

@@ -723,6 +723,8 @@ export const removeDevice = async (
         sourceType: 'device-removed',
         sourceId: deviceId,
         stateKey: String(next),
+        // The admin who removed it is not pushed about it (NO-11).
+        createdByUid: caller.uid,
         targetUserUid: admin.id,
         audience: notificationAudience({ targetUserUid: admin.id }),
         readBy: {},

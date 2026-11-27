@@ -208,6 +208,7 @@ describe('pending-member reminder', () => {
       const data = doc.data();
       assert.equal(doc.id, pendingReminderNoticeId(pending.uid, data.targetUserUid, pendingReminderStateKey(NOW)));
       assert.deepEqual(data.audience, [data.targetUserUid]);
+      assert.equal(data.createdByUid, owner.uid, 'NO-11: the owner who opened the page is not pushed about it');
       assert.equal(data.category, 'system');
       assert.equal(data.householdId, HOUSE);
       assert.equal(data.message, 'Pat Pending still needs a household role.');

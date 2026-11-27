@@ -647,7 +647,9 @@ describe('household upkeep', () => {
       assert.equal(data.title, "Maple's Flea prevention is overdue");
       assert.equal(data.createdAt.toDate().toISOString(), later.toISOString(), 'listed again in the 7-day window');
       assert.ok(data.expiresAt.toDate() > new Date(later.getTime() + 6 * 86400000), 'expiry pushed out');
-      assert.equal(data.dismissedBy.o1, true, 'a member who dismissed it keeps that choice');
+      // NO-11: actionable again, so new again for everyone, its age counted from now.
+      assert.deepEqual(data.dismissedBy, {}, 'shown again to a member who dismissed it');
+      assert.equal(data.firstCreatedAt.toDate().toISOString(), later.toISOString());
       // Visible again in the app's bell list.
       const parsed = parseNotificationDoc(notes.docs[0] as never);
       assert.equal(activeBellNotifications([parsed], { uid: 'm2', email: 'm2@example.test' }, later).length, 1);

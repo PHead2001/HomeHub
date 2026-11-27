@@ -78,6 +78,8 @@ const parseActionMap = (value: unknown): Record<string, NotificationUserAction> 
 export const parseNotificationDoc = (snapshot: QueryDocumentSnapshot<DocumentData>): Notification => {
   const data = snapshot.data();
   const createdAt = toDate(data.createdAt);
+  // NO-11: upkeep moves createdAt when it refreshes a reminder; the age shown comes from here.
+  const firstCreatedAt = data.firstCreatedAt ? toDate(data.firstCreatedAt, createdAt) : undefined;
   const expiresAt = data.expiresAt ? toDate(data.expiresAt) : getNotificationExpiry(createdAt);
 
   return {
@@ -87,6 +89,7 @@ export const parseNotificationDoc = (snapshot: QueryDocumentSnapshot<DocumentDat
     title: typeof data.title === 'string' ? data.title : undefined,
     message: typeof data.message === 'string' ? data.message : '',
     createdAt,
+    ...(firstCreatedAt && firstCreatedAt < createdAt ? { firstCreatedAt } : {}),
     expiresAt,
     deepLink: typeof data.deepLink === 'string' ? data.deepLink : (typeof data.href === 'string' ? data.href : undefined),
     href: typeof data.href === 'string' ? data.href : undefined,
@@ -128,6 +131,16 @@ export const isNotificationVisibleToUser = (
 ) => isAddressedToMember(notification, user);
 
 export const getNotificationLink = (notification: Notification) => notification.deepLink || notification.href || '#';
+
+/** When the notification first appeared, for its age (`firstCreatedAt` survives refreshes; NO-11). */
+export const notificationSince = (notification: Notification) => notification.firstCreatedAt ?? notification.createdAt;
+
+/**
+ * The ID of a chore-assignment notification (NO-11): fixed per source and
+ * recipient, so a retried write updates nothing instead of adding a duplicate.
+ */
+export const assignmentNotificationId = (sourceId: string, targetUid: string) =>
+  getDeterministicNotificationId({ sourceType: 'chore-assignment', sourceId, stateKey: targetUid });
 
 const hashNotificationIdentity = (value: string) => {
   let hash = 2166136261;
@@ -200,6 +213,7 @@ export const buildNotificationDocument = ({
   sourceId,
   stateKey,
   targetUser,
+  createdBy,
 }: {
   householdId: string;
   category: NotificationCategory;
@@ -211,6 +225,8 @@ export const buildNotificationDocument = ({
   stateKey?: string;
   /** The one member it is for. Targeted by uid only: the document is readable by every member. */
   targetUser?: { uid: string };
+  /** Who caused it (the signed-in member): never pushed about it (NO-11). */
+  createdBy?: { uid: string };
 }) => {
   // Kid profiles (`kid_…`, docs/modules/devices/README.md) have no account: nobody could
   // ever read a notice targeted to one, so none is ever created.
@@ -229,6 +245,7 @@ export const buildNotificationDocument = ({
     sourceId,
     stateKey,
     targetUserUid: targetUser?.uid,
+    createdByUid: createdBy?.uid,
     // Who may see it: [uid] for one member, ['*'] for the household. Required on
     // create; the read rule returns a document only to the members it names.
     audience: notificationAudience({ targetUserUid: targetUser?.uid }),
