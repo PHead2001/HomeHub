@@ -94,7 +94,7 @@ import { InviteRoleSelect, type InviteRoleChoice } from '@/components/household/
 import { TimeZoneSetting } from '@/components/household/time-zone-setting';
 import { InvitePassSelect, type InvitePassChoice } from '@/components/household/invite-pass-select';
 import { TabletGuestPassDialog } from '@/components/household/tablet-guest-pass-dialog';
-import { accessUntilMs, guestPassLabel, readGuestPassHours } from '@/lib/guest-pass';
+import { accessUntilMs, guestPassLabel, hasGuestPass, readGuestPassHours } from '@/lib/guest-pass';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
@@ -405,7 +405,7 @@ export function HouseholdManagementClient() {
   };
 
   const transferOwnership = async (member: HouseholdMember) => {
-    if (!household?.id || !canTransferOwnership(currentMember, member).ok) return;
+    if (!household?.id || !canTransferOwnership(currentMember, { ...member, guestPass: hasGuestPass(member) }).ok) return;
     const householdId = household.id;
     const transferred = await runAction('Could not transfer ownership', (idToken) =>
       transferOwnershipAction({ idToken, householdId, memberUid: member.uid }));
@@ -417,7 +417,7 @@ export function HouseholdManagementClient() {
   const actionsFor = (member: HouseholdMember): MemberActions => ({
     roles: assignableRoles.filter((role) => canAssignRole(currentMember, member, role).ok),
     canCustomize: canEditPermissions(currentMember, member).ok,
-    canTransfer: canTransferOwnership(currentMember, member).ok,
+    canTransfer: canTransferOwnership(currentMember, { ...member, guestPass: hasGuestPass(member) }).ok,
     canRemove: canRemoveMember(member),
   });
 

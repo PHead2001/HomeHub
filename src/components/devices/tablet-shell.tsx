@@ -49,7 +49,7 @@ import { forgetTabletMarker, markTabletBrowser } from '@/lib/devices/former-tabl
 import { readQuietHours, isQuietAt } from '@/lib/devices/quiet-hours';
 import { readWeekStartsOn } from '@/lib/chores/week-start';
 import { readPointsPinPolicy, policyOf, requiredLevel, deviceRefusalResponse, noTabletPinMessage, type DeviceRefusal } from '@/lib/devices/action-policy';
-import { rosterFrom, isOwnerOrAdmin, personMayUse, type RosterPerson } from '@/lib/devices/roster';
+import { rosterFrom, isOwnerOrAdmin, nextPassEnd, personMayUse, withoutEndedPasses, type RosterPerson } from '@/lib/devices/roster';
 import {
   currentActor,
   initialShellState,
@@ -143,6 +143,17 @@ function TabletRuntime({ householdId, deviceId, generation }: { householdId: str
   const [settings, setSettings] = useState<DeviceSettings | null>(null);
   const [household, setHousehold] = useState<TabletHousehold | null>(null);
   const [roster, setRoster] = useState<RosterPerson[]>([]);
+  // A tablet guest pass (WT-21) leaves "Who's here?" when it ends, without waiting for a
+  // members snapshot (none arrives when time passes); the server refuses it from then on.
+  const rosterPassEnd = nextPassEnd(roster);
+  useEffect(() => {
+    if (rosterPassEnd === null) return;
+    const timer = window.setTimeout(
+      () => setRoster((current) => withoutEndedPasses(current, Date.now())),
+      Math.min(Math.max(0, rosterPassEnd - Date.now() + 250), 2 ** 31 - 1),
+    );
+    return () => window.clearTimeout(timer);
+  }, [rosterPassEnd]);
   const [noticesByCategory, setNoticesByCategory] = useState<Record<string, DeviceNotice[]>>({});
   // A source that returned its full window (the latest DEVICE_NOTICES_LIMIT) may have older notices.
   const [noticesWindowFull, setNoticesWindowFull] = useState<Record<string, boolean>>({});
