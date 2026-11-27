@@ -345,6 +345,7 @@ export function customizedPermissions(role: HouseholdRole, overrides: Permission
 const AUDIT_LABELS: Record<string, string> = {
   'household.created': 'Created the household',
   'household.renamed': 'Renamed the household',
+  'household.time_zone_changed': 'Changed the time zone',
   'invite.generated': 'Created an invite code',
   'invite.revoked': 'Revoked an invite code',
   'invite.revoked_all': 'Revoked all active invite codes',
@@ -410,6 +411,11 @@ export function describeAuditAction(log: Pick<AuditLog, 'action' | 'details'>): 
     return typeof details.previousName === 'string' && details.previousName
       ? `Renamed the household from "${details.previousName}" to "${details.householdName}"`
       : `Renamed the household to "${details.householdName}"`;
+  }
+  if (log.action === 'household.time_zone_changed' && typeof details.timeZone === 'string' && details.timeZone) {
+    return typeof details.previousTimeZone === 'string' && details.previousTimeZone
+      ? `Changed the time zone from ${details.previousTimeZone} to ${details.timeZone}`
+      : `Set the time zone to ${details.timeZone}`;
   }
   if (log.action === 'member.permissions_changed') {
     const granted = permissionList(details.granted);

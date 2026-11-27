@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
@@ -18,6 +18,7 @@ import { Loader2, LogOut } from 'lucide-react';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { deletionNameField, deletionNameSuggestion, finishDeletingError, finishDeletingName } from '@/lib/auth/live-membership';
 import { HOUSEHOLD_NAME_MAX, formatInviteInput, householdNameError, inviteCodeError } from '@/components/household/household-model';
+import { JOIN_CODE_EVENT, forgetJoinCode, pendingJoinCode } from '@/lib/invite-link';
 import {
   Card,
   CardContent,
@@ -111,8 +112,15 @@ function JoinHouseholdForm({
   onJoin: (code: string) => void;
   isJoining: boolean;
 }) {
-  const [code, setCode] = useState('');
+  // A code from an invite link (/join?code=…, HO-16) fills the field; the person still presses Join.
+  const [code, setCode] = useState(() => pendingJoinCode(typeof window === 'undefined' ? null : window.sessionStorage));
   const [submitted, setSubmitted] = useState(false);
+  useEffect(() => {
+    // A link opened while this form is already showing: fill an empty field.
+    const fill = () => setCode((prev) => prev || pendingJoinCode(window.sessionStorage));
+    window.addEventListener(JOIN_CODE_EVENT, fill);
+    return () => window.removeEventListener(JOIN_CODE_EVENT, fill);
+  }, []);
   const error = submitted ? inviteCodeError(code) : null;
   return (
     <Card>
@@ -460,7 +468,7 @@ export function HouseholdManager({ children }: HouseholdManagerProps) {
   const handleJoin = async (code: string) => {
     setIsJoining(true);
     try {
-      await joinHousehold(code);
+      if (await joinHousehold(code)) forgetJoinCode(window.sessionStorage);
     } finally {
       setIsJoining(false);
     }

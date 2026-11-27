@@ -4,6 +4,7 @@ import { randomInt } from 'node:crypto';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminAuth, adminDb, adminStorageBucket } from '@/lib/server/firebase-admin';
 import { INVITE_CHARS, normalizeInviteCode } from '@/lib/invite-codes';
+import { suggestedRoleFor } from '@/lib/invite-link';
 import { foldLegacyStatsKeys, readChoreStats } from '@functions/shared/chore-stats';
 import { formerMemberKey } from '@functions/shared/former-member';
 import { randomBytes } from 'node:crypto';
@@ -20,6 +21,7 @@ import {
   isOwnerOnlyPermission,
   normalizeOverrides,
   permissionChanges,
+  rank,
   refusalMessage,
   type PolicyDecision,
   type PolicyMember,
@@ -222,7 +224,10 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     if (memberSnap.exists) throw new MembershipError('You are already part of this household.');
     // The code stops working once its creator may no longer invite: removed, left,
     // demoted, or their invite permission taken away (HO-8; device codes: D-T14).
-    if (!canManageInvites(toStoredMember(creatorSnap)).ok) throw new MembershipError(INVITE_NO_LONGER_VALID);
+    const creator = toStoredMember(creatorSnap);
+    if (!canManageInvites(creator).ok) throw new MembershipError(INVITE_NO_LONGER_VALID);
+    // The role the invite suggests, checked again against its creator's current role (HO-16).
+    const suggestedRole = suggestedRoleFor(invite.suggestedRole, rank(creator!.role), rank);
 
     const currentHouseholdId = profileSnap.exists ? profileSnap.data()?.householdId : null;
     if (typeof currentHouseholdId === 'string' && currentHouseholdId && currentHouseholdId !== householdId) {
@@ -246,6 +251,8 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
       status: 'pending',
       inviteCode: code,
       joinedAt,
+      // Only a default for the approval banner; the approver chooses (HO-16).
+      ...(suggestedRole ? { suggestedRole } : {}),
       // The waiting screen reads this from the person's own record instead of the household document.
       ...(householdName ? { householdName } : {}),
     } as HouseholdMember;
@@ -915,6 +922,36 @@ export const remindPendingMembers = async (caller: VerifiedCaller, householdId: 
   });
 };
 
+/**
+ * Change the household's time zone (HO-19; D-6: every reminder, "today" and recurring
+ * chore follows it). Owners and admins (role), as the rules allow for the same field;
+ * the server validates the IANA name and logs the change with from/to.
+ */
+export const updateHouseholdTimeZone = async (
+  caller: VerifiedCaller,
+  householdId: string,
+  rawTimeZone: unknown,
+  now = new Date(),
+): Promise<{ timeZone: string }> => {
+  const timeZone = normalizeTimeZone(rawTimeZone);
+  if (!timeZone) throw new MembershipError("That time zone isn't recognized. Pick one from the list.", 'invalid_input');
+  return adminDb.runTransaction(async transaction => {
+    const context = await loadActor(transaction, caller, householdId);
+    const actor = context.actor;
+    if ((actor.status || 'active') !== 'active' || (actor.role !== 'owner' && actor.role !== 'admin')) {
+      throw new MembershipError('Only owners and admins can change the time zone.', 'missing_permission');
+    }
+    const previous = typeof context.household.timeZone === 'string' ? context.household.timeZone : '';
+    if (previous === timeZone) return { timeZone };
+    transaction.update(context.householdRef, { timeZone, updatedAt: now.toISOString() });
+    writeAudit(transaction, context, caller, now, {
+      action: 'household.time_zone_changed',
+      details: { timeZone, previousTimeZone: previous || null },
+    });
+    return { timeZone };
+  });
+};
+
 /** Rename the household (`household.manageMembers`). */
 export const renameHousehold = async (caller: VerifiedCaller, householdId: string, rawName: string, now = new Date()): Promise<{ name: string }> => {
   const name = requireHouseholdName(rawName);
@@ -950,10 +987,20 @@ const inviteIsActive = (data: FirebaseFirestore.DocumentData, now: Date): boolea
  * Create a single-use invite code that lasts 30 minutes (`household.manageInvites`).
  * The code is generated here; a code that already exists is never reused.
  */
-export const createInvite = async (caller: VerifiedCaller, householdId: string, now = new Date()): Promise<InviteCode> => {
+export const createInvite = async (
+  caller: VerifiedCaller,
+  householdId: string,
+  now = new Date(),
+  options: { suggestedRole?: unknown } = {},
+): Promise<InviteCode> => {
   return adminDb.runTransaction(async transaction => {
     const context = await loadActor(transaction, caller, householdId);
     enforce(canManageInvites(context.actor));
+    // An optional role to suggest to whoever approves (HO-16): assignable and strictly
+    // below the creator's own. Approval still applies the approver's own policy.
+    const wantsRole = options.suggestedRole !== undefined && options.suggestedRole !== null && options.suggestedRole !== '';
+    const suggestedRole = wantsRole ? suggestedRoleFor(options.suggestedRole, rank(context.actor.role), rank) : null;
+    if (wantsRole && !suggestedRole) throw new MembershipError(refusalMessage('role_too_high'), 'role_too_high');
     let inviteRef: DocRef | null = null;
     for (let attempt = 0; attempt < INVITE_CODE_ATTEMPTS && !inviteRef; attempt++) {
       const candidate = adminDb.collection('inviteCodes').doc(randomInviteCode());
@@ -972,9 +1019,13 @@ export const createInvite = async (caller: VerifiedCaller, householdId: string, 
       expiresAt: expiresAt.toISOString(),
       maxUses: 1,
       useCount: 0,
+      ...(suggestedRole ? { suggestedRole } : {}),
     };
     transaction.set(inviteRef, { ...invite, expiresAt: Timestamp.fromDate(expiresAt) });
-    writeAudit(transaction, context, caller, now, { action: 'invite.generated', details: { code: invite.code } });
+    writeAudit(transaction, context, caller, now, {
+      action: 'invite.generated',
+      details: { code: invite.code, ...(suggestedRole ? { suggestedRole } : {}) },
+    });
     return invite;
   });
 };
