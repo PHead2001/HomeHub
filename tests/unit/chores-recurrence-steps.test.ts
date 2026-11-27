@@ -33,6 +33,12 @@ describe('repeat steps, starts and ends (CH-10, CH-25)', () => {
     assert.deepEqual(upcomingOccurrences(r, '2026-11-23', 4), ['2026-11-23', '2026-11-27', '2026-12-07', '2026-12-11']);
   });
 
+  test('a start of today is no start: it repeats from now (the device day never moves the household day)', () => {
+    const built = buildRecurrence({ ...defaultRecurrenceState(), frequency: 'weekly', daysOfWeek: ['1'], biweeklyStartDate: new Date() });
+    assert.ok('recurrence' in built);
+    assert.equal(built.recurrence.startDate, undefined);
+  });
+
   test('the builder writes the step and the end, and refuses an end before the start', () => {
     const daily = buildRecurrence({ ...defaultRecurrenceState(), frequency: 'daily', interval: 2, excludeWeekends: true, biweeklyStartDate: new Date('2026-11-27T12:00:00'), endDate: new Date('2027-01-31T12:00:00') });
     assert.ok('recurrence' in daily);

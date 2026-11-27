@@ -137,9 +137,13 @@ export function buildRecurrence(state: RecurrenceState): { recurrence: Omit<Recu
   if (weeksStepped || (state.frequency === 'daily' && interval > 1)) {
     if (!state.biweeklyStartDate) errors.biweeklyStartDate = weeksStepped ? 'Pick the week to start from.' : 'Pick the day to start from.';
   }
+  // A start of "today" is no start: it repeats from now. That also keeps a device whose
+  // day differs from the household's from moving today's occurrence (occursOn compares
+  // household days). A later start, or a stepped schedule's anchor, is stored.
+  const stepped = weeksStepped || (state.frequency === 'daily' && interval > 1);
   if (state.biweeklyStartDate && state.frequency !== 'monthly') {
     const day = format(state.biweeklyStartDate, 'yyyy-MM-dd');
-    recurrence.startDate = weeksStepped ? weekStartOf(day) : day;
+    if (stepped || day > format(new Date(), 'yyyy-MM-dd')) recurrence.startDate = weeksStepped ? weekStartOf(day) : day;
   }
   if (state.frequency === 'biweekly') recurrence.interval = 2;
   else if (interval > 1) recurrence.interval = interval;
@@ -237,7 +241,8 @@ export function RecurrenceFields({
         </div>
       )}
 
-      {state.frequency !== 'monthly' && (
+      {/* A stepped schedule needs its start (the week or day it counts from). */}
+      {(state.frequency === 'biweekly' || ((state.frequency === 'weekly' || state.frequency === 'daily') && (state.interval ?? 1) > 1)) && (
         <div>
           <Label htmlFor={anchorId}>{state.frequency === 'biweekly' || (state.frequency === 'weekly' && (state.interval ?? 1) > 1) ? 'Start from the week of' : 'Starts on'}</Label>
           <Popover>
@@ -255,24 +260,48 @@ export function RecurrenceFields({
         </div>
       )}
 
-      <div>
-        <Label htmlFor={`${idPrefix}-end`}>Ends</Label>
-        <div className="flex gap-2">
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" {...fieldErrorProps(`${idPrefix}-end`, errors.endDate)} className={cn('flex-1 justify-start text-left font-normal', !state.endDate && 'text-muted-foreground')}>
-                <CalendarIcon className="mr-2 h-4 w-4" />
-                {state.endDate ? format(state.endDate, 'PPP') : <span>Never</span>}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-auto p-0" align="start">
-              <Calendar mode="single" selected={state.endDate} onSelect={(date) => update('endDate', date)} initialFocus />
-            </PopoverContent>
-          </Popover>
-          {state.endDate && <Button type="button" variant="ghost" onClick={() => update('endDate', undefined)}>Never ends</Button>}
+      {/* Start and end stay folded so the form stays short (5.6); open when set. */}
+      <details className="rounded-md border px-3 py-2" open={Boolean(state.endDate) || (!(state.frequency === 'biweekly' || ((state.frequency === 'weekly' || state.frequency === 'daily') && (state.interval ?? 1) > 1)) && !!state.biweeklyStartDate && format(state.biweeklyStartDate, 'yyyy-MM-dd') > format(new Date(), 'yyyy-MM-dd'))}>
+        <summary className="cursor-pointer select-none py-1 text-sm font-medium">Start and end</summary>
+        <div className="space-y-3 pt-2">
+          {!(state.frequency === 'biweekly' || ((state.frequency === 'weekly' || state.frequency === 'daily') && (state.interval ?? 1) > 1)) && state.frequency !== 'monthly' && (
+            <div>
+              <Label htmlFor={anchorId}>Starts on</Label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" {...fieldErrorProps(anchorId, errors.biweeklyStartDate)} className={cn('w-full justify-start text-left font-normal', !state.biweeklyStartDate && 'text-muted-foreground')}>
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {state.biweeklyStartDate ? format(state.biweeklyStartDate, 'PPP') : <span>Pick a start date</span>}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar mode="single" selected={state.biweeklyStartDate} onSelect={(date) => update('biweeklyStartDate', date)} initialFocus />
+                </PopoverContent>
+              </Popover>
+              <FieldError id={anchorId} className="mt-1">{errors.biweeklyStartDate}</FieldError>
+            </div>
+          )}
+          <div>
+            <Label htmlFor={`${idPrefix}-end`}>Ends</Label>
+            <div className="flex gap-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" {...fieldErrorProps(`${idPrefix}-end`, errors.endDate)} className={cn('flex-1 justify-start text-left font-normal', !state.endDate && 'text-muted-foreground')}>
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {state.endDate ? format(state.endDate, 'PPP') : <span>Never</span>}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar mode="single" selected={state.endDate} onSelect={(date) => update('endDate', date)} initialFocus />
+                </PopoverContent>
+              </Popover>
+              {state.endDate && <Button type="button" variant="ghost" onClick={() => update('endDate', undefined)}>Never ends</Button>}
+            </div>
+            <FieldError id={`${idPrefix}-end`} className="mt-1">{errors.endDate}</FieldError>
+          </div>
+    
         </div>
-        <FieldError id={`${idPrefix}-end`} className="mt-1">{errors.endDate}</FieldError>
-      </div>
+      </details>
 
       {state.frequency === 'monthly' && (
         <div className="space-y-3">
