@@ -62,8 +62,14 @@ import { ConfirmActionDialog, type ConfirmRequest } from '@/components/household
 import { WeekStartSetting } from '@/components/household/week-start-setting';
 import { readWeekStartsOn } from '@/lib/chores/week-start';
 import {
+  AUDIT_FILTERS,
+  AUDIT_PAGE_SIZE,
   HOUSEHOLD_NAME_MAX,
+  absoluteTime,
   canSeeMemberOverrides,
+  filterAuditLogs,
+  inviteHistory,
+  type AuditFilter,
   changedPermissions,
   INVITE_STATE_LABELS,
   describeAuditAction,
@@ -151,6 +157,11 @@ export function HouseholdManagementClient() {
   }, []);
   const shownTab = visibleTabs.includes(activeTab) ? activeTab : 'overview';
 
+  // HO-22, HO-28: the activity log is read a page at a time and filtered on the page;
+  // the invite list shows active codes and the newest used ones (HO-20).
+  const [auditLimit, setAuditLimit] = useState(AUDIT_PAGE_SIZE);
+  const [auditFilter, setAuditFilter] = useState<AuditFilter>('all');
+  const [showOlderInvites, setShowOlderInvites] = useState(false);
   const live = useHouseholdLiveData({
     householdId: household?.id,
     enabled: reads.page,
@@ -161,8 +172,9 @@ export function HouseholdManagementClient() {
     canManageMembers: reads.contacts && canSeeMemberEmails(permissions),
     ownEmail: currentUser?.email ?? null,
     weekStartsOn: readWeekStartsOn(household?.weekStartsOn),
+    auditLimit,
   });
-  const { members, auditLogs, choreStats, choreStatsReady, invites } = live;
+  const { members, auditLogs, auditHasMore, choreStats, choreStatsReady, invites } = live;
   // Invite expiry by the server's clock, moving on while a code is still active (HO-8);
   // once the last one has expired the clock stops.
   const inviteNow = useServerNow(reads.invites && canManageInvites, (now) => inviteLiveKey(invites, now));
@@ -542,7 +554,7 @@ export function HouseholdManagementClient() {
         <ManagerSkeleton />
       ) : (
         <Tabs value={shownTab} onValueChange={selectTab}>
-          <TabsList className="grid h-auto w-full grid-cols-3 md:flex md:w-auto md:justify-start">
+          <TabsList className="flex h-auto w-full justify-start overflow-x-auto md:w-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             {canManageInvites && <TabsTrigger value="invites">Invite Codes</TabsTrigger>}
             <TabsTrigger value="members" className="gap-1.5">
@@ -620,10 +632,13 @@ export function HouseholdManagementClient() {
                 ) : (
                   <p className="break-words font-semibold">{householdDisplayName}</p>
                 )}
-                <div className="grid gap-1 text-xs text-muted-foreground">
-                  <span>Household ID (used by support; you never need to type it)</span>
-                  <span className="break-all font-code">{household.id}</span>
-                </div>
+                <details className="text-xs text-muted-foreground">
+                  <summary className="inline-flex min-h-[var(--target-min)] cursor-pointer items-center">Support details</summary>
+                  <div className="grid gap-1 pb-1">
+                    <span>Household ID (used by support; you never need to type it)</span>
+                    <span className="break-all font-code">{household.id}</span>
+                  </div>
+                </details>
               </CardContent>
             </Card>
             <TimeZoneSetting householdId={household.id} timeZone={household.timeZone} canEdit={isOwnerOrAdminRole} />
@@ -669,7 +684,7 @@ export function HouseholdManagementClient() {
                     />
                   ) : (
                     <ul className="grid gap-3">
-                      {invites.map(invite => {
+                      {inviteHistory(invites, inviteNow, showOlderInvites).shown.map(invite => {
                         const state = inviteState(invite, inviteNow);
                         const active = state === 'active';
                         return (
@@ -707,6 +722,11 @@ export function HouseholdManagementClient() {
                         );
                       })}
                     </ul>
+                  )}
+                  {invites.length > 0 && inviteHistory(invites, inviteNow, showOlderInvites).hidden > 0 && (
+                    <Button variant="ghost" onClick={() => setShowOlderInvites(true)}>
+                      Show {inviteHistory(invites, inviteNow, showOlderInvites).hidden} older codes
+                    </Button>
                   )}
                 </CardContent>
               </Card>
@@ -844,6 +864,23 @@ export function HouseholdManagementClient() {
                   <CardDescription>Who changed what in the household, newest first.</CardDescription>
                 </CardHeader>
                 <CardContent>
+                  {auditLogs.length > 0 && (
+                    <div role="group" aria-label="Show activity about" className="mb-3 flex gap-2 overflow-x-auto pb-1">
+                      {AUDIT_FILTERS.map((filter) => (
+                        <Button
+                          key={filter.value}
+                          type="button"
+                          size="sm"
+                          variant={auditFilter === filter.value ? 'default' : 'outline'}
+                          aria-pressed={auditFilter === filter.value}
+                          className="min-h-[var(--target-min)] shrink-0 rounded-full"
+                          onClick={() => setAuditFilter(filter.value)}
+                        >
+                          {filter.label}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
                   {auditLogs.length === 0 ? (
                     <EmptyState
                       compact
@@ -851,17 +888,19 @@ export function HouseholdManagementClient() {
                       title="Nothing yet"
                       description="Invites, approvals and role changes will show up here."
                     />
+                  ) : filterAuditLogs(auditLogs, auditFilter).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Nothing of this kind in the entries loaded.</p>
                   ) : (
                     <ol className="space-y-2">
-                      {auditLogs.slice(0, 50).map(log => {
+                      {filterAuditLogs(auditLogs, auditFilter).map(log => {
                         const actor = describeAuditActor(log);
                         const target = log.targetName || log.targetEmail;
                         return (
                           <li key={log.id} className="rounded-md border border-border-subtle p-3">
                             <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
                               <p className="font-medium">{describeAuditAction(log)}</p>
-                              <time dateTime={log.createdAt} title={new Date(log.createdAt).toLocaleString()} className="text-xs text-muted-foreground">
-                                {relativeTime(log.createdAt)}
+                              <time dateTime={log.createdAt} className="text-xs text-muted-foreground">
+                                {relativeTime(log.createdAt)} · {absoluteTime(log.createdAt, household?.timeZone)}
                               </time>
                             </div>
                             <p className="break-words text-sm text-muted-foreground">
@@ -871,6 +910,11 @@ export function HouseholdManagementClient() {
                         );
                       })}
                     </ol>
+                  )}
+                  {auditHasMore && (
+                    <Button variant="outline" className="mt-3" onClick={() => setAuditLimit((value) => value + AUDIT_PAGE_SIZE)}>
+                      Load more
+                    </Button>
                   )}
                 </CardContent>
               </Card>
@@ -945,13 +989,18 @@ export function HouseholdManagementClient() {
               if (deleted) setIsDeleteOpen(false);
             }}
           >
-            <Input
-              aria-label="Household name"
-              value={deleteConfirm}
-              onChange={(event) => setDeleteConfirm(event.target.value)}
-              placeholder={householdDisplayName}
-              autoComplete="off"
-            />
+            <div className="grid gap-1.5">
+              <Label htmlFor="delete-household-name">Type the household name: <span className="break-words font-semibold">{householdDisplayName}</span></Label>
+              <Input
+                id="delete-household-name"
+                value={deleteConfirm}
+                onChange={(event) => setDeleteConfirm(event.target.value)}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setIsDeleteOpen(false)}>Keep household</Button>
               <Button type="submit" variant="destructive" disabled={deleteConfirm.trim() !== householdDisplayName || isDeleting}>

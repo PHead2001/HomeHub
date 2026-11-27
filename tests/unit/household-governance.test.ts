@@ -373,3 +373,41 @@ describe('Roles matrix rows (HO-18)', () => {
     }
   });
 });
+
+describe('activity filters and invite history (HO-20, HO-22, HO-28)', () => {
+  it('sorts each action into one filter; household-wide changes only under All', async () => {
+    const { auditCategory, filterAuditLogs } = await import('../../src/components/household/household-model');
+    assert.equal(auditCategory('member.role_changed'), 'roles');
+    assert.equal(auditCategory('member.permissions_changed'), 'roles');
+    assert.equal(auditCategory('member.approved'), 'people');
+    assert.equal(auditCategory('member.guest_pass_ended'), 'people');
+    assert.equal(auditCategory('child.created'), 'people');
+    assert.equal(auditCategory('guest.created'), 'people');
+    assert.equal(auditCategory('ownership.transferred'), 'people');
+    assert.equal(auditCategory('invite.generated'), 'invites');
+    assert.equal(auditCategory('device.paired'), 'tablets');
+    assert.equal(auditCategory('pin.set'), 'tablets');
+    assert.equal(auditCategory('household.renamed'), 'other');
+    const logs = [{ action: 'invite.generated' }, { action: 'member.role_changed' }, { action: 'household.renamed' }];
+    assert.equal(filterAuditLogs(logs, 'all').length, 3);
+    assert.deepEqual(filterAuditLogs(logs, 'invites'), [{ action: 'invite.generated' }]);
+    assert.deepEqual(filterAuditLogs(logs, 'tablets'), []);
+  });
+
+  it('keeps every active code and the newest few others', async () => {
+    const { inviteHistory } = await import('../../src/components/household/household-model');
+    const now = new Date('2026-08-01T12:00:00.000Z');
+    const active = { code: 'A', expiresAt: '2026-08-01T12:20:00.000Z', useCount: 0, maxUses: 1 };
+    const old = Array.from({ length: 8 }, (_, i) => ({ code: `O${i}`, expiresAt: '2026-07-01T00:00:00.000Z', useCount: 0, maxUses: 1 }));
+    const { shown, hidden } = inviteHistory([active, ...old], now);
+    assert.deepEqual(shown.map((invite) => invite.code), ['A', 'O0', 'O1', 'O2', 'O3', 'O4']);
+    assert.equal(hidden, 3);
+    assert.equal(inviteHistory([active, ...old], now, true).hidden, 0);
+  });
+
+  it('shows the exact time beside the relative one, in the household zone', async () => {
+    const { absoluteTime } = await import('../../src/components/household/household-model');
+    assert.equal(absoluteTime('2026-08-01T15:05:00.000Z', 'America/Chicago'), 'Aug 1, 10:05 AM');
+    assert.equal(absoluteTime('nope'), '');
+  });
+});
