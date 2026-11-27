@@ -22,6 +22,9 @@ import type { OperationContext } from '@/lib/server/operation-context';
 import { DeviceActionError } from '@/lib/server/device-errors';
 import { assertActorRule, type DeviceAuthority } from '@/lib/server/device-gate';
 import { assertUndoable, type DeviceOp } from '@/lib/server/device-ops';
+import { getMemberPermissions } from '@/lib/permissions';
+import type { HouseholdMember } from '@/lib/types';
+import { mayReopen } from '@/lib/chores/completion';
 
 /**
  * Chore completion through the Admin SDK (H3). The caller is whoever the ID token
@@ -178,8 +181,14 @@ const restoreOf = (value: unknown): SubTaskRestore | null => {
  * undone: `already`. Applied: same device generation, the original actor, inside the
  * window, and the chore's completion still that one (`completionId == opId`), else
  * `changed_since`; the steps it ticked come back from the ledger's stored outcome.
+ *
+ * The personal path with `caller` (the server action) allows only the completer, the
+ * assignee or a member who may edit chores (`mayReopen`, CH-6); anyone else is `refused`.
  */
-export function undoChoreCompletionAs(db: Firestore, householdId: string, input: { choreId: unknown; completionId: unknown; restoreSubTasks?: unknown }): Promise<UndoOutcome>;
+export function undoChoreCompletionAs(
+  db: Firestore, householdId: string, input: { choreId: unknown; completionId: unknown; restoreSubTasks?: unknown },
+  ctx?: undefined, caller?: { uid: string; email?: string | null },
+): Promise<UndoOutcome>;
 export function undoChoreCompletionAs(
   db: Firestore, householdId: string, input: { choreId?: unknown; completionId?: unknown; restoreSubTasks?: unknown },
   ctx: OperationContext & { authority?: DeviceAuthority },
@@ -189,6 +198,7 @@ export async function undoChoreCompletionAs(
   householdId: string,
   input: { choreId?: unknown; completionId?: unknown; restoreSubTasks?: unknown },
   ctx?: OperationContext & { authority?: DeviceAuthority },
+  caller?: { uid: string; email?: string | null },
 ): Promise<UndoOutcome | DeviceUndoOutcome> {
   const house = householdRef(db, householdId);
   if (ctx?.hooks) return undoDeviceCompletion(db, house, ctx);
@@ -201,10 +211,15 @@ export async function undoChoreCompletionAs(
   const ref = house.collection('chores').doc(choreId);
   return db.runTransaction(async tx => {
     await readHousehold(tx, house);
-    const snap = await tx.get(ref);
+    const [snap, member] = await tx.getAll(ref, ...(caller ? [house.collection('members').doc(caller.uid)] : []));
     if (!snap.exists) return { choreId, status: 'missing' };
     const plan = planUndo(snap.data()!, completionId, restore);
     if (plan.kind === 'noop') return { choreId, status: plan.reason };
+    // Undo removes a completion like reopen does: the same people only (CH-6). Knowing the
+    // completion id (an "already done" answer carries it) is not enough.
+    if (caller && !mayReopen(snap.data()!, caller, member?.exists ? getMemberPermissions(member.data() as HouseholdMember) : {})) {
+      return { choreId, status: 'refused' };
+    }
     tx.update(ref, {
       isCompleted: false,
       ...clearCompletion(),
@@ -368,15 +383,29 @@ export async function undoTakeChoreAs(db: Firestore, householdId: string, ctx: O
 }
 
 /** Reopens a completed chore (its points go away). Steps stay ticked. */
-export async function reopenChoreAs(db: Firestore, householdId: string, input: { choreId: unknown }): Promise<ReopenOutcome> {
+/**
+ * Reopens a completed chore. With `caller` (the personal path), only the person who
+ * completed it, its assignee, or a member who may edit chores may reopen it (CH-6): a
+ * stray tap by a sibling never erases someone else's points; anyone else is `refused`.
+ * Completions from before completer attribution count as the assignee's.
+ */
+export async function reopenChoreAs(
+  db: Firestore,
+  householdId: string,
+  input: { choreId: unknown },
+  caller?: { uid: string; email?: string | null },
+): Promise<ReopenOutcome> {
   const house = householdRef(db, householdId);
   const choreId = choreIdOf(input?.choreId);
   const ref = house.collection('chores').doc(choreId);
   return db.runTransaction(async tx => {
     await readHousehold(tx, house);
-    const snap = await tx.get(ref);
+    const [snap, member] = await tx.getAll(ref, ...(caller ? [house.collection('members').doc(caller.uid)] : []));
     if (!snap.exists) return { choreId, status: 'missing' };
     if (planReopen(snap.data()!).kind === 'noop') return { choreId, status: 'open' };
+    if (caller && !mayReopen(snap.data()!, caller, member?.exists ? getMemberPermissions(member.data() as HouseholdMember) : {})) {
+      return { choreId, status: 'refused' };
+    }
     tx.update(ref, { isCompleted: false, ...clearCompletion() });
     return { choreId, status: 'reopened' };
   });

@@ -15,6 +15,7 @@
 import { UNDO_WINDOW_MS } from '../undo-window';
 import { publicDisplayName } from '../member-directory';
 import { addDays, isDayString, localDay, safeTimeZone, toDay, zonedMidnightIso } from '../../../functions/src/shared/calendar';
+import { isAssignedTo, type AssigneeRecord } from '../../../functions/src/shared/assignee';
 
 /** Undo is offered this long after completing. */
 export const CHORE_UNDO_MS = UNDO_WINDOW_MS;
@@ -207,8 +208,25 @@ export type ChoreCompletionOutcome =
 /** `undone` carries the stored steps after the Undo (restored or preserved), which the page applies. */
 export type UndoOutcome =
   | { choreId: string; status: 'undone'; completedSubTasks: string[] }
-  | { choreId: string; status: 'stale' | 'open' | 'missing' };
-export type ReopenOutcome = { choreId: string; status: 'reopened' | 'open' | 'missing' };
+  | { choreId: string; status: 'stale' | 'open' | 'missing' }
+  /** Not the completer, the assignee or an editor (CH-6): nothing written. */
+  | { choreId: string; status: 'refused' };
+export type ReopenOutcome = { choreId: string; status: 'reopened' | 'open' | 'missing' | 'refused' };
+
+/**
+ * Who may reopen a completed chore (CH-6): the person who completed it, its assignee, or a
+ * member who may edit chores. A completion without `completedByUid` (older data) counts as
+ * the assignee's.
+ */
+export function mayReopen(
+  chore: StoredChore & AssigneeRecord,
+  person: { uid: string; email?: string | null },
+  permissions: Partial<Record<string, boolean>>,
+): boolean {
+  if (permissions['chores.edit'] === true) return true;
+  if (typeof chore.completedByUid === 'string' && chore.completedByUid === person.uid) return true;
+  return isAssignedTo(chore, { uid: person.uid, email: person.email ?? '' });
+}
 
 /** Steps Undo may put back: only if they are still exactly what the completion ticked. */
 export type SubTaskRestore = { from: string[]; to: string[] };

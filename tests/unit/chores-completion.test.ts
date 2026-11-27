@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
-  CHORE_UNDO_MS, completerLabel, completionEligibility, householdDueDay, planCompletion, planReopen, planUndo,
+  CHORE_UNDO_MS, completerLabel, completionEligibility, householdDueDay, mayReopen, planCompletion, planReopen, planUndo,
 } from '../../src/lib/chores/completion';
 import { computeChoreStats, creditedUid, statsMemberFrom } from '../../src/lib/chores/stats';
 import { approvedPeople } from '../../src/lib/member-directory';
@@ -263,5 +263,16 @@ describe('one actionable row per chore', () => {
     assert.match(list, /aria-hidden=\{leaving \|\| undefined\}/);
     // Through the shared helper, which sets the attribute under React 18 and 19 (tests/unit/inert.test.ts).
     assert.match(list, /\{\.\.\.inertProps\(leaving\)\}/);
+  });
+});
+
+describe('mayReopen (CH-6)', () => {
+  it('the completer, the assignee, or chores.edit', () => {
+    const chore = { isCompleted: true, completedByUid: 'sam', assignedToUid: 'kim' };
+    assert.equal(mayReopen(chore, { uid: 'sam' }, {}), true);
+    assert.equal(mayReopen(chore, { uid: 'kim' }, {}), true);
+    assert.equal(mayReopen(chore, { uid: 'lee' }, {}), false);
+    assert.equal(mayReopen(chore, { uid: 'lee' }, { 'chores.edit': true }), true);
+    assert.equal(mayReopen({ isCompleted: true, assignedToEmail: 'kim@example.test' }, { uid: 'x', email: 'KIM@example.test' }, {}), true, 'older email assignment');
   });
 });

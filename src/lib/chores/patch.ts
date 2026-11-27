@@ -38,7 +38,7 @@ export type UndoSettlement = {
 };
 
 type UndoResult =
-  | { ok: true; data: { choreId: string; status: 'undone' | 'stale' | 'open' | 'missing'; completedSubTasks?: string[] } }
+  | { ok: true; data: { choreId: string; status: 'undone' | 'stale' | 'open' | 'missing' | 'refused'; completedSubTasks?: string[] } }
   | { ok: false };
 
 /**
@@ -51,7 +51,8 @@ export function settleUndo(choreIds: readonly string[], results: readonly UndoRe
   const settlement: UndoSettlement = { restore: [], refresh: [], steps: new Map() };
   choreIds.forEach((choreId, index) => {
     const result = results[index];
-    if (!result || !result.ok) settlement.restore.push(choreId);
+    // Never ran, or refused (not someone who may undo it, CH-6): the completion stands.
+    if (!result || !result.ok || result.data.status === 'refused') settlement.restore.push(choreId);
     else if (result.data.status === 'stale' || result.data.status === 'missing') settlement.refresh.push(choreId);
     else if (result.data.status === 'undone' && result.data.completedSubTasks) settlement.steps.set(choreId, result.data.completedSubTasks);
   });

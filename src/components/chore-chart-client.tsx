@@ -35,6 +35,7 @@ import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, dayKey, type ChoreRecord } from '@/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, matchesWhoFilter, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
 import { completerLabel } from '@/lib/chores/completion';
+import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, isPodiumDay, statsMemberFrom } from '@/lib/chores/stats';
 import { AddChoreDialog, AssignChoresDialog, ChoreLibraryDialog, ManageRoomsDialog, RecurringChoresDialog, type AddChoreInput, type AssignSchedule } from '@/components/chores/chore-dialogs';
@@ -79,6 +80,8 @@ const UPKEEP_DEBOUNCE_MS = 1500;
 /** At most this long after a write settles, the page's version of its row gives way to the listener's. */
 const SETTLE_WAIT_MS = 5000;
 
+const REOPEN_REFUSED = 'Only the person who did it, the person it is assigned to, or someone who can edit chores can reopen it.';
+
 export function ChoreChartClient() {
   const { currentUser, currentMember, household, permissions } = useAuth();
   // Completion eligibility follows the household's day, as on the server (CH-2); so do
@@ -107,6 +110,8 @@ export function ChoreChartClient() {
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
   const [choresPendingCompletion, setChoresPendingCompletion] = useState<ChoreRecord[] | null>(null);
   const [choreToDelete, setChoreToDelete] = useState<ChoreRecord | null>(null);
+  // CH-6: reopening asks first; it takes the completer's points away.
+  const [choreToReopen, setChoreToReopen] = useState<ChoreRecord | null>(null);
   const [houseClean, setHouseClean] = useState<CleanRoom[] | null>(null);
 
   const [showFullHistory, setShowFullHistory] = useState(false);
@@ -638,6 +643,7 @@ export function ChoreChartClient() {
     setAssignedChores(current => applyUndoSettlement(current, settled, saved));
     const failure = results.find(result => !result.ok);
     if (failure && !failure.ok) toast({ variant: 'destructive', title: completionFailureMessage(failure, 'undo') });
+    else if (results.some(result => result.ok && result.data.status === 'refused')) toast({ variant: 'destructive', title: "Couldn't undo", description: REOPEN_REFUSED });
     if (settled.refresh.length === 0) return;
     const choresCollection = getCollectionRef('chores');
     const fresh = new Map<string, Record<string, unknown> | null>();
@@ -757,15 +763,26 @@ export function ChoreChartClient() {
     } else if (result.data.status === 'missing') {
       setAssignedChores(current => restoreChoreFields(current, saved));
       toast({ variant: 'destructive', title: "Couldn't reopen the chore", description: 'It was deleted.' });
+    } else if (result.data.status === 'refused') {
+      setAssignedChores(current => restoreChoreFields(current, saved));
+      toast({ variant: 'destructive', title: "Couldn't reopen the chore", description: REOPEN_REFUSED });
     }
   }, [currentUser?.householdId, patchChores, toast, hold]);
 
   const handleToggleDone = useCallback((chore: ChoreRecord, origin: HTMLElement | null) => {
     if (!capabilities.canComplete) return;
-    if (chore.isCompleted) void reopenChore(chore);
+    if (chore.isCompleted) {
+      // CH-6: only the completer, the assignee or someone who may edit chores, and only
+      // after a confirmation (the server checks the same rule).
+      if (!currentUser || !mayReopen(chore, { uid: currentUser.uid, email: currentUser.email }, permissions ?? {})) {
+        toast({ title: "Can't reopen this chore", description: REOPEN_REFUSED });
+        return;
+      }
+      setChoreToReopen(chore);
+    }
     // Measure now: the row leaves the To Do list before the write finishes.
     else void completeChores([chore], origin?.getBoundingClientRect() ?? null);
-  }, [capabilities.canComplete, completeChores, reopenChore]);
+  }, [capabilities.canComplete, completeChores, currentUser, permissions, toast]);
 
   const selectedChores = assignedChores.filter(chore => selectedChoreIds.includes(chore.id) && !chore.isCompleted);
 
@@ -1021,6 +1038,31 @@ export function ChoreChartClient() {
               }}
             >
               Delete Chore
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!choreToReopen} onOpenChange={(open) => !open && setChoreToReopen(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reopen {choreToReopen?.task}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {choreToReopen
+                ? `It goes back to To Do, and the points ${choreToReopen.completedByName ? `${choreToReopen.completedByName} got` : 'given'} for it are removed. Its ticked steps stay ticked.`
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep it done</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!choreToReopen) return;
+                void reopenChore(choreToReopen);
+                setChoreToReopen(null);
+              }}
+            >
+              Reopen
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
