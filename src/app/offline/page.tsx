@@ -1,10 +1,12 @@
 import type { Metadata } from 'next';
+import { SECTION_TITLES } from '@/lib/shell/page-titles';
 import Link from 'next/link';
 import { Logo } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
 
 export const metadata: Metadata = {
-  title: 'Offline - HomeHub',
+  // SL-13: the root template adds " - HomeHub".
+  title: SECTION_TITLES.offline,
   robots: { index: false },
 };
 

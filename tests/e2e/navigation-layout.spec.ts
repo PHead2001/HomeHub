@@ -125,6 +125,7 @@ test.describe('navigation and layout regressions', () => {
       const notFound = page.getByTestId('not-found');
       await expect(notFound.getByRole('heading', { name: "We couldn't find that page" })).toBeVisible();
       await expect(notFound.getByRole('link', { name: 'Go home' })).toHaveAttribute('href', '/');
+      await expect(page).toHaveTitle('Page not found - HomeHub');
     }
     await page.getByTestId('not-found').getByRole('link', { name: 'Go home' }).click();
     await expect(page).toHaveURL(/\/$/);
@@ -151,5 +152,30 @@ test.describe('app shell, audit section 11', () => {
     // Still signed in: the header keeps its signed-in controls after a reload.
     await page.reload();
     await expect(page.getByTestId('header-search')).toBeVisible();
+  });
+
+  test('SL-13: every section has its own title, also after a client navigation', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    test.setTimeout(120_000);
+    await open(page, '/', 'Welcome Home');
+    await expect(page).toHaveTitle('HomeHub');
+    for (const [path, title] of [
+      ['/chores', 'Chores - HomeHub'],
+      ['/shopping', 'Shopping - HomeHub'],
+      ['/pets', 'Pets - HomeHub'],
+      ['/maintenance', 'Maintenance - HomeHub'],
+      ['/calendar', 'Calendar - HomeHub'],
+      ['/household', 'Household - HomeHub'],
+      ['/profile', 'Profile - HomeHub'],
+      ['/library', 'Barcode Library - HomeHub'],
+      ['/notifications', 'Notifications - HomeHub'],
+    ] as const) {
+      await page.goto(path);
+      await expect(page, path).toHaveTitle(title);
+    }
+    await page.goto('/');
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Chores' }).click();
+    await expect(page).toHaveURL(/\/chores\/?$/);
+    await expect(page).toHaveTitle('Chores - HomeHub');
   });
 });

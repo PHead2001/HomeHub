@@ -2,6 +2,10 @@ import { Suspense } from 'react';
 import { HouseholdManagementClient } from '@/components/household-management-client';
 import { SessionGate } from '@/components/shell/session-gate';
 import Loading from './loading';
+import { sectionMetadata } from '@/lib/shell/page-titles';
+
+// SL-13: the page title.
+export const metadata = sectionMetadata('household');
 
 export default function HouseholdPage() {
   return (

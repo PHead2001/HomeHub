@@ -18,6 +18,7 @@ import { FirebaseErrorListener } from '@/components/FirebaseErrorListener';
 import { DeferredPushNotificationManager, DeferredToaster } from '@/components/deferred-push-notification-manager';
 import { CommandCenter } from '@/components/command/command-center';
 import { TimeOfDayTint } from '@/components/dashboard/time-of-day';
+import { ROOT_TITLE } from '@/lib/shell/page-titles';
 
 // Fonts are bundled from npm (Fontsource variable fonts, Latin subset), not fetched
 // from Google Fonts at build time: that download failed intermittently and broke
@@ -37,7 +38,8 @@ const spaceGrotesk = localFont({
 });
 
 export const metadata: Metadata = {
-  title: 'HomeHub',
+  // SL-13: "Chores - HomeHub" and so on; each section's segment sets its name.
+  title: ROOT_TITLE,
   description: 'Your all-in-one home management dashboard.',
   // The manifest link and icon tags come from src/app/manifest.ts, icon.svg,
   // favicon.ico and apple-icon.png (Next file conventions).

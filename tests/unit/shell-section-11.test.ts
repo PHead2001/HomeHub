@@ -6,6 +6,8 @@ import { describe, it } from 'node:test';
 import { AUTO_RETRY_DELAYS_MS, autoRetryDelay, retryUntil } from '../../src/lib/shell/auto-retry';
 import { membershipPhase, membershipReducer, initialMembershipState } from '../../src/lib/auth/live-membership';
 
+import { SECTION_TITLES, documentTitle, ROOT_TITLE, TITLE_TEMPLATE } from '../../src/lib/shell/page-titles';
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 describe('SL-1: section error boundaries', () => {
@@ -99,5 +101,38 @@ describe('SL-12: loads retry on their own', () => {
     assert.equal(membershipPhase(state), 'failed');
     state = membershipReducer(state, { type: 'member', householdId: 'h1', uid: 'u1', exists: true, data: { role: 'member', status: 'approved' }, fromCache: false, offline: false });
     assert.notEqual(membershipPhase(state), 'failed');
+  });
+});
+
+describe('SL-13: every page has its own title', () => {
+  it('the root template suffixes each section name', () => {
+    assert.deepEqual(ROOT_TITLE, { default: 'HomeHub', template: TITLE_TEMPLATE });
+    assert.equal(documentTitle('chores'), 'Chores - HomeHub');
+    assert.equal(documentTitle('library'), 'Barcode Library - HomeHub');
+    assert.equal(documentTitle(null), 'HomeHub');
+  });
+
+  it('each section segment sets its own name, and no title doubles the suffix', () => {
+    const segments: Array<[string, keyof typeof SECTION_TITLES]> = [
+      ['src/app/shopping/layout.tsx', 'shopping'],
+      ['src/app/pets/layout.tsx', 'pets'],
+      ['src/app/maintenance/layout.tsx', 'maintenance'],
+      ['src/app/chores/layout.tsx', 'chores'],
+      ['src/app/calendar/layout.tsx', 'calendar'],
+      ['src/app/automation/layout.tsx', 'automation'],
+      ['src/app/library/layout.tsx', 'library'],
+      ['src/app/profile/layout.tsx', 'profile'],
+      ['src/app/household/page.tsx', 'household'],
+      ['src/app/notifications/page.tsx', 'notifications'],
+      ['src/app/setup/page.tsx', 'setup'],
+    ];
+    for (const [file, key] of segments) {
+      assert.match(source(file), new RegExp(`export const metadata = sectionMetadata\\('${key}'\\)`), file);
+    }
+    assert.match(source('src/app/layout.tsx'), /title: ROOT_TITLE/);
+    for (const file of ['src/app/offline/page.tsx', 'src/app/not-found.tsx', 'src/app/share/page.tsx']) {
+      assert.doesNotMatch(source(file), /title: '[^']*- HomeHub'/, file);
+    }
+    assert.match(source('src/app/share/page.tsx'), /absolute: 'Add to HomeHub'/);
   });
 });
