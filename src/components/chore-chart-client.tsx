@@ -4,7 +4,7 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef, type React
 import { onDataChanged } from '@/lib/data-changed';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, PiggyBank, Plus, Repeat, RotateCw, Trophy, User as UserIcon } from 'lucide-react';
+import { AlarmClock, CalendarDays, CheckSquare, ChevronDown, Filter, Home, ListChecks, MoreVertical, PiggyBank, Plane, Plus, Repeat, RotateCw, Trophy, User as UserIcon } from 'lucide-react';
 import { type DocumentData, type DocumentReference, type Transaction, arrayRemove, arrayUnion, collection, deleteField, doc, getDoc, getDocs, query, runTransaction, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { assigneeFields, resolveAssigneeUid } from '@functions/shared/assignee';
 import { localDay, safeTimeZone } from '@functions/shared/calendar';
@@ -33,7 +33,8 @@ import { playFeedback } from '@/lib/feedback';
 import { memberColorMap } from '@/lib/member-colors';
 import { addDaysToKey, choreDueKey, completionInstant, dayFromKey, type ChoreRecord } from '@/lib/chores/dates';
 import { choreCapabilities, collapseMissedRecurring, confettiCount, isToDoClear, matchesWhoFilter, newChoreDocId, openSubTasks, type ToDoEntry } from '@/lib/chores/list';
-import { completerLabel } from '@/lib/chores/completion';
+import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
+import { tickCompletesChore } from '@/lib/chores/steps';
 import { mayReopen } from '@/lib/chores/completion';
 import { CHORE_UNDO_MS, completeChoresOnServer, completedChoreFields, completionFailureMessage, reopenChoreOnServer, reopenedChoreFields, undoCompletionOnServer, undoTicket, type UndoTicket } from '@/lib/chores/complete-client';
 import { computeChoreStats, statsMemberFrom } from '@/lib/chores/stats';
@@ -44,6 +45,9 @@ import { ChoreList } from '@/components/chores/chore-list';
 import { ChoreDetailSheet } from '@/components/chores/chore-detail-sheet';
 import type { DetailEdit } from '@/lib/chores/detail';
 import { oneTimeChoreRooms } from '@/lib/chores/add-chore';
+import { PauseChoresDialog } from '@/components/chores/pause-dialog';
+import { pauseChoresOnServer, pauseMessage, type PauseRequest } from '@/lib/chores/pause-client';
+import { isQuietAt, readQuietHours } from '@/lib/devices/quiet-hours';
 import { rescheduleFields } from '@/lib/chores/calendar';
 import { ChoreLeaderboard } from '@/components/chores/chore-leaderboard';
 import { HouseCleanMoment } from '@/components/chores/house-clean-moment';
@@ -144,6 +148,8 @@ export function ChoreChartClient() {
   // CH-13, CH-18: below the wide layout (and in the room view) the leaderboard is a
   // ribbon at the top; its full card opens under it on request.
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  // CH-32: "Away or sick" pauses someone's repeating chores for a range of days.
+  const [isPauseOpen, setIsPauseOpen] = useState(false);
 
   const [showFullHistory, setShowFullHistory] = useState(false);
   const [showFullFuture, setShowFullFuture] = useState(false);
@@ -728,6 +734,13 @@ export function ChoreChartClient() {
     timer = window.setTimeout(look, 50);
     return () => { window.clearTimeout(timer); window.clearTimeout(clear); };
   }, [pendingReveal]);
+  // CH-32: during the household's quiet hours a completion and "House is clean" make
+  // no sound and no vibration (the confetti and the card still show).
+  const quietHours = household?.quietHours;
+  const celebrate = useCallback((kind: 'complete' | 'celebrate') => {
+    if (isQuietAt(readQuietHours(quietHours), household?.timeZone, new Date())) return;
+    playFeedback(kind);
+  }, [quietHours, household?.timeZone]);
 
   const maybeCelebrateHouse = useCallback((before: readonly ChoreRecord[], after: readonly ChoreRecord[]) => {
     if (!currentUser?.householdId) return;
@@ -739,7 +752,7 @@ export function ChoreChartClient() {
       if (houseCleanShown(key)) return;
       markHouseCleanShown(key);
       setPersonDone(personDoneTitle(currentUser.displayName));
-      playFeedback('celebrate');
+      celebrate('celebrate');
       return;
     }
     const key = houseCleanStorageKey(currentUser.householdId, today);
@@ -752,8 +765,23 @@ export function ChoreChartClient() {
     // Every room of the household (the whole house is clean); rooms worked in today sparkle first.
     const workedIn = new Set(doneToday.flatMap(chore => chore.roomIds || []));
     setHouseClean(cleanHouseRooms(rooms, workedIn));
-    playFeedback('celebrate');
-  }, [currentUser, today, rooms]);
+    celebrate('celebrate');
+  }, [currentUser, today, rooms, celebrate]);
+
+  const handlePause = useCallback(async (request: PauseRequest) => {
+    const householdId = currentUser?.householdId;
+    if (!householdId) return false;
+    const result = await pauseChoresOnServer(householdId, request);
+    if (!result.ok) {
+      toast({ variant: 'destructive', title: result.message });
+      return false;
+    }
+    const person = usersByUid.get(request.memberUid);
+    const message = pauseMessage(result.outcome, person ? memberName(person) : 'This member');
+    toast({ ...(message.failed ? { variant: 'destructive' as const } : {}), title: message.title, description: message.description });
+    if (!message.failed) requestUpkeep();
+    return !message.failed;
+  }, [currentUser?.householdId, toast, usersByUid, requestUpkeep]);
 
   // Completion, Undo and reopen go through the server (complete-client.ts): it
   // refuses chores due after today and records who completed each one (H3).
@@ -852,7 +880,7 @@ export function ChoreChartClient() {
     }
     if (completed.length === 0) return;
 
-    playFeedback('complete');
+    celebrate('complete');
     const fresh = completed.filter(chore => !celebrated.current.has(chore.id));
     fresh.forEach(chore => celebrated.current.add(chore.id));
     if (fresh.length > 0 && origin) {
@@ -877,7 +905,7 @@ export function ChoreChartClient() {
     });
     const after = before.map(chore => (applied.has(chore.id) ? { ...chore, ...applied.get(chore.id) } as ChoreRecord : chore));
     maybeCelebrateHouse(before, after);
-  }, [currentUser?.householdId, toast, burst, undoCompletion, maybeCelebrateHouse, usersByUid, hold]);
+  }, [currentUser?.householdId, toast, burst, undoCompletion, maybeCelebrateHouse, usersByUid, hold, celebrate]);
 
   const reopenChore = useCallback(async (chore: ChoreRecord) => {
     const householdId = currentUser?.householdId;
@@ -931,6 +959,15 @@ export function ChoreChartClient() {
   const handleSubTaskToggle = useCallback(async (chore: ChoreRecord, subTask: string) => {
     const choresCollection = getCollectionRef('chores');
     if (!choresCollection || !capabilities.canComplete) return;
+    // CH-33: ticking the last open step of a chore that is due completes it, on the
+    // server like every completion (points, completer), with the usual Undo, which puts
+    // the steps back as they were before this tick. Only this device's tick does this,
+    // never a snapshot. A chore not due yet just records the step.
+    if (tickCompletesChore(chore, subTask) && !isDueAfterHouseholdDay(chore, householdDay, household?.timeZone)) {
+      const check = document.querySelector<HTMLElement>(`[data-chore-id="${CSS.escape(chore.id)}"] button[role="checkbox"]`);
+      void completeChores([chore], check?.getBoundingClientRect() ?? null);
+      return;
+    }
     const current = chore.completedSubTasks || [];
     const next = current.includes(subTask) ? current.filter(st => st !== subTask) : [...current, subTask];
     const release = hold([chore.id]);
@@ -944,7 +981,7 @@ export function ChoreChartClient() {
     } finally {
       release();
     }
-  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError, hold]);
+  }, [getCollectionRef, capabilities.canComplete, patchChores, toastError, hold, completeChores, householdDay, household?.timeZone]);
 
   const deleteChores = async (ids: string[], title: string) => {
     const choresCollection = getCollectionRef('chores');
@@ -1281,6 +1318,14 @@ export function ChoreChartClient() {
         capabilities={capabilities}
         onSave={handleSaveChoreTemplate}
       />
+      <PauseChoresDialog
+        isOpen={isPauseOpen}
+        onOpenChange={setIsPauseOpen}
+        people={capabilities.canDelete ? householdUsers : householdUsers.filter(user => user.uid === currentUser.uid)}
+        currentUserUid={currentUser.uid}
+        today={today}
+        onSubmit={handlePause}
+      />
       <AddChoreDialog
         isOpen={isAddOpen}
         onOpenChange={setIsAddOpen}
@@ -1369,6 +1414,11 @@ export function ChoreChartClient() {
               <DropdownMenuItem onSelect={() => setRoomsDialog({ open: true, startNew: false })}>
                 <Home className="mr-2 h-4 w-4" /> Rooms
               </DropdownMenuItem>
+              {capabilities.canEdit && (
+                <DropdownMenuItem onSelect={() => setIsPauseOpen(true)}>
+                  <Plane className="mr-2 h-4 w-4" /> Away or sick
+                </DropdownMenuItem>
+              )}
               {isManager && (
                 <>
                   <DropdownMenuSeparator />
