@@ -272,4 +272,19 @@ describe('who may reopen (CH-6)', () => {
     assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: 'legacy' }, sam)).status, 'refused');
     assert.equal((await reopenChoreAs(adminDb, HOUSE, { choreId: 'legacy' }, kim)).status, 'reopened');
   });
+
+  test('Undo follows the same rule: a completion id alone is not enough', async () => {
+    const kim = { uid: 'cc-kim', email: 'cc.kim@example.test' };
+    await house().collection('members').doc(kim.uid).set({ uid: kim.uid, role: 'child', status: 'active', displayName: 'Kim' });
+    await seedChore('undo-guard');
+    const [done] = await completeChoresAs(adminDb, sam, HOUSE, { choreIds: ['undo-guard'] }, AFTER_MIDNIGHT);
+    assert.equal(done.status, 'completed');
+    // Kim learns the id from an "already done" answer.
+    const [already] = await completeChoresAs(adminDb, kim as CompletionCaller, HOUSE, { choreIds: ['undo-guard'] }, AFTER_MIDNIGHT);
+    assert.equal(already.status, 'already');
+    const completionId = (await read('undo-guard')).completionId as string;
+    assert.equal((await undoChoreCompletionAs(adminDb, HOUSE, { choreId: 'undo-guard', completionId }, undefined, kim)).status, 'refused');
+    assert.equal((await read('undo-guard')).isCompleted, true, 'nothing written');
+    assert.equal((await undoChoreCompletionAs(adminDb, HOUSE, { choreId: 'undo-guard', completionId }, undefined, sam)).status, 'undone', 'the completer');
+  });
 });

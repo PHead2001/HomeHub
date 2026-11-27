@@ -73,7 +73,8 @@ export async function completeChores(input: ChoreActionContext & { choreIds: str
 
 /** Undoes one completion, only while `completionId` is still its current completion. */
 export async function undoChoreCompletion(input: ChoreActionContext & { choreId: string; completionId: string; restoreSubTasks?: SubTaskRestore | null }) {
-  return runChoreAction(input, user => undoChoreCompletionAs(adminDb, user.householdId, input));
+  // The same people who may reopen it (CH-6).
+  return runChoreAction(input, user => undoChoreCompletionAs(adminDb, user.householdId, input, undefined, { uid: user.uid, email: user.email }));
 }
 
 /** Reopens a completed chore (it changes points, so it runs on the server). */

@@ -642,6 +642,7 @@ export function ChoreChartClient() {
     setAssignedChores(current => applyUndoSettlement(current, settled, saved));
     const failure = results.find(result => !result.ok);
     if (failure && !failure.ok) toast({ variant: 'destructive', title: completionFailureMessage(failure, 'undo') });
+    else if (results.some(result => result.ok && result.data.status === 'refused')) toast({ variant: 'destructive', title: "Couldn't undo", description: REOPEN_REFUSED });
     if (settled.refresh.length === 0) return;
     const choresCollection = getCollectionRef('chores');
     const fresh = new Map<string, Record<string, unknown> | null>();

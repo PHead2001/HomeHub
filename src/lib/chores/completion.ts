@@ -208,7 +208,9 @@ export type ChoreCompletionOutcome =
 /** `undone` carries the stored steps after the Undo (restored or preserved), which the page applies. */
 export type UndoOutcome =
   | { choreId: string; status: 'undone'; completedSubTasks: string[] }
-  | { choreId: string; status: 'stale' | 'open' | 'missing' };
+  | { choreId: string; status: 'stale' | 'open' | 'missing' }
+  /** Not the completer, the assignee or an editor (CH-6): nothing written. */
+  | { choreId: string; status: 'refused' };
 export type ReopenOutcome = { choreId: string; status: 'reopened' | 'open' | 'missing' | 'refused' };
 
 /**
