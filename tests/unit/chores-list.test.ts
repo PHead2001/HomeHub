@@ -133,6 +133,9 @@ describe('chore UI source checks', () => {
     'src/components/chores/confetti.tsx',
     'src/components/chores/house-clean-moment.tsx',
     'src/components/chores/calendar/household-calendar.tsx',
+    'src/components/chores/calendar/event-chip.tsx',
+    'src/components/chores/calendar/fair-share-strip.tsx',
+    'src/components/chores/calendar/away-dialog.tsx',
   ];
 
   it('uses design tokens only (no raw hex or rgb colors)', () => {

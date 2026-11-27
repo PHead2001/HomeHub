@@ -65,7 +65,7 @@ import { morphStyle } from '@/lib/motion';
 import { NumberTicker } from '@/components/motion/number-ticker';
 import { pluralize } from '@/lib/shopping/items';
 import { ShortcutHint } from '@/components/ui/shortcut-hint';
-import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, parseChoresFilters, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
+import { ALL_ROOMS, choresFiltersHref, choresFiltersKey, effectiveChoresRoom, parseChoresFilters, parseHighlightChore, roomSharedId, type ChoresFilters } from '@/lib/chores/url-state';
 import { cleanHouseRooms, houseCleanShown, houseCleanStorageKey, markHouseCleanShown, ownListCleared, personDoneStorageKey, personDoneTitle, type CleanRoom } from '@/lib/chores/house-clean';
 
 
@@ -236,6 +236,21 @@ export function ChoreChartClient() {
   }, [live.state, currentUser, settleTick]);
 
   const loading = Boolean(liveKey) && live.status === 'loading';
+
+  // `?chore=<id>` from the calendar (CA-17): scroll to that chore and mark it for a moment.
+  const highlightId = parseHighlightChore(searchParams);
+  useEffect(() => {
+    if (!highlightId || loading) return;
+    let clear: number | undefined;
+    const timer = window.setTimeout(() => {
+      const row = document.querySelector(`[data-chore-id="${CSS.escape(highlightId)}"]`);
+      if (!row) return;
+      row.scrollIntoView({ block: 'center' });
+      row.setAttribute('data-highlight', 'true');
+      clear = window.setTimeout(() => row.removeAttribute('data-highlight'), 2500);
+    }, 150);
+    return () => { window.clearTimeout(timer); window.clearTimeout(clear); };
+  }, [highlightId, loading]);
 
   // Recurring chores, retention and reminders run on the server (hourly, and here on
   // demand) so every household member sees the same schedule. On demand means once on

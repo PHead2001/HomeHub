@@ -93,3 +93,13 @@ export function choresFiltersHref(pathname: string, current: ParamsLike | null |
   const search = ordered.toString();
   return `${pathname}${search ? `?${search}` : ''}`;
 }
+
+/**
+ * `?chore=<id>` (audit CA-17): the calendar's "Open Chores" names the chore it came from,
+ * and the page scrolls to it and marks it for a moment. Not a filter: the other filters
+ * keep it as an unrelated param.
+ */
+export function parseHighlightChore(params: ParamsLike | null | undefined): string | null {
+  const id = params?.get('chore')?.trim();
+  return id && id.length <= 1500 && !id.includes('/') ? id : null;
+}
