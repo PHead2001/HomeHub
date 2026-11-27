@@ -99,11 +99,14 @@ service cloud.firestore {
     }
 
     // A guest pass (HO-14, src/lib/guest-pass.ts) ends at `accessUntil`, a timestamp the
-    // server writes; from then on the record grants nothing, before any sweep removes it.
+    // server writes, and only ever on a Guest record (a role change away from Guest clears
+    // it); from then on the record grants nothing, before any sweep removes it. Only guests
+    // pay for the check: these functions run on every permission check, and the heavy pet
+    // rules are close to the 1000-expression evaluation limit.
     function isApprovedMemberData(member) {
-      return member.role in ['owner', 'admin', 'member', 'child', 'guest'] &&
-        member.get('status', 'active') == 'active' &&
-        guestPassCurrent(member);
+      return (member.role in ['owner', 'admin', 'member', 'child'] ||
+          (member.role == 'guest' && guestPassCurrent(member))) &&
+        member.get('status', 'active') == 'active';
     }
 
     function guestPassCurrent(member) {
