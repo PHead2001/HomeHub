@@ -6,6 +6,7 @@ import { devicesEnabled } from '@/lib/server/device-identity';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
 import { describeQuietHours, readQuietHours, validateQuietHours, type QuietHours } from '@/lib/devices/quiet-hours';
 import type { VerifiedCaller } from '@/lib/server/household-membership';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 // Household quiet hours (docs/modules/devices/README.md, "Night dimming"; design 14.4,
 // D-T1, JC-20): `households/{h}.quietHours = { start, end, updatedAt, updatedByUid }` or
@@ -41,7 +42,7 @@ export const updateQuietHours = async (
     if (!household.exists) throw new QuietHoursError('not_found', 'That household no longer exists.');
     if (household.get('deletingAt')) throw new QuietHoursError('household_deleting', 'This household is being deleted.');
     const data = member.data();
-    if (!member.exists || (data?.status ?? 'active') !== 'active' || data?.role === 'newuser') throw new QuietHoursError('not_member', 'You are not part of this household.');
+    if (!member.exists || !memberIsCurrent(data) || data?.role === 'newuser') throw new QuietHoursError('not_member', 'You are not part of this household.');
     if (data?.role !== 'owner' && data?.role !== 'admin') throw new QuietHoursError('forbidden', 'Only owners and admins can change quiet hours.');
     const previous = readQuietHours(household.get('quietHours'));
     const next = checked.value;

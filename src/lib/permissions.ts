@@ -5,6 +5,7 @@ import type {
   PermissionOverrides,
   UserRole,
 } from '@/lib/types';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 /**
  * The Pets permissions, named once (R5): the rules' pet-log clauses, the personal UI's
@@ -228,7 +229,8 @@ const approvedMemberRoles: HouseholdRole[] = ['owner', 'admin', 'member', 'child
 export const getMemberPermissions = (member?: Pick<HouseholdMember, 'role' | 'status' | 'permissions'> | null) => {
   const approved = Boolean(member)
     && approvedMemberRoles.includes(member!.role as HouseholdRole)
-    && (member!.status || 'active') === 'active';
+    // Active, and no guest pass that has ended (HO-14).
+    && memberIsCurrent(member as { status?: unknown; accessUntil?: unknown });
   return approved
     ? getEffectivePermissions(member!.role, member!.permissions)
     : getRolePresetPermissions('newuser');

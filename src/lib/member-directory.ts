@@ -12,6 +12,7 @@
  * not manage members; use `canSeeMemberEmails` before displaying it.
  */
 import type { Household, HouseholdMember, HouseholdMemberStatus, HouseholdPermission, HouseholdRole, User } from '@/lib/types';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 export type HouseholdPerson = {
   uid: string;
@@ -96,7 +97,7 @@ export function personFromMemberRecord(data: Record<string, unknown>, docId?: st
 export function approvedPeople(records: ReadonlyArray<{ id: string; data: Record<string, unknown> }>): HouseholdPerson[] {
   return records
     // A missing status means active (older records); any other value is not approved.
-    .filter(record => record.data.status === undefined || record.data.status === 'active')
+    .filter(record => memberIsCurrent(record.data))
     .map(record => personFromMemberRecord(record.data, record.id))
     .filter((person): person is HouseholdPerson => Boolean(person) && person!.role !== 'newuser' && person!.status === 'active');
 }

@@ -36,6 +36,7 @@ import {
 } from '@/lib/server/device-identity';
 import { writeDeviceAudit } from '@/lib/server/device-audit';
 import type { VerifiedCaller } from '@/lib/server/household-membership';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 // Device management (docs/modules/devices/README.md): device codes and re-pair codes,
 // redemption, settings edits, heartbeat and removal. Every operation runs in one
@@ -102,7 +103,7 @@ const memberName = (data: FirebaseFirestore.DocumentData | undefined): string | 
   typeof data?.displayName === 'string' && data.displayName.trim() && !/\S+@\S+/.test(data.displayName) ? data.displayName.trim() : null;
 
 export const isDeviceAdmin = (data: FirebaseFirestore.DocumentData | undefined) =>
-  Boolean(data && (data.role === 'owner' || data.role === 'admin') && (data.status ?? 'active') === 'active');
+  Boolean(data && (data.role === 'owner' || data.role === 'admin') && memberIsCurrent(data));
 
 type AdminContext = { householdRef: DocRef; household: FirebaseFirestore.DocumentData; actorName: string | null };
 

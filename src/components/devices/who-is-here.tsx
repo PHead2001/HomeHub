@@ -78,7 +78,7 @@ export function WhoIsHereDialog({
                   <PersonFace person={person} />
                   <span className="text-base font-semibold">{person.name}</span>
                   <span className="text-xs text-muted-foreground">
-                    {person.kind === 'identity' ? 'Kid profile' : person.role === 'owner' ? 'Owner' : person.role === 'admin' ? 'Admin' : person.role === 'child' ? 'Child' : 'Member'}
+                    {person.kind === 'identity' ? (person.role === 'guest' ? 'Guest pass' : 'Kid profile') : person.role === 'owner' ? 'Owner' : person.role === 'admin' ? 'Admin' : person.role === 'child' ? 'Child' : 'Member'}
                   </span>
                 </button>
               </li>

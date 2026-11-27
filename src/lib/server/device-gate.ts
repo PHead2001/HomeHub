@@ -1,4 +1,5 @@
 import 'server-only';
+import { guestPassEnded, isGuestIdentityUid } from '@/lib/guest-pass';
 
 import { createHash } from 'node:crypto';
 import { Timestamp } from 'firebase-admin/firestore';
@@ -40,6 +41,7 @@ import {
   type DeviceOp,
   type DeviceOpReplay,
 } from '@/lib/server/device-ops';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 export { DeviceActionError } from '@/lib/server/device-errors';
 
@@ -64,7 +66,7 @@ export const QUEUED_MAX_FUTURE_MS = 5 * 60 * 1000;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SESSION_SECRET = /^[A-Za-z0-9_-]{43}$/;
-const ELIGIBLE_ROLES: readonly HouseholdRole[] = ['owner', 'admin', 'member', 'child'];
+const ELIGIBLE_ROLES: readonly HouseholdRole[] = ['owner', 'admin', 'member', 'child', 'guest'];
 
 export type DeviceActionRequest = {
   /** The device's Firebase ID token. */
@@ -97,7 +99,7 @@ export type DeviceAttribution = {
 export type DeviceActor = {
   uid: string;
   name: string;
-  role: 'owner' | 'admin' | 'member' | 'child';
+  role: 'owner' | 'admin' | 'member' | 'child' | 'guest';
   kind: 'account' | 'identity';
   permissions: Record<HouseholdPermission, boolean>;
 };
@@ -274,15 +276,17 @@ export const publicName = (value: unknown): string => {
 
 /**
  * 8.4 step 7: the actor is an active owner, admin, member or child of this household
- * (accounts and kid profiles), never a guest, a pending or departing person, or a device.
+ * (accounts and kid profiles), or a tablet guest pass (`guest_<id>`, WT-21) until its
+ * `accessUntil`; never an account guest, a pending or departing person, or a device.
  */
 export const checkActorEligible = (actorUid: unknown, member: FirebaseFirestore.DocumentSnapshot | null): DeviceActor => {
   if (typeof actorUid !== 'string' || !actorUid) throw new DeviceActionError('actor_required');
   if (actorUid.startsWith('device_') || !member || !member.exists) throw new DeviceActionError('actor_not_member');
   const data = member.data() || {};
-  if (data.role === 'guest') throw new DeviceActionError('actor_guest');
-  const status = data.status ?? 'active';
-  if (status !== 'active' || !ELIGIBLE_ROLES.includes(data.role)) throw new DeviceActionError('actor_inactive');
+  if (data.role === 'guest' && !(data.kind === 'identity' && isGuestIdentityUid(actorUid))) throw new DeviceActionError('actor_guest');
+  // A guest pass (tablet or account) ends at `accessUntil` (HO-14, WT-21).
+  if (guestPassEnded(data, Date.now())) throw new DeviceActionError('actor_inactive');
+  if (!memberIsCurrent(data) || !ELIGIBLE_ROLES.includes(data.role)) throw new DeviceActionError('actor_inactive');
   const role = data.role as DeviceActor['role'];
   return {
     uid: actorUid,

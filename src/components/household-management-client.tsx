@@ -49,6 +49,7 @@ import {
   changeMemberRoleAction,
   createInviteAction,
   remindPendingMembersAction,
+  expireGuestPassesAction,
   removeMemberAction,
   renameHouseholdAction,
   revokeAllInvitesAction,
@@ -85,6 +86,9 @@ import { PendingMemberBanner } from '@/components/household/pending-member-banne
 import { ALL_ROLES, RolesPanel } from '@/components/household/roles-panel';
 import { InviteRoleSelect, type InviteRoleChoice } from '@/components/household/invite-role-select';
 import { TimeZoneSetting } from '@/components/household/time-zone-setting';
+import { InvitePassSelect, type InvitePassChoice } from '@/components/household/invite-pass-select';
+import { TabletGuestPassDialog } from '@/components/household/tablet-guest-pass-dialog';
+import { accessUntilMs, guestPassLabel, readGuestPassHours } from '@/lib/guest-pass';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
@@ -185,6 +189,8 @@ export function HouseholdManagementClient() {
   // HO-16, HO-23: an optional suggested role for the next code, and the invite whose
   // QR code and link are shown.
   const [inviteRole, setInviteRole] = useState<InviteRoleChoice>('none');
+  const [invitePass, setInvitePass] = useState<InvitePassChoice>('none');
+  const [guestPassOpen, setGuestPassOpen] = useState(false);
   const [shareInvite, setShareInvite] = useState<InviteCode | null>(null);
   const inviteRoles = assignableRoles.filter((role) => rank(role) < rank(currentMember?.role));
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -224,6 +230,35 @@ export function HouseholdManagementClient() {
       }
     })();
   }, [canRemind, household?.id, pendingMembers]);
+
+  // Guest passes (HO-14): when one has ended, ask the server to remove it (logged as
+  // "Guest pass ended"). The rules refused it at its end time already; this is cleanup.
+  // A timer wakes the page at the next end time.
+  const passEnds = members.map((member) => accessUntilMs(member.accessUntil)).filter((ms): ms is number => ms !== null);
+  const nextPassEnd = passEnds.length > 0 ? Math.min(...passEnds) : null;
+  const [passClock, setPassClock] = useState(() => Date.now());
+  const sweepingRef = useRef(false);
+  useEffect(() => {
+    if (nextPassEnd === null) return;
+    const timer = window.setTimeout(() => setPassClock(Date.now()), Math.min(Math.max(0, nextPassEnd - Date.now() + 500), 2 ** 31 - 1));
+    return () => window.clearTimeout(timer);
+  }, [nextPassEnd]);
+  useEffect(() => {
+    const firebaseUser = auth.currentUser;
+    if (!household?.id || !firebaseUser || nextPassEnd === null || nextPassEnd > passClock || sweepingRef.current) return;
+    sweepingRef.current = true;
+    const householdId = household.id;
+    void (async () => {
+      try {
+        const result = await expireGuestPassesAction({ idToken: await firebaseUser.getIdToken(), householdId });
+        if (!result.ok) console.warn('Ended guest passes were not removed', result.code);
+      } catch (error) {
+        console.error('Failed to remove ended guest passes', error);
+      } finally {
+        sweepingRef.current = false;
+      }
+    })();
+  }, [household?.id, nextPassEnd, passClock]);
 
   /**
    * Calls a household server action with a fresh ID token. The server decides
@@ -281,7 +316,12 @@ export function HouseholdManagementClient() {
     try {
       const householdId = household.id;
       const invite = await runAction('Could not create an invite code', (idToken) =>
-        createInviteAction({ idToken, householdId, suggestedRole: inviteRole === 'none' ? null : inviteRole }));
+        createInviteAction({
+          idToken,
+          householdId,
+          suggestedRole: invitePass !== 'none' ? 'guest' : inviteRole === 'none' ? null : inviteRole,
+          guestPassHours: invitePass === 'none' ? null : invitePass,
+        }));
       if (!invite) return;
       // The code exists now; copying is a convenience that must not turn a successful
       // invite into a reported failure (iOS often blocks clipboard writes after an await).
@@ -388,7 +428,9 @@ export function HouseholdManagementClient() {
   const askRemove = (member: HouseholdMember) => setConfirm({
     title: `Remove ${memberName(member)}?`,
     description: member.kind === 'identity'
-      ? 'The kid profile disappears from wall tablets. Open chores assigned to it become unassigned; completed chores stay in the history.'
+      ? member.role === 'guest'
+        ? 'The guest pass ends now and its face disappears from wall tablets. What was done under it stays in the history.'
+        : 'The kid profile disappears from wall tablets. Open chores assigned to it become unassigned; completed chores stay in the history.'
       : `They lose access to ${householdDisplayName} right away. Open chores assigned to them become unassigned.`,
     confirmLabel: 'Remove',
     destructive: true,
@@ -589,7 +631,14 @@ export function HouseholdManagementClient() {
                   <CardDescription>Codes last {INVITE_TTL_MINUTES} minutes and work once. New people wait for you to choose their role before they see anything.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <InviteRoleSelect value={inviteRole} roles={inviteRoles} onChange={setInviteRole} disabled={isGeneratingInvite} />
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    {inviteRoles.includes('guest') && (
+                      <InvitePassSelect value={invitePass} onChange={setInvitePass} disabled={isGeneratingInvite} />
+                    )}
+                    {invitePass === 'none' && (
+                      <InviteRoleSelect value={inviteRole} roles={inviteRoles} onChange={setInviteRole} disabled={isGeneratingInvite} />
+                    )}
+                  </div>
                   {invites.length > 0 && (
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Button onClick={generateInvite} disabled={isGeneratingInvite || !inviteReady}>
@@ -625,7 +674,9 @@ export function HouseholdManagementClient() {
                               </div>
                               <p className="break-words text-sm text-muted-foreground">
                                 Created by {invite.createdByEmail}
-                                {invite.suggestedRole ? ` · suggests ${roleLabel(invite.suggestedRole)}` : ''}
+                                {invite.guestPassHours && readGuestPassHours(invite.guestPassHours)
+                                  ? ` · guest pass, ${guestPassLabel(readGuestPassHours(invite.guestPassHours)!)}`
+                                  : invite.suggestedRole ? ` · suggests ${roleLabel(invite.suggestedRole)}` : ''}
                                 {active ? ` · expires ${relativeTime(invite.expiresAt, inviteNow)}` : ` · ${relativeTime(invite.createdAt, inviteNow)}`}
                               </p>
                             </div>
@@ -659,13 +710,22 @@ export function HouseholdManagementClient() {
             {tablet.enabled && (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm text-muted-foreground">Kids without their own account can still use wall tablets.</p>
-                <Button variant="outline" onClick={tablet.openCreateKid}>
-                  <UserPlus className="mr-2 h-4 w-4" aria-hidden />
-                  Add a kid profile
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={tablet.openCreateKid}>
+                    <UserPlus className="mr-2 h-4 w-4" aria-hidden />
+                    Add a kid profile
+                  </Button>
+                  <Button variant="outline" onClick={() => setGuestPassOpen(true)}>
+                    <UserPlus className="mr-2 h-4 w-4" aria-hidden />
+                    Add a tablet guest pass
+                  </Button>
+                </div>
               </div>
             )}
             {tablet.dialogs}
+            {tablet.enabled && household?.id && (
+              <TabletGuestPassDialog open={guestPassOpen} householdId={household.id} onOpenChange={setGuestPassOpen} />
+            )}
             {live.membersFailed && (
               <p role="status" className="rounded-md border border-warning/50 bg-warning/10 p-3 text-sm">
                 We couldn&apos;t load everyone right now. Check your connection; this list updates on its own.
@@ -700,6 +760,8 @@ export function HouseholdManagementClient() {
                     isSelf={member.uid === currentMember?.uid}
                     showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
                     showCustom={canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
+                    nowMs={passClock}
+                    timeZone={household?.timeZone}
                     stats={choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}
@@ -731,6 +793,8 @@ export function HouseholdManagementClient() {
                     isSelf={member.uid === currentMember?.uid}
                     showEmail={canSeeMemberEmails(permissions) || member.uid === currentMember?.uid}
                     showCustom={canSeeMemberOverrides({ uid: currentMember?.uid, permissions }, member.uid)}
+                    nowMs={passClock}
+                    timeZone={household?.timeZone}
                     stats={member.role === 'newuser' ? undefined : choreStats.get(member.uid) ?? (choreStatsReady ? { doneThisWeek: 0, open: 0 } : undefined)}
                     actions={actionsFor(member)}
                     onRoleChange={askRoleChange}

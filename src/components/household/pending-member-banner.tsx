@@ -12,6 +12,7 @@ import { SPRING_UI } from '@/lib/motion';
 import type { MemberColor } from '@/lib/member-colors';
 import type { HouseholdMember, HouseholdRole } from '@/lib/types';
 import { memberFirstName, memberName, relativeTime, roleLabel, roleSummary } from './household-model';
+import { guestPassLabel, readGuestPassHours } from '@/lib/guest-pass';
 
 /**
  * "Approve Jamie?" (D13/H25). Slides in at the top of Members when someone joins
@@ -42,6 +43,7 @@ export function PendingMemberBanner({
   const [busy, setBusy] = useState(false);
   const name = memberName(member);
   const first = memberFirstName(member);
+  const passHours = readGuestPassHours(member.guestPassHours);
   const roleFieldId = `approve-role-${member.uid}`;
   const asked = relativeTime(member.joinedAt);
 
@@ -63,6 +65,7 @@ export function PendingMemberBanner({
             <h3 id={`approve-${member.uid}-title`} className="break-words font-semibold">Approve {first}?</h3>
             <p className="break-words text-sm text-muted-foreground">
               {name !== first ? `${name} · ` : ''}{member.email} asked to join{asked ? ` ${asked}` : ''}. They can&apos;t see anything until you choose a role.
+              {passHours ? ` Invited with a guest pass: approving as Guest gives them ${guestPassLabel(passHours)}; another role makes them a full member.` : ''}
             </p>
           </div>
         </div>

@@ -25,7 +25,9 @@ export type DeviceAuditAction =
   | 'pin.lockout_cleared'
   | 'child.created'
   | 'child.updated'
-  | 'child.removed';
+  | 'child.removed'
+  | 'guest.created'
+  | 'guest.removed';
 
 export type DeviceAuditEntry = {
   action: DeviceAuditAction;

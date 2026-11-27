@@ -7,6 +7,7 @@ import {
   changeMemberRole,
   createInvite,
   deleteHousehold,
+  expireGuestPasses,
   redeemInvite,
   removeMember,
   renameHousehold,
@@ -879,5 +880,70 @@ describe('household time zone (HO-19)', () => {
       await refused(updateHouseholdTimeZone(owner, HOUSE, bad, NOW), 'invalid_input');
     }
     assert.equal((await house().get()).get('timeZone'), undefined);
+  });
+});
+
+describe('guest passes on accounts (HO-14, HO-24)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const later = (ms: number) => new Date(NOW.getTime() + ms);
+
+  test('an invite with a pass suggests Guest; approving as Guest starts it; it ends by time alone', async () => {
+    const invite = await createInvite(admin, HOUSE, NOW, { guestPassHours: 4 });
+    assert.equal(invite.guestPassHours, 4);
+    assert.equal(invite.suggestedRole, 'guest');
+    await redeemInvite(stranger, invite.code, later(60_000));
+    const pendingRecord = (await memberRef(stranger).get()).data();
+    assert.equal(pendingRecord?.guestPassHours, 4);
+    assert.equal(pendingRecord?.accessUntil, undefined, 'the clock starts at approval');
+
+    await changeMemberRole(admin, HOUSE, stranger.uid, 'guest', later(HOUR));
+    const record = (await memberRef(stranger).get()).data();
+    assert.equal(record?.role, 'guest');
+    assert.equal(record?.accessUntil.toMillis(), later(5 * HOUR).getTime());
+    assert.equal(record?.guestPassHours, undefined);
+    const [entry] = await audits('member.approved');
+    assert.equal(entry.details?.accessUntil, later(5 * HOUR).toISOString());
+
+    // After the end the server treats the pass holder as inactive: no transfer target,
+    // and a sweep before the end removes nothing.
+    assert.deepEqual(await expireGuestPasses(member, HOUSE, later(4 * HOUR)), { count: 0 });
+    assert.equal((await memberRef(stranger).get()).exists, true);
+    await refused(transferOwnership(owner, HOUSE, stranger.uid, later(2 * HOUR)), 'target_guest_pass');
+    await refused(transferOwnership(owner, HOUSE, stranger.uid, later(6 * HOUR)), 'target_pending');
+
+    // The sweep after the end removes the record and its contact document, and logs it
+    // with no person as the actor.
+    assert.deepEqual(await expireGuestPasses(member, HOUSE, later(6 * HOUR)), { count: 1 });
+    assert.equal((await memberRef(stranger).get()).exists, false);
+    assert.equal((await memberRef(stranger).collection('private').doc('contact').get()).exists, false);
+    const [ended] = await audits('member.guest_pass_ended');
+    assert.equal(ended.actorUid, null);
+    assert.equal(ended.targetUid, stranger.uid);
+    assert.equal(ended.details?.accessUntil, later(5 * HOUR).toISOString());
+    // Running it again does nothing.
+    assert.deepEqual(await expireGuestPasses(member, HOUSE, later(7 * HOUR)), { count: 0 });
+  });
+
+  test('approving a pass invitee with another role makes them a full member; a promotion clears a running pass', async () => {
+    const invite = await createInvite(owner, HOUSE, NOW, { guestPassHours: 24 });
+    await redeemInvite(stranger, invite.code, NOW);
+    await changeMemberRole(owner, HOUSE, stranger.uid, 'member', NOW);
+    let record = (await memberRef(stranger).get()).data();
+    assert.equal(record?.role, 'member');
+    assert.equal(record?.accessUntil, undefined);
+
+    await memberRef(guest).update({ accessUntil: Timestamp.fromMillis(NOW.getTime() + HOUR) });
+    await changeMemberRole(admin, HOUSE, guest.uid, 'member', NOW);
+    record = (await memberRef(guest).get()).data();
+    assert.equal(record?.accessUntil, undefined, 'promoted: no end time');
+  });
+
+  test('an ended pass holder cannot act; bad pass lengths and guest-or-below creators are refused', async () => {
+    await refused(createInvite(owner, HOUSE, NOW, { guestPassHours: 5 }), 'invalid_input');
+    await grant(guest, { 'household.manageInvites': true, 'household.manageMembers': true });
+    await refused(createInvite(guest, HOUSE, NOW, { guestPassHours: 4 }), 'role_too_high');
+    await memberRef(guest).update({ accessUntil: Timestamp.fromMillis(NOW.getTime() - 1000) });
+    await refused(renameHousehold(guest, HOUSE, 'Hijacked', NOW), 'not_member');
+    await refused(expireGuestPasses(outsider, HOUSE, NOW), 'not_member');
   });
 });

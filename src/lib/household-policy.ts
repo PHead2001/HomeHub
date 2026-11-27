@@ -31,6 +31,8 @@ export type PolicyMember = Pick<HouseholdMember, 'uid' | 'role'> & {
   permissions?: PermissionOverrides;
   /** `'identity'`: a kid profile with no sign-in (fixed Child role, never an owner). */
   kind?: HouseholdMember['kind'];
+  /** A time-limited guest pass (HO-14): never the owner. */
+  guestPass?: boolean;
 };
 
 export type PolicyRefusal =
@@ -57,7 +59,9 @@ export type PolicyRefusal =
   /** A kid profile cannot become the owner. */
   | 'target_identity'
   /** A child account leaves only when an adult removes it (HO-11), or while the household is being deleted. */
-  | 'child_cannot_leave';
+  | 'child_cannot_leave'
+  /** Someone on a time-limited guest pass cannot become the owner. */
+  | 'target_guest_pass';
 
 export type PolicyDecision = { ok: true } | { ok: false; reason: PolicyRefusal };
 
@@ -225,6 +229,7 @@ export const canTransferOwnership = (actor: PolicyMember | null | undefined, tar
   if (actor.uid === target.uid) return refuse('self');
   if (target.kind === 'identity') return refuse('target_identity');
   if (target.role === 'newuser' || !isActive(target)) return refuse('target_pending');
+  if (target.guestPass) return refuse('target_guest_pass');
   return allow;
 };
 
@@ -258,6 +263,7 @@ const REFUSAL_MESSAGES: Record<PolicyRefusal, string> = {
   identity_fixed_role: "A kid profile's role is always Child.",
   target_identity: "A kid profile can't own the household.",
   child_cannot_leave: 'Ask an owner or admin to remove you from the household.',
+  target_guest_pass: "Someone on a guest pass can't own the household. Make them a full member first.",
 };
 
 /** Plain-language sentence for a refusal, for toasts, tooltips and server results. */

@@ -1,6 +1,7 @@
 import type { HouseholdPermission, HouseholdRole, PermissionOverrides } from '@/lib/types';
 import { getEffectivePermissions } from '@/lib/permissions';
 import { HomeHubAiError } from '@/ai/errors';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 export type ResolvedHouseholdAuthority = {
   role: HouseholdRole;
@@ -22,8 +23,8 @@ export const resolveHouseholdAuthority = ({
   if (typeof member.uid === 'string' && member.uid !== uid) throw new HomeHubAiError('forbidden');
 
   const role = member.role as HouseholdRole;
-  const status = typeof member.status === 'string' ? member.status : 'active';
-  if (!approvedRoles.includes(role) || status !== 'active') throw new HomeHubAiError('forbidden');
+  // Active and not on a guest pass that has ended (HO-14): `memberIsCurrent`.
+  if (!approvedRoles.includes(role) || !memberIsCurrent(member)) throw new HomeHubAiError('forbidden');
 
   const permissions = getEffectivePermissions(role, (member.permissions || {}) as PermissionOverrides);
   return { role, permissions };

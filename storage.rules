@@ -40,7 +40,12 @@ service firebase.storage {
 
     function memberHasPermission(member, permission) {
       let overrides = member.get('permissions', {});
-      return member.role in ['owner', 'admin', 'member', 'child', 'guest'] &&
+      // A guest pass ends at `accessUntil` (HO-14), as in firestore.rules; only Guest
+      // records carry it, so only guests pay for the check.
+      return (member.role in ['owner', 'admin', 'member', 'child'] ||
+          (member.role == 'guest' &&
+            (member.get('accessUntil', null) == null ||
+              (member.accessUntil is timestamp && member.accessUntil > request.time)))) &&
         member.get('status', 'active') == 'active' &&
         (member.role == 'owner' ||
           (permission in overrides
