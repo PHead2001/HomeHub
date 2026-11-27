@@ -117,7 +117,7 @@ const CASES: Case[] = [
   { path: 'display.seasonal', value: false, applied: (a) => a.seasonal, expected: false },
   { path: 'idle.homeAfterSec', value: 300, applied: (a) => a.timers.homeAfterMs, expected: 300_000 },
   { path: 'idle.ambientAfterSec', value: 1200, applied: (a) => a.timers.ambientAfterMs, expected: 1_200_000 },
-  { path: 'camera', value: 'rear', applied: (a) => a.camera, expected: 'not-used' },
+  { path: 'camera', value: 'rear', applied: (a) => a.camera, expected: 'rear' },
 ];
 
 const leafPaths = (value: unknown, prefix = ''): string[] => {

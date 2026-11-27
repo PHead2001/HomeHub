@@ -12,7 +12,7 @@
 // the tablet's read rules (the Shopping section switch); every write is a device action.
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { Circle, Clock, Plus, ShoppingBasket, ShoppingCart } from 'lucide-react';
+import { Circle, Clock, Plus, ScanLine, ShoppingBasket, ShoppingCart, X } from 'lucide-react';
 import type { DocumentReference, DocumentSnapshot, Query, QuerySnapshot } from 'firebase/firestore';
 import { Input } from '@/components/ui/input';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
@@ -35,6 +35,8 @@ import { DEFAULT_SHOPPING_CATEGORIES } from '@/lib/shopping-items';
 import { localDay, safeTimeZone } from '@functions/shared/calendar';
 import { cn } from '@/lib/utils';
 import { useTablet } from './tablet-context';
+import { BarcodeScanner } from '../barcode-scanner';
+import { localLibraryLookup, type LocalLibraryEntry } from '@/lib/barcode/library-fill';
 
 type Snapshot = DocumentSnapshot | QuerySnapshot;
 type Firestore = typeof import('firebase/firestore');
@@ -175,6 +177,59 @@ function KitchenQuickAdd({ list }: { list: KitchenList }) {
   );
 }
 
+/**
+ * Scanning on the kitchen tablet (BL-20, first part): the camera from the device record
+ * (front by default, WT-4) scans continuously, a product saved in the household library
+ * (read on the tablet, the rules let it) is added to this list as one item through
+ * `shopping.add` (a face tap, with its Undo), and anything else says to save it from a
+ * phone. Used up and Restock change the pantry, which has no tablet action yet, so they
+ * stay on phones; nothing here asks Open Food Facts or writes the library.
+ */
+function KitchenScanPanel({ list, library, onClose }: { list: KitchenList; library: ReadonlyMap<string, LocalLibraryEntry> | null; onClose: () => void }) {
+  const { settings, runAction } = useTablet();
+  const [line, setLine] = useState<string | null>(null);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  // The latest library, for scans queued before it arrived (they wait up to 10 s for it).
+  const libraryRef = useRef(library);
+  useEffect(() => { libraryRef.current = library; }, [library]);
+  const loadedLibrary = async () => {
+    for (let waited = 0; !libraryRef.current && waited < 10_000; waited += 250) {
+      setLine('Loading the household library…');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return libraryRef.current;
+  };
+  const onScan = (code: string) => {
+    queue.current = queue.current.then(async () => {
+      const current = await loadedLibrary();
+      if (!current) {
+        setLine("The household library couldn't be loaded right now. Try again in a moment.");
+        return;
+      }
+      const found = localLibraryLookup(current, code);
+      if (!found) {
+        setLine(`${code} is not in the household library yet. Save it from a phone, then scan again.`);
+        return;
+      }
+      const outcome = await runAction({ capability: 'shopping.add', label: `Add ${found.productName}`, intent: { listId: list.id, entries: [{ name: found.productName, quantity: 1 }] } });
+      setLine(outcome.ok || outcome.queued ? `${found.productName} is on ${list.name}.` : `${found.productName} was not added.`);
+    });
+  };
+  return (
+    <section className="grid gap-4 rounded-xl border bg-card p-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" aria-label="Scan to add" data-testid="tablet-scan-panel">
+      <BarcodeScanner onScan={onScan} deviceCamera={settings.camera} continuous />
+      <div className="space-y-3">
+        <p className="text-lg font-medium">Scan a product to put it on {list.name}.</p>
+        <p aria-live="polite" className="min-h-8 text-lg" data-testid="tablet-scan-line">{line}</p>
+        <p className="text-sm text-muted-foreground">Used up and Restock are on phones for now.</p>
+        <button type="button" onClick={onClose} className="inline-flex min-h-14 items-center gap-2 rounded-xl border px-5 text-lg">
+          <X aria-hidden className="h-5 w-5" /> Done scanning
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function TabletShoppingView({ listId }: { listId?: string }) {
   const { householdId, household, data, roster, runAction, navigate } = useTablet();
   const now = useMinuteClock();
@@ -229,6 +284,16 @@ export function TabletShoppingView({ listId }: { listId?: string }) {
     }
   };
 
+  // The household library for Scan (BL-20), opened with the view so it is ready before a scan.
+  const library = useTabletLive(`library:${householdId}`, (fs, db) => fs.collection(db, 'households', householdId, 'barcode-library'), (snapshot) => {
+    const map = new Map<string, LocalLibraryEntry>();
+    for (const doc of (snapshot as QuerySnapshot).docs) {
+      const name = doc.get('name');
+      if (typeof name === 'string') map.set(doc.id, { name });
+    }
+    return map;
+  });
+  const [scanning, setScanning] = useState(false);
   const listsReady = Boolean(lists?.value);
   const status = lists?.failed && !listsReady ? "This couldn't be loaded right now. It tries again on its own." : !listsReady || choice.waiting ? 'Loading…' : null;
   return (
@@ -259,7 +324,20 @@ export function TabletShoppingView({ listId }: { listId?: string }) {
           )}
           {/* Always on screen while the rows scroll under it. */}
           <div className="sticky top-0 z-10 space-y-2 bg-background pb-2">
-            <KitchenQuickAdd key={list.id} list={list} />
+            <div className="flex gap-2">
+              <div className="min-w-0 flex-1"><KitchenQuickAdd key={list.id} list={list} /></div>
+              {!scanning && (
+                <button
+                  type="button"
+                  onClick={() => setScanning(true)}
+                  className="inline-flex min-h-14 items-center gap-2 rounded-xl border bg-card px-5 text-lg font-medium"
+                  data-testid="tablet-shopping-scan"
+                >
+                  <ScanLine aria-hidden className="h-6 w-6" /> Scan
+                </button>
+              )}
+            </div>
+            {scanning && <KitchenScanPanel key={list.id} list={list} library={library?.value ?? null} onClose={() => setScanning(false)} />}
             {activity && (
               <p role="status" className="rounded-lg bg-success/10 px-3 py-1.5 text-base font-medium text-success" data-testid="tablet-shopping-activity">
                 <ShoppingBasket aria-hidden className="mr-1.5 inline h-5 w-5 align-[-0.2em]" />

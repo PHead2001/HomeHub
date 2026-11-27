@@ -121,6 +121,40 @@ test('quick add: credited to the face chosen (no points PIN), the tablet recorde
   await expect.poll(async () => (await itemsNamed('milk')).length + (await itemsNamed('bread')).length, { timeout: 15_000 }).toBe(0);
 });
 
+test('scan: a saved product goes on the list for the face chosen, from the tablet camera; an unknown code says to save it from a phone (BL-20)', async ({}, testInfo) => {
+  desktopOnly(testInfo);
+  const page = tabletPage();
+  const code = '000000000404';
+  const product = householdRef.collection('barcode-library').doc(code);
+  await product.set({ name: 'E2E Tablet Tin', imageUrl: '', createdAt: new Date().toISOString(), createdByUid: OWNER_UID });
+  try {
+    await forget(page);
+    await openKitchen(page);
+    await page.getByTestId('tablet-shopping-scan').click();
+    const panel = page.getByTestId('tablet-scan-panel');
+    await expect(panel).toBeVisible();
+    // The test browser has no camera: the typed number is the scanner's other way in.
+    await panel.getByLabel('Barcode number').fill(code);
+    await panel.getByRole('button', { name: 'Use barcode' }).click();
+    await pick(page, OWNER_UID);
+    await expect(page.getByTestId('pin-pad')).toHaveCount(0);
+    await expect.poll(async () => (await itemsNamed('e2e tablet tin')).length, { timeout: 15_000 }).toBe(1);
+    const [tin] = await itemsNamed('e2e tablet tin');
+    expect(tin.get('quantity')).toBe(1);
+    expect(tin.get('deviceAttribution')).toMatchObject({ deviceId: tablet!.deviceId, actorUid: OWNER_UID, level: 'face' });
+    await expect(panel.getByTestId('tablet-scan-line')).toContainText('E2E Tablet Tin is on');
+
+    await panel.getByLabel('Barcode number').fill('000000000408');
+    await panel.getByRole('button', { name: 'Use barcode' }).click();
+    await expect(panel.getByTestId('tablet-scan-line')).toContainText('not in the household library yet');
+    await panel.getByRole('button', { name: 'Done scanning' }).click();
+    await expect(panel).toHaveCount(0);
+  } finally {
+    await product.delete();
+    for (const doc of await itemsNamed('e2e tablet tin')) await doc.ref.delete();
+  }
+});
+
 test('one tap ticks an item for the face chosen; Undo puts it back on the list', async ({}, testInfo) => {
   desktopOnly(testInfo);
   const page = tabletPage();
