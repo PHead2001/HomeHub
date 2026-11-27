@@ -23,6 +23,9 @@ import { ImageUpload } from './image-upload';
 import { EmptyState } from './empty-state';
 import { FieldError } from './field-error';
 import { ProductCard } from './shopping/product-card';
+import { ProductSheet } from './barcode/product-sheet';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { LIBRARY_SORTS, matchesLibrarySearch, sortLibrary, type LibrarySort } from '@/lib/barcode/library-view';
 import { getManagedBarcodeImagePath } from '@/lib/barcode-storage';
 import { pluralize } from '@/lib/shopping/items';
 import { cn } from '@/lib/utils';
@@ -323,7 +326,7 @@ const photoDeleteKey = (householdId: string, barcode: string) => `${householdId}
  * code filled in (BL-9).
  */
 export function BarcodeLibraryClient() {
-  const { currentUser, currentMember, permissions, householdLoading } = useAuth();
+  const { currentUser, currentMember, household, permissions, householdLoading } = useAuth();
   const { toast, toastError } = useToast();
   const canView = Boolean(permissions['shopping.view']);
   // Permissions are known once the member record has loaded.
@@ -333,6 +336,8 @@ export function BarcodeLibraryClient() {
   const [items, setItems] = useState<BarcodeLibraryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<LibrarySort>('newest');
+  const [opened, setOpened] = useState<BarcodeLibraryItem | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [itemToEdit, setItemToEdit] = useState<BarcodeLibraryItem | null>(null);
   const [prefillBarcode, setPrefillBarcode] = useState<string | null>(null);
@@ -379,11 +384,8 @@ export function BarcodeLibraryClient() {
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
   }, [canEdit]);
 
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    if (!term) return items;
-    return items.filter(item => item.name.toLowerCase().includes(term) || item.id.toLowerCase().includes(term));
-  }, [items, search]);
+  // Search by word (every word in the name or barcode, in any order) and the chosen order (BL-13).
+  const filtered = useMemo(() => sortLibrary(items.filter((item) => matchesLibrarySearch(item, search)), sort), [items, search, sort]);
 
   const managedPath = useCallback((image: { imageUrl?: string; imagePath?: string }) => (
     householdId ? getManagedBarcodeImagePath({ householdId, imagePath: image.imagePath, imageUrl: image.imageUrl }) : null
@@ -600,6 +602,17 @@ export function BarcodeLibraryClient() {
           onEditExisting={openDialogToEdit}
         />
       )}
+      <ProductSheet
+        item={opened}
+        onOpenChange={(open) => { if (!open) setOpened(null); }}
+        householdId={householdId}
+        uid={currentUser?.uid ?? null}
+        timeZone={household?.timeZone ?? null}
+        canEdit={canEdit}
+        canDelete={canDelete}
+        onEdit={openDialogToEdit}
+        onDelete={(item) => void handleDelete(item)}
+      />
       <section aria-labelledby="library-heading" className="rounded-xl border bg-card p-4 text-card-foreground shadow-raised sm:p-6">
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -622,7 +635,18 @@ export function BarcodeLibraryClient() {
                 />
               </div>
             )}
-            {canEdit && <Button onClick={openDialogToAdd}><PlusCircle className="mr-2 h-4 w-4" aria-hidden /> Add Item</Button>}
+            {items.length > 1 && (
+              <Select value={sort} onValueChange={(value) => setSort(value as LibrarySort)}>
+                <SelectTrigger aria-label="Sort products" className="min-[420px]:w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LIBRARY_SORTS.map((option) => <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+            {/* BL-15: an empty library offers one button, the empty state's own. */}
+            {canEdit && items.length > 0 && <Button onClick={openDialogToAdd}><PlusCircle className="mr-2 h-4 w-4" aria-hidden /> Add Item</Button>}
           </div>
         </div>
 
@@ -648,6 +672,7 @@ export function BarcodeLibraryClient() {
                   item={item}
                   onEdit={canEdit ? () => openDialogToEdit(item) : undefined}
                   onDelete={canDelete ? () => void handleDelete(item) : undefined}
+                  onOpen={() => setOpened(item)}
                 />
               </li>
             ))}

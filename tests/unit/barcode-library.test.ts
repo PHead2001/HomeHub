@@ -14,6 +14,7 @@ import {
   staleProductPhoto,
 } from '../../src/lib/barcode/library-writes';
 import { createPendingPhotoDeletes } from '../../src/lib/barcode/pending-photo-deletes';
+import { matchesLibrarySearch, sortLibrary } from '../../src/lib/barcode/library-view';
 
 const now = new Date('2026-11-10T12:00:00.000Z');
 const storageUrl = (file: string, household = 'h') =>
@@ -218,5 +219,24 @@ describe('an Undo restore is a create and meets the create contract (BL-4)', () 
 
   test('a name longer than the create allows is shortened to 200 characters', () => {
     assert.equal(restoredProductData({ name: 'x'.repeat(250) }, restore).data.name.length, 200);
+  });
+});
+
+describe('library search and sort (BL-13)', () => {
+  const audit = { id: '4006381333931', name: 'Audit test product', createdAt: '2026-11-01T00:00:00.000Z' };
+  const oats = { id: '0012345678905', name: 'Oat milk', createdAt: '2026-11-05T00:00:00.000Z' };
+
+  test('every word must appear in the name or the code, in any order', () => {
+    assert.equal(matchesLibrarySearch(audit, 'test audit'), true);
+    assert.equal(matchesLibrarySearch(audit, 'AUDIT'), true);
+    assert.equal(matchesLibrarySearch(audit, '333931'), true);
+    assert.equal(matchesLibrarySearch(audit, '4006 3813'), true);
+    assert.equal(matchesLibrarySearch(audit, 'audit milk'), false);
+    assert.equal(matchesLibrarySearch(audit, '   '), true);
+  });
+
+  test('newest first, or by name', () => {
+    assert.deepEqual(sortLibrary([audit, oats], 'newest').map((item) => item.name), ['Oat milk', 'Audit test product']);
+    assert.deepEqual(sortLibrary([oats, audit], 'name').map((item) => item.name), ['Audit test product', 'Oat milk']);
   });
 });

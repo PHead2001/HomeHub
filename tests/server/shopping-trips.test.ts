@@ -120,6 +120,20 @@ describe('putAwayAndClear', () => {
     assert.equal(trip.undoneAt, null);
   });
 
+  test('a new batch keeps the scanned item\'s barcode (BL-16)', async () => {
+    await items.doc('rice').update({ barcode: '0012345678905' });
+    const result = await run('owner', 'trip-code-0001');
+    assert.equal(result.ok, true);
+    const rice = (await pantry.get()).docs.map((entry) => entry.data()).find((data) => data.name === 'Rice');
+    assert.equal(rice?.barcode, '0012345678905');
+    const milk = (await pantry.get()).docs.map((entry) => entry.data()).find((data) => data.name === 'Milk');
+    assert.equal(milk?.barcode, undefined);
+    // Its Undo still takes the untouched batches back.
+    const undone = await undo('owner', 'trip-code-0001');
+    assert.equal(undone.ok, true);
+    assert.equal((await pantry.get()).size, 0);
+  });
+
   test('two shoppers putting the same trip away at once credit and clear once, with one trip in history', async () => {
     const [a, b] = await Promise.all([run('owner', 'trip-conc-000a'), run('owner', 'trip-conc-000b')]);
     assert.equal(a.ok && b.ok, true);

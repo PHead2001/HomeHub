@@ -246,4 +246,69 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
       await library.doc('0042100005264').delete();
     }
   });
+
+  test('tapping a product opens its actions: Add to pantry and Add to list (BL-13)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const name = 'E2E Sheet Tin';
+    const pantry = household.collection('pantry-inventory');
+    const cleanup = async () => {
+      for (const entry of (await pantry.where('barcode', '==', UNKNOWN).get()).docs) await entry.ref.delete();
+      for (const entry of (await firestore.collectionGroup('items').where('name', '==', name).get()).docs) {
+        if (entry.ref.path.startsWith(`households/${householdId}/`)) await entry.ref.delete();
+      }
+    };
+    await cleanup();
+    await library.doc(UNKNOWN).set({ name, imageUrl: '', createdAt: fixedNow.toISOString(), createdByUid: ownerUid });
+    try {
+      await open(page, '/library', 'Barcode Library');
+      await page.getByLabel('Search the library').fill('tin sheet');
+      await page.getByRole('button', { name: `Open ${name}` }).click();
+      const sheet = page.getByRole('dialog', { name });
+      const pantryButton = sheet.getByRole('button', { name: 'Add to pantry' });
+      const box = await pantryButton.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(48);
+      await pantryButton.click();
+      await expect.poll(async () => (await pantry.where('barcode', '==', UNKNOWN).get()).docs.map((entry) => [entry.data().name, entry.data().packages, entry.data().location]), { timeout: 10_000 })
+        .toEqual([[name, 1, 'Pantry']]);
+
+      await page.getByRole('button', { name: `Open ${name}` }).click();
+      await sheet.getByRole('button', { name: 'Add to list' }).click();
+      const added = async () => (await firestore.collectionGroup('items').where('name', '==', name).get()).docs
+        .filter((entry) => entry.ref.path.startsWith(`households/${householdId}/`)).map((entry) => [entry.data().quantity, entry.data().status]);
+      // One Grocery list (the seed's Weekly Groceries) adds at once; with several the sheet asks which.
+      await expect(async () => {
+        const which = sheet.getByText('Which list?');
+        if (await which.isVisible()) await sheet.getByRole('button', { name: 'Weekly Groceries' }).click();
+        expect(await added()).toEqual([[1, 'needed']]);
+      }).toPass({ timeout: 15_000 });
+    } finally {
+      await cleanup();
+      await library.doc(UNKNOWN).delete();
+    }
+  });
+
+  test('an Open Food Facts find offers "Save to library", and the saved product then answers without the server (BL-19)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    await library.doc(JUICE).delete();
+    try {
+      await open(page, `/shopping?list=${LIST_ID}`, 'Shopping Center');
+      await scanIntoAddItem(page, JUICE);
+      await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E Family Juice').get()).size, { timeout: 15_000 }).toBe(1);
+      // The toast's action is labelled "Save" (its alt text names the product).
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect.poll(async () => (await library.doc(JUICE).get()).data(), { timeout: 10_000 })
+        .toMatchObject({ name: 'E2E Family Juice', imageUrl: '', createdByUid: ownerUid });
+
+      // The lookup server action can no longer be reached: the saved product still fills in.
+      await page.route((url) => url.pathname === '/shopping', async (route) => {
+        if (route.request().method() === 'POST') await route.abort('failed');
+        else await route.continue();
+      });
+      await scanIntoAddItem(page, JUICE);
+      await expect.poll(async () => (await listRef.collection('items').where('name', '==', 'E2E Family Juice').get()).docs
+        .map((document) => document.data().quantity), { timeout: 15_000 }).toEqual([2]);
+    } finally {
+      await library.doc(JUICE).delete();
+    }
+  });
 });

@@ -14,6 +14,9 @@ import type { BarcodeLibraryItem, ShoppingListItem } from '@/lib/types';
 import { BarcodeScanner } from '../barcode-scanner';
 import { useLookupFeedback } from '../barcode/use-lookup-feedback';
 import { useOnTabDeactivate } from './tab-activity';
+import { useAuth } from '@/hooks/use-auth';
+import { libraryOfferFor, localLibraryLookup, type LocalLibraryEntry } from '@/lib/barcode/library-fill';
+import { useLibrarySaveOffer } from '../barcode/library-save-offer';
 
 /**
  * "Scan to tick" on an open list (SH-33f). A scanned product that matches a
@@ -33,6 +36,7 @@ export function ScanToTick({
   onOpenChange,
   showTrigger = true,
   onCloseAutoFocus,
+  library = null,
 }: {
   householdId: string;
   /** The open list `items`, `onTick` and `onAdd` belong to. */
@@ -47,6 +51,8 @@ export function ScanToTick({
   showTrigger?: boolean;
   /** Where focus goes when the dialog closes (opened from a menu, it has no trigger to return to). */
   onCloseAutoFocus?: (event: Event) => void;
+  /** The household library on this device (BL-19): a saved product answers without the server. */
+  library?: ReadonlyMap<string, LocalLibraryEntry> | null;
 }) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = openProp ?? ownOpen;
@@ -67,6 +73,8 @@ export function ScanToTick({
   useOnTabDeactivate(() => setOpen(false));
   const { toast } = useToast();
   const lookupFeedback = useLookupFeedback();
+  const { currentUser } = useAuth();
+  const librarySave = useLibrarySaveOffer(householdId, currentUser?.uid ?? null);
   const options = { fallback: 'tick it by hand', canSave: true };
 
   const act = (decision: ScanTickDecision<ShoppingListItem>, barcode: string, libraryItem?: BarcodeLibraryItem | null) => {
@@ -107,11 +115,14 @@ export function ScanToTick({
       return;
     }
     try {
-      const result = unwrapAiActionResult(await lookupBarcode({ barcode }, await getAiActionContext(householdId)));
+      const result = localLibraryLookup(library, barcode) ?? unwrapAiActionResult(await lookupBarcode({ barcode }, await getAiActionContext(householdId)));
       // Another list is open now (or the scanner is gone): drop the result.
       if (!scanStillApplies(started, latest.current.list)) return;
       // Decided against the items as they are NOW (not as they were before the lookup).
       act(scanTickDecision(latest.current.items, barcode, result), barcode, result.libraryItem);
+      // BL-19: the scanner has closed, so the offer can be a toast.
+      const offer = libraryOfferFor(result, barcode, householdId);
+      if (offer) librarySave.offerToast(offer);
     } catch (error) {
       if (!scanStillApplies(started, latest.current.list)) return;
       lookupFeedback.reportError(error, barcode, options);
