@@ -165,3 +165,20 @@ describe('QA-2: a sentence that names its list is never filtered as a guess', ()
     assert.equal(parse('gave Rex his pill'), null);
   });
 });
+
+describe('QA-3: a date followed by a room keeps its day', () => {
+  it('reads "on March 3 in the kitchen" and "8/20 in the kitchen" as dates', () => {
+    const named = parse('chore vacuum on March 3 in the kitchen');
+    assert.ok(named?.kind === 'chore' && named.dueDate === '2027-03-03' && named.task === 'Vacuum' && named.room?.id === 'kitchen');
+    for (const text of ['chore vacuum 8/20 in the kitchen', 'chore vacuum 8/20 in kitchen', 'chore vacuum 8/20 in our garage']) {
+      const numeric = parse(text);
+      assert.ok(numeric?.kind === 'chore' && numeric.dueDate === '2026-08-20' && numeric.task.startsWith('Vacuum'), text);
+    }
+  });
+  it('still reads inches and other units as fractions', () => {
+    for (const text of ['1/2 in pipe', '1/2 gallon milk', '3/4 inch screws']) {
+      const intent = parse(text);
+      assert.ok(intent?.kind === 'shopping', text);
+    }
+  });
+});

@@ -114,7 +114,7 @@ const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', '
  */
 const MONTH_WORDS = '(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sept|sep|october|oct|november|nov|december|dec)';
 /** Units after "1/2" that make it a fraction ("1/2 gallon milk"), never a date (QA-3). */
-const FRACTION_UNIT = '(?:gal(?:lon)?s?|cups?|lbs?|pounds?|oz|ounces?|kg|g|grams?|l|lit(?:er|re)s?|ml|tsp|tbsp|teaspoons?|tablespoons?|pints?|quarts?|qt|dozen|cans?|bags?|box(?:es)?|packs?|sticks?|loaf|loaves|inch(?:es)?|in|ft|feet|bottles?|jars?|bunch(?:es)?|heads?|scoops?|pouch(?:es)?)';
+const FRACTION_UNIT = '(?:gal(?:lon)?s?|cups?|lbs?|pounds?|oz|ounces?|kg|g|grams?|l|lit(?:er|re)s?|ml|tsp|tbsp|teaspoons?|tablespoons?|pints?|quarts?|qt|dozen|cans?|bags?|box(?:es)?|packs?|sticks?|loaf|loaves|inch(?:es)?|ft|feet|bottles?|jars?|bunch(?:es)?|heads?|scoops?|pouch(?:es)?)';
 
 export const weekdayFromWord = (word: string): Weekday | null => {
   const lower = word.toLowerCase();
@@ -172,7 +172,18 @@ export function firstDateForRepeat(repeat: QuickAddRepeat, now: Date): Date {
 type DateMatch = { date: Date; consumed: RegExp };
 
 /** Finds one date phrase in `text`. Returns the date and a pattern that removes it. */
-export function findDate(text: string, now: Date): DateMatch | null {
+/**
+ * "in" after "1/2" is inches ("1/2 in pipe"), unless it starts a place: an article or
+ * possessive ("in the kitchen", "in our garage") or one of the household's rooms ("in
+ * kitchen"). Then "8/20 in the kitchen" stays a date.
+ */
+function inchesAfter(rooms: readonly { name: string }[]): string {
+  const places = ['the', 'a', 'an', 'my', 'our', 'his', 'her', 'their', 'your',
+    ...rooms.map((room) => room.name.trim().toLowerCase()).filter(Boolean).map((name) => escapeRegExp(name).replace(/\s+/g, '\\s+'))];
+  return `in\\b(?!\\s+(?:${places.join('|')})(?![\\p{L}\\p{N}]))`;
+}
+
+export function findDate(text: string, now: Date, rooms: readonly { name: string }[] = []): DateMatch | null {
   const lower = text.toLowerCase();
   const simple: Array<[RegExp, () => Date]> = [
     [/\b(today|tonight|this evening)\b/, () => startOfLocalDay(now)],
@@ -203,7 +214,9 @@ export function findDate(text: string, now: Date): DateMatch | null {
     }
   }
 
-  const monthDay = new RegExp(`\\b(on |by |due )?${MONTH_WORDS}\\.? (\\d{1,2})(st|nd|rd|th)?\\b(?!\\s*${FRACTION_UNIT}\\b)`).exec(lower);
+  // A named month is a date whatever follows ("on March 3 in the kitchen"); only
+  // whole month words count, so "marshmallows 2" is no date (QA-3).
+  const monthDay = new RegExp(`\\b(on |by |due )?${MONTH_WORDS}\\.? (\\d{1,2})(st|nd|rd|th)?\\b`).exec(lower);
   if (monthDay) {
     const month = MONTHS.indexOf(monthDay[2].slice(0, 3));
     const day = Number(monthDay[3]);
@@ -213,7 +226,7 @@ export function findDate(text: string, now: Date): DateMatch | null {
     return { date, consumed: new RegExp(monthDay[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') };
   }
 
-  const numeric = new RegExp(`(?<![\\d.]\\s?)\\b(on |by |due )?(\\d{1,2})\\/(\\d{1,2})\\b(?!\\s*${FRACTION_UNIT}\\b)(?!\\/)`).exec(lower);
+  const numeric = new RegExp(`(?<![\\d.]\\s?)\\b(on |by |due )?(\\d{1,2})\\/(\\d{1,2})\\b(?!\\s*${FRACTION_UNIT}\\b)(?!\\s*${inchesAfter(rooms)})(?!\\/)`, 'u').exec(lower);
   if (numeric) {
     const month = Number(numeric[2]) - 1;
     const day = Number(numeric[3]);
@@ -461,7 +474,7 @@ function parseMaintenance(text: string, context: QuickAddContext): MaintenanceIn
   if (!explicit && mileage === null && !/\b(oil change|tire rotation|tyre rotation|tune[- ]?up|alignment)\b/i.test(body)) return null;
   // A log records work that was done: "oil change tomorrow" is a chore to do, never
   // a log saved as done today (QA-3). A date of today is dropped from the title.
-  const when = findDate(body, context.now);
+  const when = findDate(body, context.now, context.rooms ?? []);
   if (when && when.date.getTime() > startOfLocalDay(context.now).getTime()) return null;
   if (when) body = body.replace(when.consumed, ' ');
   if (mileageMatch) body = body.replace(mileageMatch.text, ' ');
@@ -532,7 +545,7 @@ export function parseChore(text: string, context: QuickAddContext): ChoreIntent 
   let body = explicit ? explicit[1] : text;
   const repeat = findRepeat(body, context.now);
   if (repeat) body = body.replace(repeat.consumed, ' ');
-  const date = repeat ? null : findDate(body, context.now);
+  const date = repeat ? null : findDate(body, context.now, context.rooms ?? []);
   if (date) body = body.replace(date.consumed, ' ');
   const assignee = findAssignee(body, context);
   if (assignee) body = body.replace(assignee.consumed, ' ');
