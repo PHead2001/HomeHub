@@ -110,6 +110,16 @@ describe('review fixes (PR #246)', () => {
     assert.match(client, /if \(photoChoiceRef\.current === savedPhoto\) \{\s*clearPhotoChoice\(\);/);
   });
 
+  it('an initial profile read failing after sign-out or an account change reports nothing', () => {
+    const source = read('src/contexts/auth-context.tsx');
+    const restore = source.slice(source.indexOf('onAuthStateChanged(auth, async (firebaseUser)'), source.indexOf('const signInWithGoogle'));
+    // SL-12 retries the read; each failure is reported only for the account still signed in.
+    const failure = restore.slice(restore.indexOf('onError: (error) =>'), restore.indexOf('if (fetched.aborted) return;'));
+    assert.match(failure, /if \(auth\.currentUser\?\.uid === firebaseUser\.uid\) setProfileLoadFailed\(true\);/);
+    assert.doesNotMatch(failure.replace(/if \(auth\.currentUser\?\.uid === firebaseUser\.uid\) setProfileLoadFailed\(true\);/, ''), /setProfileLoadFailed\(true\)/);
+    assert.match(restore, /keepGoing: \(\) => auth\.currentUser\?\.uid === firebaseUser\.uid/);
+  });
+
   it('a profile retry failing after sign-out or an account change reports nothing', () => {
     const source = read('src/contexts/auth-context.tsx');
     const retry = source.slice(source.indexOf('const retryProfileLoad'), source.indexOf('// Coming back online retries'));
