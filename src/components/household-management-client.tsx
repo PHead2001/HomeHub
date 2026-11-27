@@ -89,6 +89,7 @@ import { useHouseholdLiveData } from '@/components/household/use-household-live-
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
 import { DevicesTab } from '@/components/household/devices-tab';
+import { HouseMessageCard } from '@/components/household/house-message-card';
 import { useMemberTabletControls } from '@/components/household/member-tablet-controls';
 import { useServerNow } from '@/components/household/use-server-now';
 
@@ -579,6 +580,8 @@ export function HouseholdManagementClient() {
             </Card>
             <TimeZoneSetting householdId={household.id} timeZone={household.timeZone} canEdit={isOwnerOrAdminRole} />
             <WeekStartSetting householdId={household.id} canEdit={isOwnerOrAdminRole} />
+            {/* NO-25: owners and admins (by role, as the server checks) can message the house. */}
+            {isOwnerOrAdminRole && household?.id && <HouseMessageCard householdId={household.id} />}
           </TabsContent>
 
           {canManageInvites && (

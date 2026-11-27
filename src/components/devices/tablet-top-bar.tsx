@@ -7,7 +7,7 @@
 
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Bell, Settings } from 'lucide-react';
+import { Bell, Megaphone, Settings } from 'lucide-react';
 import { ConnectionStatus } from '@/components/shell/connection-status';
 import { useLiveWeather } from '@/lib/dashboard/use-weather';
 import { temperatureLabel } from '@/lib/dashboard/weather';
@@ -15,6 +15,7 @@ import { safeTimeZone } from '@functions/shared/calendar';
 import { currentActor } from '@/lib/devices/shell-state';
 import { NOTICES_PATH } from '@/lib/devices/start-page';
 import { useOfflineSince } from '@/lib/devices/offline-since';
+import { pinnedAnnouncement } from '@/lib/house-announcements';
 import { useTablet } from './tablet-context';
 
 export const clockLabel = (now: Date, timeZone: string) =>
@@ -29,6 +30,9 @@ export function TabletTopBar({ now }: { now: Date }) {
   const acting = currentActor(shell);
   const actor = acting ? person(acting.memberUid) : null;
   const offlineSince = useOfflineSince();
+  // NO-25: the newest house message stays pinned here until it expires (read-only: a
+  // tablet writes no notification state).
+  const pinned = pinnedAnnouncement(notices, now.getTime());
 
   return (
     <header className="relative flex h-14 shrink-0 items-center gap-4 border-b border-border bg-card px-4" data-testid="tablet-top-bar">
@@ -42,7 +46,19 @@ export function TabletTopBar({ now }: { now: Date }) {
           {temperatureLabel(weather)} · {weather.label}
         </p>
       )}
-      <div className="flex-1" />
+      {pinned ? (
+        <button
+          type="button"
+          onClick={() => navigate(NOTICES_PATH)}
+          className="flex min-h-12 min-w-0 flex-1 items-center gap-2 rounded-full bg-primary/10 px-4 text-left text-primary"
+          data-testid="tablet-house-message"
+        >
+          <Megaphone aria-hidden className="h-5 w-5 shrink-0" />
+          <span className="truncate font-semibold">{pinned.message || pinned.title}</span>
+        </button>
+      ) : (
+        <div className="flex-1" />
+      )}
       {offlineSince !== null && (
         // HP-17: how old the screen may be while offline; the Offline pill below says the rest.
         <p className="text-sm text-muted-foreground" data-testid="tablet-offline-since">Offline since {clockLabel(new Date(offlineSince), zone)}</p>
