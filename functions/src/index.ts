@@ -40,6 +40,7 @@ import {
 } from "./shared/push-hold";
 import {safeTimeZone} from "./shared/calendar";
 import {releaseHeldPushes} from "./held-pushes";
+import {mutesCategory, readPushPrefs} from "./shared/push-prefs";
 import {
   memberCanView,
   resolvePushImage,
@@ -121,9 +122,27 @@ const deliverPush = async (
     return;
   }
 
+  // Each addressed member's push document (tokens and, NO-24, their own
+  // preferences) and legacy profile tokens, read once.
+  const addressedDocs = await Promise.all(
+    addressed.map((email) => {
+      const profileRef = db.collection("users").doc(email);
+      return Promise.all([
+        profileRef.collection("private").doc("push").get(),
+        profileRef.get(),
+      ]);
+    }),
+  );
+  const docsByEmail = new Map(addressed.map((email, index) =>
+    [email, addressedDocs[index]] as const));
+  const prefsOf = (email: string) =>
+    readPushPrefs(docsByEmail.get(email)?.[0].data()?.prefs);
+
   // NO-3 and household quiet hours (16.3): a push that may not be sent now
   // is recorded on the notification and sent by hourly upkeep
-  // (./held-pushes.ts). The notification itself is already in the bell.
+  // (./held-pushes.ts). NO-24: a member who muted the category gets no push,
+  // and a member's own quiet hours hold theirs. The notification itself is
+  // already in the bell.
   const householdData = (await house.get()).data() ?? {};
   const timeZone = safeTimeZone(householdData.timeZone);
   const audience = notificationData.audience;
@@ -132,11 +151,14 @@ const deliverPush = async (
   const now = new Date();
   const held = new Map<string, Date>();
   const recipientEmails = addressed.filter((email) => {
+    const prefs = prefsOf(email);
+    if (mutesCategory(prefs, notificationData.category)) return false;
     const uid = uidByEmail.get(email.toLowerCase());
     const until = uid ? pushHoldUntil({
       now, timeZone, householdWide,
       morningHold: notificationData.holdUntilMorning === true,
       householdQuiet: readLocalWindow(householdData.quietHours),
+      memberQuiet: prefs.quietHours,
     }) : null;
     if (uid && until) held.set(uid, until);
     return !until;
@@ -168,18 +190,10 @@ const deliverPush = async (
     return member ? memberCanView(member, image.permission) : false;
   };
 
-  const recipientDocs = await Promise.all(
-    recipientEmails.map((email) => {
-      const profileRef = db.collection("users").doc(email);
-      return Promise.all([
-        profileRef.collection("private").doc("push").get(),
-        profileRef.get(),
-      ]);
-    }),
-  );
   const tokenOwners: TokenOwner[] = [];
-  recipientDocs.forEach((docs, index) => {
-    const showImage = canSeeImage(recipientEmails[index]);
+  recipientEmails.forEach((email) => {
+    const docs = docsByEmail.get(email) ?? [];
+    const showImage = canSeeImage(email);
     const byToken = new Map<string, TokenOwner>();
     for (const tokenDoc of docs) {
       const raw = tokenDoc.data()?.fcmTokens;

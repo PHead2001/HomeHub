@@ -22,6 +22,9 @@ import {
   withoutPushToken,
   writePushDevice,
   writePushOff,
+  nextPushDevices,
+  pushDeviceKey,
+  pushDeviceLabel,
 } from '@/lib/push-tokens';
 import { pushTokenMissing } from '@/lib/push-status';
 
@@ -118,9 +121,18 @@ async function register(user: { email: string; fcmTokens?: unknown }): Promise<v
   const stored = await getDoc(pushRef);
   if (step('token') === 'discard') await discard();
   const batch = writeBatch(db);
+  const tokens = nextPushTokens(withoutPushToken(stored.get('fcmTokens'), replaced), withoutPushToken(user.fcmTokens, replaced), token);
+  const prefs = stored.get('prefs');
   batch.set(pushRef, {
-    fcmTokens: nextPushTokens(withoutPushToken(stored.get('fcmTokens'), replaced), withoutPushToken(user.fcmTokens, replaced), token),
+    fcmTokens: tokens,
     updatedAt: serverTimestamp(),
+    // NO-26: this device's label and last-seen time; entries of dropped tokens go.
+    devices: nextPushDevices(stored.get('devices'), tokens, token, {
+      label: pushDeviceLabel(typeof navigator === 'undefined' ? '' : navigator.userAgent),
+      lastSeenAt: serverTimestamp(),
+    }),
+    // NO-24: the member's preferences are kept as they are.
+    ...(prefs && typeof prefs === 'object' ? { prefs } : {}),
   });
   if (user.fcmTokens) {
     batch.update(doc(db, 'users', user.email), { fcmTokens: deleteField() });
@@ -189,6 +201,20 @@ export async function pushRegisteredHere(email: string): Promise<boolean> {
   if (!record || record.email !== email) return false;
   const stored = await getDoc(doc(db, 'users', email, 'private', 'push'));
   return !pushTokenMissing(stored.get('fcmTokens'), record.token);
+}
+
+/**
+ * "My devices" (NO-26): turns push off for another of the member's devices by taking
+ * its token (and its description) out of the account's push document. That device
+ * gets nothing more; if it is still signed in with permission granted, its next load
+ * registers it again (turn it off on the device itself to keep it off).
+ */
+export async function removePushDevice(email: string, token: string): Promise<void> {
+  await updateDoc(doc(db, 'users', email, 'private', 'push'), {
+    fcmTokens: arrayRemove(token),
+    [`devices.${pushDeviceKey(token)}`]: deleteField(),
+    updatedAt: serverTimestamp(),
+  });
 }
 
 /**
