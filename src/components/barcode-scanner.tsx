@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { FieldError, fieldErrorProps } from '@/components/field-error';
 import { playFeedback } from '@/lib/feedback';
+import { expandUpcE } from '@/lib/barcode/gtin';
 import { SCANNER_ERROR_COPY, newScannerErrorSession, reportScannerError, scannerErrorKind, type ScannerErrorKind } from '@/lib/barcode/scanner-errors';
 import {
   CAMERA_CHOICE_KEY,
@@ -104,7 +105,9 @@ export function BarcodeScanner({ onScan, deviceCamera, continuous = false }: Bar
     hints: SCAN_HINTS,
     onDecodeResult(result) {
       if (!open.current) return;
-      const code = scannedBarcode(result.getText());
+      const text = scannedBarcode(result.getText());
+      // A UPC-E read is sent as its UPC-A, so lookup and matching see one form (BL-12).
+      const code = text && result.getBarcodeFormat() === BarcodeFormat.UPC_E ? (expandUpcE(text) ?? text) : text;
       if (!code) {
         setStatus(scannerStatus({ refused: true }));
         return;

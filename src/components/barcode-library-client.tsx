@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useAuth } from '@/hooks/use-auth';
@@ -44,6 +44,7 @@ import {
   type ProductPhoto,
 } from '@/lib/barcode/library-writes';
 import { createPendingPhotoDeletes } from '@/lib/barcode/pending-photo-deletes';
+import { addBarcodeProblem, lookupIds, normalizeGtin } from '@/lib/barcode/gtin';
 
 const libraryItemSchema = z.object({
   id: z.string().trim().min(1, 'Barcode is required.').max(64, 'Barcodes are at most 64 characters.')
@@ -94,6 +95,10 @@ function LibraryItemDialog({
     defaultValues: { id: '', name: '' },
   });
   const { reset, setValue } = form;
+  const typedBarcode = useWatch({ control: form.control, name: 'id' });
+  const barcodeCheck = itemToEdit ? null : normalizeGtin(typedBarcode);
+  // A retail-length code whose check digit does not match: saved as typed, with a warning.
+  const uncheckedBarcode = Boolean(barcodeCheck?.ok && !barcodeCheck.checked && [8, 12, 13, 14].includes(barcodeCheck.id.length));
 
   useEffect(() => {
     if (itemToEdit) {
@@ -141,6 +146,14 @@ function LibraryItemDialog({
   };
 
   const handleSubmit = async (values: LibraryForm) => {
+    // A new product's code must be a barcode (BL-12); an existing product keeps its ID.
+    if (!itemToEdit) {
+      const problem = addBarcodeProblem(values.id);
+      if (problem) {
+        form.setError('id', { message: problem }, { shouldFocus: true });
+        return;
+      }
+    }
     const block = productSubmitBlock({ photoBusy, photoError });
     if (block === 'photo-rejected') {
       // The rejected photo is still shown: point at it instead of saving without it.
@@ -212,6 +225,11 @@ function LibraryItemDialog({
                       )}
                     </div>
                     <FormMessage />
+                    {uncheckedBarcode && (
+                      <p className="text-sm text-muted-foreground" data-testid="library-barcode-unchecked">
+                        This number&apos;s check digit does not match a shop barcode. Check it; it will be saved as typed.
+                      </p>
+                    )}
                   </FormItem>
                 )}
               />
@@ -405,12 +423,17 @@ export function BarcodeLibraryClient() {
   };
 
   const handleAdd = async (collectionRef: CollectionReference, save: LibrarySave): Promise<SaveResult> => {
-    const id = save.values.id.trim();
+    // One ID per product (BL-12): the UPC-A and EAN-13 forms of a code save as one.
+    const normalized = normalizeGtin(save.values.id);
+    const id = normalized.ok ? normalized.id : save.values.id.trim();
     const uid = currentUser?.uid;
     if (!uid) return { ok: false };
-    // Checked before uploading, so a taken code never leaves an orphaned photo.
-    const before = await readExisting(collectionRef, id);
-    if (before) return { ok: false, existing: before };
+    // Checked before uploading, so a taken code never leaves an orphaned photo. A product
+    // saved under the code as typed before normalisation counts as taken too.
+    for (const candidate of lookupIds(save.values.id)) {
+      const before = await readExisting(collectionRef, candidate);
+      if (before) return { ok: false, existing: before };
+    }
     const photo = save.photo.kind === 'replace' ? await uploadPhoto(save.photo.file) : null;
     const data = newProductData({ name: save.values.name, photo, uid, now: new Date() });
     try {

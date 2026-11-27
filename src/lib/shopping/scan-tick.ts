@@ -11,6 +11,7 @@
 import { itemNameKey } from './items';
 import { scanToShoppingEntry, type ScanEntry, type ScannedProduct } from './scan';
 import { lookupMiss, type LookupMiss, type LookupSummary } from '@/lib/barcode/lookup-outcome';
+import { sameBarcode } from '@/lib/barcode/gtin';
 
 export type TickCandidate = { id: string; name: string; status: 'needed' | 'purchased'; barcode?: string };
 
@@ -24,9 +25,11 @@ export type ScanTickDecision<T extends TickCandidate> =
 export function matchByBarcode<T extends TickCandidate>(items: readonly T[], barcode: string): ScanTickDecision<T> | null {
   const code = barcode.trim();
   if (!code) return null;
-  const needed = items.find((item) => item.status === 'needed' && item.barcode === code);
+  // The same product in either form (UPC-A or EAN-13, BL-12) matches.
+  const same = (item: T) => item.barcode === code || sameBarcode(item.barcode, code);
+  const needed = items.find((item) => item.status === 'needed' && same(item));
   if (needed) return { kind: 'tick', item: needed };
-  const purchased = items.find((item) => item.status === 'purchased' && item.barcode === code);
+  const purchased = items.find((item) => item.status === 'purchased' && same(item));
   return purchased ? { kind: 'in-cart', item: purchased } : null;
 }
 

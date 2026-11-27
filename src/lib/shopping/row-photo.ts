@@ -1,3 +1,5 @@
+import { lookupIds } from '@/lib/barcode/gtin';
+
 /**
  * Which photo a shopping row shows. A scan stores the library photo's URL on the
  * item, but the Barcode Library is the one source of truth: when a product's photo
@@ -23,7 +25,8 @@ export function rowPhoto(
 ): string | null {
   const stored = item.imageUrl || null;
   if (!library) return stored;
-  const entry = item.barcode ? library.get(item.barcode) : undefined;
+  // The library is keyed by the normalised ID (BL-12); an older product keeps the code as typed.
+  const entry = item.barcode ? (library.get(item.barcode) ?? lookupIds(item.barcode).map((id) => library.get(id)).find(Boolean)) : undefined;
   if (entry) return entry.imageUrl || null;
   if (stored && isManagedLibraryPhoto(stored)) return null;
   return stored;

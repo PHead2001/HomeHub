@@ -205,4 +205,26 @@ test.describe('barcode library: save from a scan and scan to tick', () => {
     await expect(dialog.getByLabel('Barcode (UPC)')).toHaveValue(UNKNOWN);
     await expect(dialog.getByLabel('Product Name')).toBeFocused();
   });
+
+  test('Add saves one normalised ID and refuses what is not a barcode (BL-12)', async ({ page }, testInfo) => {
+    desktopOnly(testInfo);
+    const NORMALISED = '0036000291452';
+    await library.doc(NORMALISED).delete();
+    try {
+      await page.clock.setFixedTime(fixedNow);
+      await page.goto(`/library?add=${UNKNOWN}`);
+      const dialog = page.getByRole('dialog', { name: 'Add New Library Item' });
+      await dialog.getByLabel('Product Name').fill('E2E Normalised Beans');
+      await dialog.getByLabel('Barcode (UPC)').fill('12345');
+      await dialog.getByRole('button', { name: 'Save Item' }).click();
+      await expect(dialog.getByText('Enter 6 to 32 digits.')).toBeVisible();
+      // A UPC-A typed with spaces and hyphens is saved under its 13-digit form.
+      await dialog.getByLabel('Barcode (UPC)').fill('0-36000 29145-2');
+      await dialog.getByRole('button', { name: 'Save Item' }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(async () => (await library.doc(NORMALISED).get()).data()?.name, { timeout: 10_000 }).toBe('E2E Normalised Beans');
+    } finally {
+      await library.doc(NORMALISED).delete();
+    }
+  });
 });
