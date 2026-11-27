@@ -59,6 +59,10 @@ for (const slug of moduleSlugs) {
       failures.push(`${relative(repositoryRoot, readmePath)} is missing heading: ${heading}`);
     }
   }
+  const markerLine = content.split('\n').findIndex((line) => /^(<{7}|={7}|>{7})( |\r?$)/.test(line));
+  if (markerLine !== -1) {
+    failures.push(`${relative(repositoryRoot, readmePath)} has a merge-conflict marker at line ${markerLine + 1}`);
+  }
 }
 
 const documentationFiles = [
