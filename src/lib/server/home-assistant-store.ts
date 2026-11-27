@@ -10,8 +10,8 @@ import type { HouseholdMember } from '@/lib/types';
 
 // Home Assistant persistence (docs/modules/home-automation/README.md). Everything under
 // households/{h}/home-automation/* is server-only (the rules deny every client):
-// `credentials` (address and token, AU-12) and `config` (favourites, privacy and,
-// as later rows add them, more settings). The household document carries only `homeAssistant: { connected: true }`
+// `credentials` (address and token, AU-12) and `config` (favourites, rooms, privacy,
+// alert rules). The household document carries only `homeAssistant: { connected: true }`
 // so the nav and dashboard know whether to ask (AU-6, AU-15); never the token.
 // Server-only module: never import it from a 'use server' file's exports.
 
@@ -140,7 +140,7 @@ export const syncConnectedFlag = async (householdId: string): Promise<boolean> =
 };
 
 /**
- * Applies one settings change (AU-8, AU-11) to the config read inside this transaction,
+ * Applies one settings change (AU-8, AU-11, AU-13, AU-17) to the config read inside this transaction,
  * after re-checking the caller, and returns the saved config. Throws HomeAssistantError
  * when the change is refused.
  */
@@ -152,9 +152,9 @@ export const changeConfig = async (householdId: string, uid: string, change: unk
     const next = applyConfigChange(before, change);
     if (!next.ok) throw new HomeAssistantError(next.message);
     transaction.set(configRef(householdId), { ...next.value, updatedAt: now.toISOString(), updatedByUid: uid });
-    if (before.showSensitiveToMembers !== next.value.showSensitiveToMembers) {
+    if (before.showSensitiveToMembers !== next.value.showSensitiveToMembers || before.alerts.length !== next.value.alerts.length) {
       audit(transaction, checked, uid, 'automation.settings_changed', now, {
-        showSensitiveToMembers: next.value.showSensitiveToMembers,
+        showSensitiveToMembers: next.value.showSensitiveToMembers, alerts: next.value.alerts.length,
       });
     }
     return next.value;

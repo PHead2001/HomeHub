@@ -10,6 +10,8 @@ import {
   getHomeAssistantEntities,
   getHomeAssistantStatus,
   replaceHomeAssistantToken,
+  addAutomationAlert,
+  removeAutomationAlert,
   setAutomationFavorite,
   setAutomationRoom,
   setMembersSeeSensitive,
@@ -54,6 +56,10 @@ const sendConfigChange = (ctx: { idToken: string; householdId: string }, change:
       return setAutomationRoom(ctx, { entityId: change.entityId, roomId: change.roomId });
     case 'showSensitiveToMembers':
       return setMembersSeeSensitive(ctx, { show: change.show });
+    case 'alertAdd':
+      return addAutomationAlert(ctx, { rule: change.rule });
+    case 'alertRemove':
+      return removeAutomationAlert(ctx, { id: change.id });
   }
 };
 const failure = (error: unknown): Failure => ({ ok: false, message: friendlyError(error) });
@@ -406,7 +412,7 @@ export function AutomationClient() {
       </Card>
 
       {canManage && config && (
-        <AutomationSettings config={config} saving={savingConfig} onChange={changeSettings} />
+        <AutomationSettings config={config} entities={entities} saving={savingConfig} onChange={changeSettings} />
       )}
     </div>
   );
