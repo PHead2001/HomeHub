@@ -606,6 +606,8 @@ export type Household = {
     devicePolicy?: { pointsPin?: 'off' | 'kids' | 'everyone' };
     /** Household quiet hours ('HH:mm', household zone); wall tablets dim during them (server-written; docs/modules/devices/README.md). */
     quietHours?: { start: string; end: string } | null;
+    /** Home Assistant is connected (server-written on connect, removed on disconnect; never the token). AU-6, AU-15. */
+    homeAssistant?: { connected?: boolean } | null;
 }
 
 export type InviteCode = {

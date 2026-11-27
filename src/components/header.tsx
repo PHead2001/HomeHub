@@ -2,11 +2,11 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { User, LogOut, ScanBarcode, Home, Search, ChevronDown } from 'lucide-react';
+import { User, LogOut, ScanBarcode, Home, Search, ChevronDown, Bot } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { fittingLinkCount, isActiveRoute } from '@/lib/navigation';
+import { automationInHeader, fittingLinkCount, isActiveRoute } from '@/lib/navigation';
 import type { HouseholdPermission } from '@/lib/types';
 import { Button } from './ui/button';
 import { useAuth } from '@/hooks/use-auth';
@@ -177,7 +177,8 @@ function HeaderNav({ links, pathname }: { links: NavLink[]; pathname: string }) 
 }
 
 export function Header() {
-  const { currentUser, currentMember, permissions, logout } = useAuth();
+  const { currentUser, currentMember, permissions, logout, household } = useAuth();
+  const automationInNav = automationInHeader({ connected: household?.homeAssistant?.connected === true, canManage: Boolean(permissions['automation.manage']) });
   const pathname = usePathname() || '/';
   const isPendingNewUser = currentMember?.role === 'newuser';
   // No Login button before Auth has answered (SL-11): a signed-in member would see it flash.
@@ -193,7 +194,7 @@ export function Header() {
               (the link keeps its "HomeHub home" name). */}
           <span className="header-wordmark font-headline text-xl font-bold">HomeHub</span>
         </Link>
-        <HeaderNav links={NAV_LINKS.filter((link) => permissions[link.permission])} pathname={pathname} />
+        <HeaderNav links={NAV_LINKS.filter((link) => permissions[link.permission] && (link.href !== '/automation' || automationInNav))} pathname={pathname} />
         <div className="ml-auto flex shrink-0 items-center justify-end gap-2 pl-2">
             {currentUser ? (
               <>
@@ -245,6 +246,14 @@ export function Header() {
                         <Link href="/household">
                           <Home className="mr-2" />
                           <span>Manage Household</span>
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
+                    {!isPendingNewUser && permissions['automation.view'] && !automationInNav && (
+                      <DropdownMenuItem asChild>
+                        <Link href="/automation">
+                          <Bot className="mr-2" />
+                          <span>Automation</span>
                         </Link>
                       </DropdownMenuItem>
                     )}

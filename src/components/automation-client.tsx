@@ -1,13 +1,16 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Eye, EyeOff, RefreshCw, Search, Unplug } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, RefreshCw, Search, Unplug } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { auth } from '@/lib/firebase';
 import {
   disconnectHomeAssistant,
   getHomeAssistantEntities,
   getHomeAssistantStatus,
+  replaceHomeAssistantToken,
+  setAutomationFavorite,
+  setMembersSeeSensitive,
   type HomeAssistantEntities,
   type HomeAssistantStatus,
 } from '@/app/automation/actions';
@@ -32,11 +35,23 @@ import { friendlyError } from '@/lib/friendly-error';
 import { cn } from '@/lib/utils';
 import { householdDayZone } from '@/lib/household-zone';
 import { arrangeEntities } from '@/lib/automation/entities';
+import { EMPTY_AUTOMATION_CONFIG, type ConfigChange } from '@/lib/automation/config';
 import { POLL_INTERVAL_MS, pollDue, updatedLabel } from '@/lib/automation/refresh';
 import { ConnectForm } from '@/components/automation/connect-form';
 import { EntityTile } from '@/components/automation/entity-tile';
+import { AutomationSettings, ReplaceTokenDialog } from '@/components/automation/automation-settings';
 
 type Failure = { ok: false; message: string };
+
+/** Each kind of settings change has its own server action. */
+const sendConfigChange = (ctx: { idToken: string; householdId: string }, change: ConfigChange) => {
+  switch (change.kind) {
+    case 'favorite':
+      return setAutomationFavorite(ctx, { entityId: change.entityId, pinned: change.pinned });
+    case 'showSensitiveToMembers':
+      return setMembersSeeSensitive(ctx, { show: change.show });
+  }
+};
 const failure = (error: unknown): Failure => ({ ok: false, message: friendlyError(error) });
 
 /** Visible page: polls only while the tab is shown (AU-1). */
@@ -61,6 +76,8 @@ export function AutomationClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDisconnectOpen, setIsDisconnectOpen] = useState(false);
+  const [isReplaceOpen, setIsReplaceOpen] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
   const [filter, setFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -86,7 +103,7 @@ export function AutomationClient() {
       setLoadError(null);
     } else {
       // A failed refresh keeps the last list, marked by its "Updated … ago".
-      setList((current) => current ?? { entities: [], fetchedAt: Date.now(), total: 0, truncated: false });
+      setList((current) => current ?? { entities: [], fetchedAt: Date.now(), total: 0, truncated: false, hiddenSensitive: 0 });
       setLoadError(result.message);
     }
     inFlight.current = false;
@@ -98,7 +115,7 @@ export function AutomationClient() {
     if (!ctx) return;
     const result = await getHomeAssistantStatus(ctx).catch(failure);
     if (!result.ok) {
-      setStatus({ configured: false, host: null });
+      setStatus({ configured: false, host: null, config: { ...EMPTY_AUTOMATION_CONFIG }, canSeeSensitive: false });
       setLoadError(result.message);
       return;
     }
@@ -124,6 +141,33 @@ export function AutomationClient() {
     return () => window.clearInterval(id);
   }, [configured, visible, loadEntities]);
 
+  // One change at a time: the server applies it to the stored settings, so this page
+  // never sends back (and overwrites) settings someone else changed since it loaded.
+  const changeSettings = useCallback(async (change: ConfigChange) => {
+    const ctx = await context();
+    if (!ctx) return false;
+    setSavingConfig(true);
+    const result = await sendConfigChange(ctx, change).catch(failure);
+    setSavingConfig(false);
+    if (!result.ok) {
+      toast({ variant: 'destructive', title: 'Could not save', description: result.message });
+      return false;
+    }
+    setStatus((current) => (current ? { ...current, config: result.data } : current));
+    return true;
+  }, [context, toast]);
+
+  const handleReplace = async (token: string) => {
+    const ctx = await context();
+    if (!ctx) return 'Your sign-in has expired. Please sign in again.';
+    const result = await replaceHomeAssistantToken(ctx, { accessToken: token }).catch(failure);
+    if (!result.ok) return result.message;
+    setIsReplaceOpen(false);
+    toast({ title: 'Token updated', description: `HomeHub now uses the new token for ${result.data.host}.` });
+    void loadStatus();
+    return null;
+  };
+
   const handleDisconnect = async () => {
     setIsDisconnectOpen(false);
     const ctx = await context();
@@ -139,9 +183,10 @@ export function AutomationClient() {
     toast({ title: 'Disconnected', description: 'Home Assistant is no longer connected to this household.' });
   };
 
+  const config = status?.config;
   const arranged = useMemo(
-    () => arrangeEntities(list?.entities ?? [], { showAll, search: filter }),
-    [list, showAll, filter],
+    () => arrangeEntities(list?.entities ?? [], { showAll, search: filter, favorites: config?.favorites }),
+    [list, showAll, filter, config?.favorites],
   );
 
   if (!status) {
@@ -186,6 +231,12 @@ export function AutomationClient() {
       entity={entity}
       timeZone={timeZone}
       now={new Date(now)}
+      favorite={Boolean(config?.favorites.includes(entity.entity_id))}
+      canManage={canManage}
+      onToggleFavorite={() => {
+        if (!config) return;
+        void changeSettings({ kind: 'favorite', entityId: entity.entity_id, pinned: !config.favorites.includes(entity.entity_id) });
+      }}
     />
   );
   const grid = 'grid gap-3 md:grid-cols-2 xl:grid-cols-3';
@@ -208,6 +259,7 @@ export function AutomationClient() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {canManage && <ReplaceTokenDialog open={isReplaceOpen} onOpenChange={setIsReplaceOpen} onReplace={handleReplace} />}
 
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -223,6 +275,11 @@ export function AutomationClient() {
               <RefreshCw className={cn('mr-2 h-4 w-4', isRefreshing && 'animate-spin')} /> Refresh
             </Button>
             {canManage && (
+              <Button variant="outline" onClick={() => setIsReplaceOpen(true)}>
+                <KeyRound className="mr-2 h-4 w-4" /> Update token
+              </Button>
+            )}
+            {canManage && (
               <Button variant="outline" onClick={() => setIsDisconnectOpen(true)}>
                 <Unplug className="mr-2 h-4 w-4" /> Disconnect
               </Button>
@@ -235,7 +292,7 @@ export function AutomationClient() {
               <AlertTitle>Could not load devices</AlertTitle>
               <AlertDescription>
                 {loadError}
-                {canManage && ' If the address or token changed, disconnect and connect again.'}
+                {canManage && ' If the token changed, choose Update token.'}
               </AlertDescription>
             </Alert>
           )}
@@ -297,9 +354,15 @@ export function AutomationClient() {
               ))}
             </>
           )}
+          {list && list.hiddenSensitive > 0 && (
+            <p className="text-sm text-muted-foreground">People, locations, cameras and locks are shown to owners and admins only.</p>
+          )}
         </CardContent>
       </Card>
 
+      {canManage && config && (
+        <AutomationSettings config={config} saving={savingConfig} onChange={changeSettings} />
+      )}
     </div>
   );
 }

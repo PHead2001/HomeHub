@@ -66,6 +66,29 @@ export function isNoiseEntity(entity: HomeAssistantEntitySummary): boolean {
   return false;
 }
 
+/**
+ * AU-11: entities that say who is home or watch or secure the house. Shown only to owners
+ * and admins unless the household lets members see them; children and guests never.
+ * Never used for alerts or the house drawing, whose notices reach every member.
+ */
+export const SENSITIVE_DOMAINS: ReadonlySet<string> = new Set(['person', 'device_tracker', 'camera', 'lock']);
+
+export const isSensitiveEntity = (entityId: string): boolean => SENSITIVE_DOMAINS.has(entityDomain(entityId));
+
+/** Who may see sensitive entities (AU-11). The server applies this before anything leaves it. */
+export function maySeeSensitive(role: string | null | undefined, showToMembers: boolean): boolean {
+  if (role === 'owner' || role === 'admin') return true;
+  if (role === 'member') return showToMembers;
+  return false;
+}
+
+/** AU-11: the entities a caller may receive, and how many were withheld. Applied on the server. */
+export function visibleEntities<T extends { entity_id: string }>(entities: readonly T[], role: string | null | undefined, showToMembers: boolean): { entities: T[]; hidden: number } {
+  if (maySeeSensitive(role, showToMembers)) return { entities: [...entities], hidden: 0 };
+  const kept = entities.filter((entity) => !isSensitiveEntity(entity.entity_id));
+  return { entities: kept, hidden: entities.length - kept.length };
+}
+
 const DOOR_CLASSES = new Set(['door', 'window', 'garage_door', 'opening']);
 const MOTION_CLASSES = new Set(['motion', 'occupancy', 'presence', 'moving']);
 const SAFETY_CLASSES = new Set(['smoke', 'gas', 'carbon_monoxide', 'safety', 'problem', 'tamper', 'heat', 'cold']);
