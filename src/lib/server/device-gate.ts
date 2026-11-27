@@ -41,6 +41,7 @@ import {
   type DeviceOp,
   type DeviceOpReplay,
 } from '@/lib/server/device-ops';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 export { DeviceActionError } from '@/lib/server/device-errors';
 
@@ -285,8 +286,7 @@ export const checkActorEligible = (actorUid: unknown, member: FirebaseFirestore.
   if (data.role === 'guest' && !(data.kind === 'identity' && isGuestIdentityUid(actorUid))) throw new DeviceActionError('actor_guest');
   // A guest pass (tablet or account) ends at `accessUntil` (HO-14, WT-21).
   if (guestPassEnded(data, Date.now())) throw new DeviceActionError('actor_inactive');
-  const status = data.status ?? 'active';
-  if (status !== 'active' || !ELIGIBLE_ROLES.includes(data.role)) throw new DeviceActionError('actor_inactive');
+  if (!memberIsCurrent(data) || !ELIGIBLE_ROLES.includes(data.role)) throw new DeviceActionError('actor_inactive');
   const role = data.role as DeviceActor['role'];
   return {
     uid: actorUid,

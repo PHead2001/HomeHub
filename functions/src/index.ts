@@ -16,6 +16,7 @@ import * as logger from "firebase-functions/logger";
 import {
   readMemberContacts, runHouseholdReminders, sweepDeviceRevocations,
 } from "./reminders";
+import {sweepEndedGuestPasses} from "./guest-pass-sweep";
 import {getAuth} from "firebase-admin/auth";
 import {getStorage} from "firebase-admin/storage";
 import {resumePetDeletions, type PetPhotoBucket} from "./shared/pet-delete";
@@ -311,6 +312,22 @@ export const householdUpkeep = onSchedule(
       } catch (error) {
         totals.failed++;
         logger.error("Household upkeep failed.", {
+          householdId: household.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // Guest passes that ended (HO-14): removed without anyone opening the
+      // app. Isolated, so a failure never blocks the reminders above.
+      try {
+        const ended = await sweepEndedGuestPasses(db, household.id, now);
+        if (ended > 0) {
+          logger.info("Removed ended guest passes.", {
+            householdId: household.id, removed: ended,
+          });
+        }
+      } catch (error) {
+        totals.failed++;
+        logger.error("Guest pass sweep failed.", {
           householdId: household.id,
           error: error instanceof Error ? error.message : String(error),
         });

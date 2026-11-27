@@ -59,6 +59,7 @@ import {
   readPinParams,
 } from '@/lib/server/pin-hash';
 import type { VerifiedCaller } from '@/lib/server/household-membership';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 // Tablet PINs (docs/modules/devices/README.md, "PINs"): setting and clearing them from
 // personal sessions under the WT-17 authority matrix, lockout clearing, verification
@@ -170,7 +171,8 @@ const memberView = (snap: Snap): MemberView | null => {
   return {
     uid: snap.id,
     role: (['owner', 'admin', 'member', 'child', 'guest', 'newuser'].includes(data.role) ? data.role : 'newuser') as HouseholdRole,
-    status: typeof data.status === 'string' ? data.status : 'active',
+    // A guest pass that has ended (HO-14) is not an active member here either.
+    status: !memberIsCurrent(data) && (data.status ?? 'active') === 'active' ? 'expired' : typeof data.status === 'string' ? data.status : 'active',
     kind: data.kind === 'identity' ? 'identity' : 'account',
     name: publicName(data.displayName),
   };
@@ -754,7 +756,7 @@ const announceLocks = async (input: {
     const tablet = { actorUid: deviceUid(input.deviceId), actorName: tabletName, via: 'device' as const, deviceId: input.deviceId, deviceName: tabletName };
     const personName = publicName(person.get('displayName'));
     const memberGuard = readMemberGuard(mGuard);
-    const recipients = admins.docs.filter(d => (d.get('status') ?? 'active') === 'active');
+    const recipients = admins.docs.filter(d => memberIsCurrent(d.data()));
     const notify = (id: string, title: string, message: string, sourceType: string) => {
       for (const admin of recipients) {
         tx.set(householdRef.collection('notifications').doc(`${id}-${admin.id}`), {

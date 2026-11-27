@@ -6,7 +6,10 @@ import { createTabletGuestPass } from '../../src/lib/server/guest-passes';
 import { MembershipError, changeMemberRole, expireGuestPasses, removeMember, transferOwnership } from '../../src/lib/server/household-membership';
 import { checkActorEligible } from '../../src/lib/server/device-gate';
 import { rosterFrom } from '../../src/lib/devices/roster';
-import { seedHousehold, type Person } from './device-test-helpers';
+import { personToken, seedHousehold, type Person } from './device-test-helpers';
+import { authorizeHouseholdAction } from '../../src/ai/action-auth';
+import { setMyPin } from '../../src/lib/server/pins';
+import { sweepEndedGuestPasses } from '../../functions/src/guest-pass-sweep';
 import { house } from './device-actor-helpers';
 
 // Tablet guest passes (audit HO-24, WT-21; src/lib/server/guest-passes.ts): a temporary
@@ -106,5 +109,57 @@ describe('tablet guest passes (HO-24, WT-21)', () => {
     const ended = (await house(H).collection('auditLogs').where('action', '==', 'member.guest_pass_ended').get()).docs[0]?.data();
     assert.equal(ended?.targetUid, second.guestId);
     assert.equal(ended?.details?.tablet, true);
+  });
+});
+
+describe('an ended account guest pass is refused by every server path (HO-14 review)', () => {
+  const visitor: Person = { uid: 'gp-visitor', email: 'gp.visitor@example.test', displayName: 'Vee', role: 'guest' };
+  const setPass = (ms: number) => house(H).collection('members').doc(visitor.uid).set({
+    uid: visitor.uid, role: 'guest', status: 'active', displayName: 'Vee', permissions: { 'shopping.edit': true },
+    accessUntil: Timestamp.fromMillis(Date.now() + ms),
+  });
+
+  test('authorizeHouseholdAction (AI, shopping, chores, maintenance, pets actions) serves a running pass and refuses an ended one', async () => {
+    const idToken = await personToken(visitor);
+    await setPass(HOUR);
+    const user = await authorizeHouseholdAction({ idToken, householdId: H }, 'shopping.edit');
+    assert.equal(user.permissions['shopping.edit'], true);
+    await setPass(-1000);
+    await assert.rejects(authorizeHouseholdAction({ idToken, householdId: H }, 'shopping.edit'));
+    await assert.rejects(authorizeHouseholdAction({ idToken, householdId: H }, 'chores.view'));
+    await assert.rejects(authorizeHouseholdAction({ idToken, householdId: H }));
+  });
+
+  test('tablet PINs treat an ended pass as not a member', async () => {
+    await setPass(-1000);
+    await assert.rejects(setMyPin(visitor, { householdId: H, pin: '4826' }), (error: unknown) => {
+      assert.equal((error as { code?: string }).code, 'not_member');
+      return true;
+    });
+  });
+
+  test('the hourly upkeep sweep removes ended passes (account and tablet) and keeps running ones', async () => {
+    await setPass(-1000);
+    const memberRef = house(H).collection('members').doc(visitor.uid);
+    await memberRef.collection('private').doc('contact').set({ email: visitor.email, updatedAt: NOW.toISOString() });
+    await adminDb.collection('users').doc(visitor.email).set({ email: visitor.email, householdId: H, role: 'guest' });
+    await house(H).collection('chores').doc('vee-open').set({ task: 'Water plants', assignedToUid: visitor.uid, isCompleted: false });
+    const running = await createTabletGuestPass(owner, { householdId: H, name: 'Walker', hours: 4, tickChores: true }, NOW);
+    const ended = await createTabletGuestPass(owner, { householdId: H, name: 'Sitter', hours: 4, feedPets: true }, NOW);
+    await house(H).collection('members').doc(ended.guestId).update({ accessUntil: Timestamp.fromMillis(Date.now() - 1000) });
+
+    assert.equal(await sweepEndedGuestPasses(adminDb, H, new Date()), 2);
+    assert.equal((await memberRef.get()).exists, false);
+    assert.equal((await memberRef.collection('private').doc('contact').get()).exists, false);
+    assert.equal((await adminDb.collection('users').doc(visitor.email).get()).get('householdId'), null);
+    assert.equal((await house(H).collection('chores').doc('vee-open').get()).get('assignedToUid'), '');
+    assert.equal((await record(ended.guestId)).exists, false);
+    assert.equal((await record(running.guestId)).exists, true);
+    const logs = (await house(H).collection('auditLogs').where('action', '==', 'member.guest_pass_ended').get()).docs.map(d => d.data());
+    assert.equal(logs.length, 2);
+    assert.ok(logs.every(log => log.actorUid === null && log.details?.by === 'upkeep'));
+    // A second run finds nothing.
+    assert.equal(await sweepEndedGuestPasses(adminDb, H, new Date()), 0);
+    await adminDb.collection('users').doc(visitor.email).delete();
   });
 });

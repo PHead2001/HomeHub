@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import {
   GUEST_PASS_HOURS,
   accessUntilMs,
+  memberIsCurrent,
   guestPassEnded,
   guestPassLabel,
   hasGuestPass,
@@ -44,6 +45,14 @@ describe('guest passes (HO-14, HO-24)', () => {
     assert.equal(guestPassEnded({ accessUntil: 'garbage' }, NOW), true);
     assert.equal(hasGuestPass({ accessUntil: ts(NOW) }), true);
     assert.equal(hasGuestPass({}), false);
+  });
+
+  test('memberIsCurrent: active and not past a guest pass', () => {
+    assert.equal(memberIsCurrent({}, NOW), true);
+    assert.equal(memberIsCurrent({ status: 'active', accessUntil: ts(NOW + 1) }, NOW), true);
+    assert.equal(memberIsCurrent({ status: 'active', accessUntil: ts(NOW) }, NOW), false);
+    assert.equal(memberIsCurrent({ status: 'pending' }, NOW), false);
+    assert.equal(memberIsCurrent(null, NOW), false);
   });
 
   test('push delivery skips an ended pass, as the rules do', () => {

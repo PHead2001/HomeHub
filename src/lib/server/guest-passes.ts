@@ -8,6 +8,7 @@ import { MembershipError, requireIdentityManager, type VerifiedCaller } from '@/
 import {
   GUEST_IDENTITY_PREFIX,
   GUEST_NAME_MAX,
+  memberIsCurrent,
   readGuestName,
   readGuestPassHours,
   tabletPassOverrides,
@@ -52,7 +53,7 @@ export const createTabletGuestPass = async (caller: VerifiedCaller, input: Table
     if (household.get('deletingAt')) throw new MembershipError('This household is being deleted.', 'household_deleting');
     if (!member.exists) throw new MembershipError('You are not part of this household.', 'not_member');
     const data = member.data() || {};
-    requireIdentityManager({ uid: caller.uid, role: data.role, status: data.status ?? 'active' });
+    requireIdentityManager({ uid: caller.uid, role: data.role, status: memberIsCurrent(data) ? 'active' : 'expired' });
     const actorName = typeof data.displayName === 'string' && data.displayName.trim() && !/\S+@\S+/.test(data.displayName)
       ? data.displayName.trim() : null;
     // A Firestore auto id: 20 letters and digits, never an account uid.

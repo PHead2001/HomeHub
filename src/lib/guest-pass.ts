@@ -65,6 +65,20 @@ export function guestPassEnded(record: { accessUntil?: unknown } | null | undefi
   return until === null || until <= nowMs;
 }
 
+/**
+ * Whether a membership record may act right now: status active (a record without one is
+ * active) and no guest pass that has ended. Every server-side membership check that used
+ * to read only `status` goes through this (HO-14), so an ended pass is refused before any
+ * sweep removes it.
+ */
+export function memberIsCurrent(
+  record: { status?: unknown; accessUntil?: unknown } | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!record) return false;
+  return (record.status ?? 'active') === 'active' && !guestPassEnded(record, nowMs);
+}
+
 /** Whether a record is a pass (account or tablet) at all. */
 export const hasGuestPass = (record: { accessUntil?: unknown } | null | undefined): boolean =>
   Boolean(record) && record!.accessUntil !== undefined && record!.accessUntil !== null;

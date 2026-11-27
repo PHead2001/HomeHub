@@ -12,6 +12,7 @@ import {
   type VerifiedCaller,
 } from '@/lib/server/household-membership';
 import { CHILD_NAME_MAX, isChildIdentityUid, kidAvatarPathOf, readChildName } from '@/lib/devices/child-identities';
+import { memberIsCurrent } from '@/lib/guest-pass';
 
 // Kid profiles (child identities; docs/modules/devices/README.md, "Actors"; HO-15a-c,
 // D-T9, JC-9): membership records `households/{h}/members/kid_<id>` with
@@ -39,7 +40,7 @@ const loadManager = async (tx: FirebaseFirestore.Transaction, caller: VerifiedCa
   if (household.get('deletingAt')) throw new MembershipError('This household is being deleted.', 'household_deleting');
   if (!member.exists) throw new MembershipError('You are not part of this household.', 'not_member');
   const data = member.data() || {};
-  requireIdentityManager({ uid: caller.uid, role: data.role, status: data.status ?? 'active' });
+  requireIdentityManager({ uid: caller.uid, role: data.role, status: memberIsCurrent(data) ? 'active' : 'expired' });
   const name = typeof data.displayName === 'string' && data.displayName.trim() && !/\S+@\S+/.test(data.displayName) ? data.displayName.trim() : null;
   return { householdRef, actorName: name };
 };
