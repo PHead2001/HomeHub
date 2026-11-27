@@ -4,6 +4,7 @@ import { Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { describeEntityState, entityName, formatEntityTime, sinceLabel, type HomeAssistantEntitySummary } from '@/lib/automation/entities';
+import { mayPlaceOnHouse } from '@/lib/automation/config';
 
 const STATE_TONE_CLASSES = {
   on: 'bg-success/15 text-success',
@@ -13,10 +14,12 @@ const STATE_TONE_CLASSES = {
   value: 'bg-secondary text-secondary-foreground',
 } as const;
 
+export type RoomOption = { id: string; name: string };
+
 /**
  * One device (AU-3, AU-8): its name and its state in plain words with how long it has
  * been that way. The entity id, last change, favourite pin and room link sit in a
- * details section (rooms come with AU-13).
+ * details section.
  */
 export function EntityTile({
   entity,
@@ -24,19 +27,26 @@ export function EntityTile({
   now,
   favorite,
   canManage,
+  rooms,
+  roomId,
   onToggleFavorite,
+  onRoomChange,
 }: {
   entity: HomeAssistantEntitySummary;
   timeZone: string;
   now: Date;
   favorite: boolean;
   canManage: boolean;
+  rooms: RoomOption[];
+  roomId: string | null;
   onToggleFavorite: () => void;
+  onRoomChange: (roomId: string | null) => void;
 }) {
   const name = entityName(entity);
   const view = describeEntityState(entity, timeZone);
   const since = sinceLabel(entity.last_changed, now);
   const changedAt = entity.last_changed ? formatEntityTime(entity.last_changed, timeZone) : null;
+  const placeable = canManage && rooms.length > 0 && mayPlaceOnHouse(entity.entity_id);
   return (
     <li className="flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3" data-entity-id={entity.entity_id}>
       <div className="flex items-start justify-between gap-3">
@@ -58,6 +68,19 @@ export function EntityTile({
             <Button variant="outline" size="sm" onClick={onToggleFavorite} aria-pressed={favorite}>
               <Star className={cn('h-4 w-4', favorite && 'fill-warning text-warning')} /> {favorite ? 'Unpin from top' : 'Pin to top'}
             </Button>
+          )}
+          {placeable && (
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Show on the house in
+              <select
+                className="h-[var(--target-min)] rounded-md border bg-background px-2 text-sm text-foreground"
+                value={roomId ?? ''}
+                onChange={(event) => onRoomChange(event.target.value || null)}
+              >
+                <option value="">Not on the house</option>
+                {rooms.map((room) => <option key={room.id} value={room.id}>{room.name}</option>)}
+              </select>
+            </label>
           )}
         </div>
       </details>

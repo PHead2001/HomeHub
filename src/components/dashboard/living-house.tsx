@@ -39,6 +39,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import Link from 'next/link';
 import { AirVent, Car, Cat, Dog, PawPrint, Refrigerator, Sparkles, Wrench, type LucideProps } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { roomDevicesLabel, type RoomDevices } from '@/lib/automation/home-status';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useMorphNavigation } from '@/hooks/use-morph-navigation';
 import { morphStyle } from '@/lib/motion';
@@ -107,9 +108,12 @@ const petStatus = (pet: PetState) => (pet.fed === null
 
 const points = (list: Array<{ x: number; y: number }>) => list.map((p) => `${p.x},${p.y}`).join(' ');
 
-function RoomShape({ placement, room, lit, active }: { placement: RoomPlacement; room: RoomState; lit: boolean; active: boolean }) {
+function RoomShape({ placement, room, lit, active, device }: { placement: RoomPlacement; room: RoomState; lit: boolean; active: boolean; device?: RoomDevices }) {
   const { x, y, w, h } = placement;
   const i = 9;
+  // AU-13: a room with Home Assistant lights placed in it lights its window only when one is
+  // on (not by the evening ambience); an open door or window and a leak get marks.
+  const windowLit = device?.lights ? device.lightsOn > 0 : lit;
   return (
     <g className={cn(styles.roomLayer, active && styles.roomLayerActive)} data-room-shape={room.id}>
       <rect
@@ -125,7 +129,13 @@ function RoomShape({ placement, room, lit, active }: { placement: RoomPlacement;
       <polygon points={points([{ x: x + w, y }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + w - i, y: y + i }])} className="fill-muted/30" />
       <polygon points={points([{ x, y: y + h }, { x: x + w, y: y + h }, { x: x + w - i, y: y + h - i }, { x: x + i, y: y + h - i }])} className="fill-secondary" />
       <rect x={x + w - 34} y={y + i + 6} width="16" height="12" rx="1.5" className="fill-background stroke-border" strokeWidth="1" data-room-window={room.id} />
-      <rect x={x + w - 33} y={y + i + 7} width="14" height="10" rx="1" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': lit ? 0.75 : 0 } as CSSProperties} />
+      <rect x={x + w - 33} y={y + i + 7} width="14" height="10" rx="1" className={cn(styles.windowLight, 'fill-warning')} style={{ '--window-glow': windowLit ? 0.75 : 0 } as CSSProperties} data-room-light={device?.lightsOn ? room.id : undefined} />
+      {device && device.open > 0 && (
+        <path d={`M${x + i + 6} ${y + h - i}v-20h10l4 3v20z`} className="fill-warning/70 stroke-warning" strokeWidth="1" data-room-open={room.id} />
+      )}
+      {device?.leak && (
+        <path d={`M${x + w / 2} ${y + h - i - 22}c-5 7 -7 10 -7 13a7 7 0 0 0 14 0c0 -3 -2 -6 -7 -13z`} className="fill-destructive" data-room-leak={room.id} />
+      )}
       {room.status === 'overdue' && (
         // HP-16a: keyed by the count, so a newly overdue chore runs the glow again.
         <rect key={attentionKey('glow', room.overdue)} x={x + 2} y={y + 2} width={w - 4} height={h - 4} rx="2" className={cn(styles.overdueGlow, 'fill-none stroke-warning')} strokeWidth="3" />
@@ -498,6 +508,7 @@ export function LivingHouse({
   outline = null,
   timeZone,
   onRetry,
+  devices,
 }: {
   facts: DashboardFacts;
   title: string;
@@ -509,6 +520,8 @@ export function LivingHouse({
   outline?: HouseOutlineRoom[] | null;
   timeZone?: string;
   onRetry?: () => void;
+  /** AU-13: Home Assistant devices placed in chore rooms (absent when not connected). */
+  devices?: Record<string, RoomDevices>;
 }) {
   const reduced = useReducedMotion();
   const light = useDayLight();
@@ -644,6 +657,10 @@ export function LivingHouse({
     facts.unavailable?.length ? `Unavailable right now: ${facts.unavailable.join(', ')}.` : null,
     maintenance ? (maintenance.overdue + maintenance.dueSoon > 0 ? `${maintenance.overdue + maintenance.dueSoon} maintenance items due soon.` : 'Maintenance is up to date.') : null,
     facts.health ? healthSummaryText('Home health', facts.health) : null,
+    ...shownRooms.map((room) => {
+      const label = roomDevicesLabel(devices?.[room.id]);
+      return label ? `${room.name}: ${label}.` : null;
+    }),
   ].filter(Boolean).join(' ');
 
   const onRoomNavigate = (event: MouseEvent<HTMLAnchorElement>, room: RoomState, placement: RoomPlacement, href: string) => {
@@ -749,7 +766,7 @@ export function LivingHouse({
                 <Scenery layout={layout} season={activeSeason} golden={golden} lit={lit} />
                 {layout.rooms.map((placement) => {
                   const room = drawnRooms[placement.index];
-                  return <RoomShape key={room.id} placement={placement} room={room} lit={lit} active={activeRoom === room.id} />;
+                  return <RoomShape key={room.id} placement={placement} room={room} lit={lit} active={activeRoom === room.id} device={devices?.[room.id]} />;
                 })}
                 {petPlacements.map((placement) => (placement.mode === 'bowl' && placement.bowl ? (
                   <path key={`bowl-${placement.id}`} d={`M${placement.bowl.x - 8} ${placement.bowl.y - 5}h16l-3 6h-10z`} className="fill-warning" />

@@ -114,7 +114,7 @@ describe('Home Assistant state fetch', () => {
 describe('AU-3, AU-2: the snapshot', () => {
   const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
 
-  test('keeps the change time, and says when the list was cut off', async () => {
+  test('keeps the change time and a thermostat reading, and says when the list was cut off', async () => {
     const many = Array.from({ length: 1005 }, (_, i) => ({ entity_id: `sensor.s${i}`, state: '1', attributes: {} }));
     many[0] = { entity_id: 'climate.home', state: 'heat', attributes: { current_temperature: 21.5, hvac_modes: ['heat'] }, last_changed: '2026-11-27T10:00:00+00:00' } as never;
     const fetchImpl = (async () => response(many)) as unknown as typeof fetch;
@@ -124,7 +124,7 @@ describe('AU-3, AU-2: the snapshot', () => {
     assert.equal(snapshot.entities.length, 1000);
     assert.deepEqual(snapshot.entities[0], {
       entity_id: 'climate.home', state: 'heat', last_changed: '2026-11-27T10:00:00+00:00',
-      attributes: { friendly_name: undefined, unit_of_measurement: undefined, device_class: undefined },
+      attributes: { friendly_name: undefined, unit_of_measurement: undefined, device_class: undefined, current_temperature: 21.5 },
     });
   });
 });

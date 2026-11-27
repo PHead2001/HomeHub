@@ -4,13 +4,15 @@ import { adminAuth, adminDb } from '../../src/lib/server/firebase-admin';
 import {
   disconnectHomeAssistant,
   getHomeAssistantStatus,
+  getHomeStatus,
   setAutomationFavorite,
+  setAutomationRoom,
   setMembersSeeSensitive,
 } from '../../src/app/automation/actions';
 
 // The automation server actions against the Auth and Firestore emulators. Home Assistant
 // itself is never contacted here (the transport only reaches public addresses): every
-// path tested decides before any request. AU-6, AU-11.
+// path tested decides before any request. AU-6, AU-11, AU-13, AU-15.
 const HOUSE = 'ha-actions-house';
 const house = adminDb.collection('households').doc(HOUSE);
 
@@ -42,6 +44,7 @@ async function idTokenFor(caller: Caller) {
 const as = (caller: Caller) => ({ idToken: tokens.get(caller)!, householdId: HOUSE });
 const config = {
   favorites: ['light.k', 'lock.front'],
+  rooms: { 'light.k': 'kitchen' },
   showSensitiveToMembers: false,
 };
 const configDoc = () => house.collection('home-automation').doc('config');
@@ -71,6 +74,8 @@ describe('settings and what each person is sent', () => {
       assert.deepEqual(pinned.data.favorites, ['light.k'], `${caller}: the lock is stored but not sent back`);
       const privacy = await setMembersSeeSensitive(as(caller), { show: true });
       assert.ok(privacy.ok && !privacy.data.favorites.includes('lock.front'), caller);
+      const room = await setAutomationRoom(as(caller), { entityId: 'light.k', roomId: 'kitchen' });
+      assert.ok(room.ok && !room.data.favorites.includes('lock.front'), caller);
     }
     assert.deepEqual((await configDoc().get()).get('favorites'), ['light.k', 'lock.front']);
     // The owner's answer to the same kind of change still lists it.
@@ -84,12 +89,12 @@ describe('settings and what each person is sent', () => {
     assert.equal((await setAutomationFavorite(as('owner'), { entityId: 'not an id', pinned: true })).ok, false);
     assert.equal((await setMembersSeeSensitive(as('owner'), { show: 'yes' as unknown as boolean })).ok, false);
     const saved = await setAutomationFavorite(as('owner'), { entityId: 'light.k', pinned: true });
-    assert.deepEqual(saved, { ok: true, data: { favorites: ['light.k'], showSensitiveToMembers: false } });
+    assert.deepEqual(saved, { ok: true, data: { favorites: ['light.k'], rooms: {}, showSensitiveToMembers: false } });
     assert.equal((await configDoc().get()).exists, true);
   });
 
   test('pinning a favourite never turns member access back on (an older page)', async () => {
-    await seedConfig({ favorites: [], showSensitiveToMembers: true });
+    await seedConfig({ favorites: [], rooms: {}, showSensitiveToMembers: true });
     // Another manager turns member access off...
     assert.equal((await setMembersSeeSensitive(as('owner'), { show: false })).ok, true);
     // ...then a page loaded while it was on pins a favourite.
@@ -107,7 +112,7 @@ describe('settings and what each person is sent', () => {
     assert.ok(owner.ok && member.ok && child.ok);
     assert.deepEqual(owner.data.config.favorites, config.favorites);
     assert.equal(owner.data.canSeeSensitive, true);
-    assert.deepEqual(member.data.config, { favorites: ['light.k'], showSensitiveToMembers: false });
+    assert.deepEqual(member.data.config, { favorites: ['light.k'], rooms: config.rooms, showSensitiveToMembers: false });
     assert.equal(member.data.canSeeSensitive, false);
     assert.equal(child.data.canSeeSensitive, false);
     assert.equal((await setMembersSeeSensitive(as('owner'), { show: true })).ok, true);
@@ -117,9 +122,20 @@ describe('settings and what each person is sent', () => {
     assert.ok(stillChild.ok && !stillChild.data.canSeeSensitive, 'children never, whatever the setting');
   });
 
-  test('not connected: the status says so without contacting anything', async () => {
+  test('AU-13: managers place one device at a time; other settings are kept', async () => {
+    await seedConfig({ favorites: ['light.k'], rooms: {}, showSensitiveToMembers: false });
+    assert.equal((await setAutomationRoom(as('member'), { entityId: 'light.k', roomId: 'kitchen' })).ok, false);
+    assert.equal((await setAutomationRoom(as('owner'), { entityId: 'lock.front', roomId: 'hall' })).ok, false, 'locks never go on the house');
+    const placed = await setAutomationRoom(as('owner'), { entityId: 'light.k', roomId: 'kitchen' });
+    assert.deepEqual(placed, { ok: true, data: { favorites: ['light.k'], rooms: { 'light.k': 'kitchen' }, showSensitiveToMembers: false } });
+    const removed = await setAutomationRoom(as('owner'), { entityId: 'light.k', roomId: null });
+    assert.ok(removed.ok && Object.keys(removed.data.rooms).length === 0);
+  });
+
+  test('not connected: the status and the dashboard card say so without contacting anything', async () => {
     const status = await getHomeAssistantStatus(as('member'));
     assert.ok(status.ok && status.data.configured === false);
+    assert.deepEqual(await getHomeStatus(as('member')), { ok: true, data: { connected: false } });
   });
 
   test('opening the status backfills the connected flag for an older connection', async () => {

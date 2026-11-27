@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eye, EyeOff, KeyRound, RefreshCw, Search, Unplug } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
-import { auth } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import {
   disconnectHomeAssistant,
   getHomeAssistantEntities,
   getHomeAssistantStatus,
   replaceHomeAssistantToken,
   setAutomationFavorite,
+  setAutomationRoom,
   setMembersSeeSensitive,
   type HomeAssistantEntities,
   type HomeAssistantStatus,
@@ -38,7 +39,7 @@ import { arrangeEntities } from '@/lib/automation/entities';
 import { EMPTY_AUTOMATION_CONFIG, type ConfigChange } from '@/lib/automation/config';
 import { POLL_INTERVAL_MS, pollDue, updatedLabel } from '@/lib/automation/refresh';
 import { ConnectForm } from '@/components/automation/connect-form';
-import { EntityTile } from '@/components/automation/entity-tile';
+import { EntityTile, type RoomOption } from '@/components/automation/entity-tile';
 import { AutomationSettings, ReplaceTokenDialog } from '@/components/automation/automation-settings';
 
 type Failure = { ok: false; message: string };
@@ -48,6 +49,8 @@ const sendConfigChange = (ctx: { idToken: string; householdId: string }, change:
   switch (change.kind) {
     case 'favorite':
       return setAutomationFavorite(ctx, { entityId: change.entityId, pinned: change.pinned });
+    case 'room':
+      return setAutomationRoom(ctx, { entityId: change.entityId, roomId: change.roomId });
     case 'showSensitiveToMembers':
       return setMembersSeeSensitive(ctx, { show: change.show });
   }
@@ -80,6 +83,7 @@ export function AutomationClient() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [filter, setFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [rooms, setRooms] = useState<RoomOption[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const inFlight = useRef(false);
   const lastAttempt = useRef<number | null>(null);
@@ -140,6 +144,22 @@ export function AutomationClient() {
     const id = window.setInterval(tick, 5_000);
     return () => window.clearInterval(id);
   }, [configured, visible, loadEntities]);
+
+  // Managers place devices in chore rooms (AU-13): the room names come from Chores.
+  const householdId = currentUser?.householdId ?? null;
+  useEffect(() => {
+    if (!canManage || !householdId || !permissions['chores.view']) return;
+    let cancelled = false;
+    void import('firebase/firestore').then(async ({ collection, getDocs }) => {
+      try {
+        const snapshot = await getDocs(collection(db, 'households', householdId, 'rooms'));
+        if (!cancelled) setRooms(snapshot.docs.map((d) => ({ id: d.id, name: String(d.get('name') ?? d.id) })).sort((a, b) => a.name.localeCompare(b.name)));
+      } catch {
+        if (!cancelled) setRooms([]);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [canManage, householdId, permissions]);
 
   // One change at a time: the server applies it to the stored settings, so this page
   // never sends back (and overwrites) settings someone else changed since it loaded.
@@ -233,10 +253,13 @@ export function AutomationClient() {
       now={new Date(now)}
       favorite={Boolean(config?.favorites.includes(entity.entity_id))}
       canManage={canManage}
+      rooms={rooms}
+      roomId={config?.rooms[entity.entity_id] ?? null}
       onToggleFavorite={() => {
         if (!config) return;
         void changeSettings({ kind: 'favorite', entityId: entity.entity_id, pinned: !config.favorites.includes(entity.entity_id) });
       }}
+      onRoomChange={(roomId) => void changeSettings({ kind: 'room', entityId: entity.entity_id, roomId })}
     />
   );
   const grid = 'grid gap-3 md:grid-cols-2 xl:grid-cols-3';

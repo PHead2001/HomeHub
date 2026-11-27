@@ -11,6 +11,7 @@ import { changeConfig, deleteCredentials, persistCredentials, readConfig, readCo
 import { forgetSnapshot, householdSnapshot } from '@/lib/server/home-assistant-snapshot';
 import { maySeeSensitive, visibleEntities, type HomeAssistantEntitySummary } from '@/lib/automation/entities';
 import { configForViewer, type AutomationConfig } from '@/lib/automation/config';
+import { homeStatus, houseDevices, type HomeStatus, type RoomDevices } from '@/lib/automation/home-status';
 import type { HouseholdPermission } from '@/lib/types';
 
 // Every call derives identity from a verified ID token and authorizes against the
@@ -92,6 +93,23 @@ export async function getHomeAssistantEntities(context: Context): Promise<Result
   });
 }
 
+export type HomeStatusResult = { connected: false } | { connected: true; status: HomeStatus; rooms: Record<string, RoomDevices>; fetchedAt: number };
+
+/** AU-15 and AU-13: the dashboard's card and house marks, from the same cached read. */
+export async function getHomeStatus(context: Context): Promise<Result<HomeStatusResult>> {
+  return run(context, 'automation.view', async (user) => {
+    if (!(await readConnectedUrl(user.householdId))) return { connected: false };
+    const [snapshot, config] = await Promise.all([householdSnapshot(user.householdId), readConfig(user.householdId)]);
+    const now = new Date();
+    return {
+      connected: true,
+      status: homeStatus(snapshot.entities, now),
+      rooms: houseDevices(snapshot.entities, config.rooms),
+      fetchedAt: snapshot.fetchedAt,
+    };
+  });
+}
+
 const readToken = (value: unknown) => {
   const token = typeof value === 'string' ? value.trim() : '';
   if (token.length < 20 || token.length > 4096) throw new HomeAssistantError('Paste the full long-lived access token from your Home Assistant profile.');
@@ -149,6 +167,12 @@ const changeFor = async (user: AuthorizedHouseholdUser, change: unknown) =>
 export async function setAutomationFavorite(context: Context, input: { entityId: string; pinned: boolean }): Promise<Result<AutomationConfig>> {
   return run(context, 'automation.manage', (user) =>
     changeFor(user, { kind: 'favorite', entityId: input?.entityId, pinned: input?.pinned }));
+}
+
+/** AU-13: place one device in a chore room, or take it off the house (`roomId: null`). */
+export async function setAutomationRoom(context: Context, input: { entityId: string; roomId: string | null }): Promise<Result<AutomationConfig>> {
+  return run(context, 'automation.manage', (user) =>
+    changeFor(user, { kind: 'room', entityId: input?.entityId, roomId: input?.roomId }));
 }
 
 export async function setMembersSeeSensitive(context: Context, input: { show: boolean }): Promise<Result<AutomationConfig>> {
