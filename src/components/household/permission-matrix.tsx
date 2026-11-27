@@ -5,7 +5,7 @@ import { motion } from 'motion/react';
 import { Lock } from 'lucide-react';
 import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { DURATION, EASE } from '@/lib/motion';
-import { permissionGroups, permissionLabels } from '@/lib/permissions';
+import { permissionDescriptions, permissionGroups, permissionLabels } from '@/lib/permissions';
 import type { HouseholdPermission } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
@@ -86,7 +86,7 @@ function Cell({
         type="button"
         role="checkbox"
         aria-checked={checked}
-        aria-label={label}
+        aria-label={changed ? `${label} (custom)` : label}
         disabled={disabled}
         onClick={onToggle}
         className="group inline-flex h-[var(--target-min)] w-[var(--target-min)] items-center justify-center rounded-md disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-accent"
@@ -109,7 +109,7 @@ function Cell({
           <DrawnCheck checked={checked} reduced={reduced} />
         </span>
       )}
-      <span className="sr-only">{locked ? `${label}: ${locked}` : `${label}: ${checked ? 'allowed' : 'not allowed'}`}</span>
+      <span className="sr-only">{locked ? `${label}: ${locked}` : `${label}: ${checked ? 'allowed' : 'not allowed'}${changed ? ' (custom)' : ''}`}</span>
     </span>
   );
 }
@@ -131,12 +131,14 @@ export function PermissionMatrix({
 }) {
   const reduced = useReducedMotion();
   return (
-    <div className={cn('overflow-x-auto rounded-lg border', className)} data-permission-matrix>
+    // Its own scroll area (both ways), so the column headings stay in view while the
+    // rows scroll (HO-18); the page never scrolls sideways.
+    <div className={cn('max-h-[min(70dvh,48rem)] overflow-auto overscroll-contain rounded-lg border', className)} data-permission-matrix>
       <table className="w-full min-w-max border-collapse text-sm">
         <caption className="sr-only">{caption}</caption>
         <thead>
-          <tr className="border-b bg-muted/40">
-            <th scope="col" className="sticky left-0 z-10 bg-card px-3 py-2 text-left font-medium text-muted-foreground">
+          <tr className="border-b">
+            <th scope="col" className="sticky left-0 top-0 z-30 bg-card px-3 py-2 text-left font-medium text-muted-foreground shadow-[0_1px_0_hsl(var(--border))]">
               Permission
             </th>
             {columns.map((column) => (
@@ -144,8 +146,8 @@ export function PermissionMatrix({
                 key={column.id}
                 scope="col"
                 className={cn(
-                  'min-w-[4.5rem] px-2 py-2 text-center align-bottom font-semibold',
-                  column.highlight && 'bg-primary/10',
+                  'sticky top-0 z-20 min-w-[4.5rem] bg-card px-2 py-2 text-center align-bottom font-semibold shadow-[0_1px_0_hsl(var(--border))]',
+                  column.highlight && 'bg-[color-mix(in_srgb,hsl(var(--primary))_10%,hsl(var(--card)))]',
                 )}
               >
                 <span className="flex flex-col items-center gap-1">
@@ -160,7 +162,7 @@ export function PermissionMatrix({
           <tbody key={group.title}>
             <tr>
               <th
-                scope="colgroup"
+                scope="rowgroup"
                 colSpan={columns.length + 1}
                 className="sticky left-0 bg-card px-3 pb-1 pt-4 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground"
               >
@@ -169,8 +171,9 @@ export function PermissionMatrix({
             </tr>
             {group.permissions.map((permission) => (
               <tr key={permission} className="border-t border-border-subtle">
-                <th scope="row" className="sticky left-0 z-10 bg-card px-3 py-0 text-left font-normal">
-                  {permissionLabels[permission]}
+                <th scope="row" className="sticky left-0 z-10 max-w-[16rem] bg-card px-3 py-1.5 text-left font-normal">
+                  <span className="block">{permissionLabels[permission]}</span>
+                  <span className="block text-xs leading-snug text-muted-foreground">{permissionDescriptions[permission]}</span>
                 </th>
                 {columns.map((column) => (
                   <td key={column.id} className={cn('px-2 py-0 text-center', column.highlight && 'bg-primary/10')}>

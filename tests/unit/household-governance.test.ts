@@ -362,3 +362,14 @@ describe('who sees custom permissions (HO-12)', () => {
     assert.equal(canSeeMemberOverrides(null, 'b'), false);
   });
 });
+
+describe('Roles matrix rows (HO-18)', () => {
+  it('every permission has a one-line description, without internal names', async () => {
+    const { householdPermissions, permissionDescriptions } = await import('../../src/lib/permissions');
+    for (const permission of householdPermissions) {
+      const text = permissionDescriptions[permission];
+      assert.ok(text && text.length > 10 && text.length < 110, permission);
+      assert.doesNotMatch(text, /household\.[a-z]|chores\.[a-z]|newuser/, permission);
+    }
+  });
+});

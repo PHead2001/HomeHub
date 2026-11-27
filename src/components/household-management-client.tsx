@@ -191,6 +191,7 @@ export function HouseholdManagementClient() {
   const [inviteRole, setInviteRole] = useState<InviteRoleChoice>('none');
   const [invitePass, setInvitePass] = useState<InvitePassChoice>('none');
   const [guestPassOpen, setGuestPassOpen] = useState(false);
+  const membersHeadingRef = useRef<HTMLHeadingElement>(null);
   const [shareInvite, setShareInvite] = useState<InviteCode | null>(null);
   const inviteRoles = assignableRoles.filter((role) => rank(role) < rank(currentMember?.role));
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -384,6 +385,8 @@ export function HouseholdManagementClient() {
     const removed = await runAction(denied ? 'Could not deny the request' : 'Could not remove the member', (idToken) =>
       removeMemberAction({ idToken, householdId, memberUid: member.uid }));
     if (!removed) return;
+    // The removed card (and its menu) is gone: keep keyboard focus in the list (HO-21).
+    requestAnimationFrame(() => membersHeadingRef.current?.focus());
     toast(denied
       ? { title: 'Request denied', description: `${memberName(member)} was not added to the household.` }
       : { title: 'Member removed', description: `${memberName(member)} was removed from the household.` });
@@ -545,9 +548,13 @@ export function HouseholdManagementClient() {
             <TabsTrigger value="members" className="gap-1.5">
               Members
               {pendingMembers.length > 0 && canManageMembers && (
-                <span className="rounded-full bg-warning px-1.5 text-xs font-semibold text-warning-foreground" aria-label={`${pendingMembers.length} pending`}>
-                  {pendingMembers.length}
-                </span>
+                <>
+                  {/* The number is drawn; screen readers hear "2 pending" (HO-21). */}
+                  <span aria-hidden className="rounded-full bg-warning px-1.5 text-xs font-semibold text-warning-foreground">
+                    {pendingMembers.length}
+                  </span>
+                  <span className="sr-only">, {pendingMembers.length} pending</span>
+                </>
               )}
             </TabsTrigger>
             <TabsTrigger value="roles">Roles</TabsTrigger>
@@ -707,6 +714,7 @@ export function HouseholdManagementClient() {
           )}
 
           <TabsContent value="members" className="space-y-4 pt-4">
+            <h2 ref={membersHeadingRef} tabIndex={-1} className="sr-only">Members</h2>
             {tablet.enabled && (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm text-muted-foreground">Kids without their own account can still use wall tablets.</p>
