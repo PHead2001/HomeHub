@@ -126,8 +126,12 @@ export async function movePlannedOccurrence(db: Firestore, householdId: string, 
 /**
  * Undo of a planned move, by its `opId` only (the caller's own move, within
  * `CALENDAR_OP_UNDO_MS`): deletes the chore that move created while it is still the
- * untouched planned move (a generated occurrence, open, no step ticked, due on the move's
- * day), so a completion or another change made meanwhile is never lost (`stale`).
+ * untouched planned move, so a completion or another change made meanwhile is never lost
+ * (`stale`). Untouched means nothing has written the chore since the move (review round 2:
+ * a reassignment changes only assignee fields): the operation record is created in the
+ * move's own transaction, so the chore's `updateTime` equals the record's `createTime`
+ * until anyone writes it. The field checks (a generated occurrence, open, no step ticked,
+ * due on the move's day) stay as a second guard.
  * `missing` when it is already gone; `invalid` for anything that is not such a move.
  */
 export async function undoPlannedMove(db: Firestore, householdId: string, input: { opId: unknown }, actorUid: string, now = new Date()): Promise<{ status: 'undone' | 'stale' | 'missing' }> {
@@ -147,7 +151,8 @@ export async function undoPlannedMove(db: Firestore, householdId: string, input:
     const untouched = typeof data.templateId === 'string' && key !== null && occurrenceChoreId(data.templateId, key.split('|')[1], key.slice(-10)) === snap.id &&
       data.isCompleted !== true && data.originalDueDate === toDay &&
       (!Array.isArray(data.completedSubTasks) || data.completedSubTasks.length === 0);
-    if (!untouched) return { status: 'stale' as const };
+    const unwritten = Boolean(snap.updateTime && op.createTime && snap.updateTime.isEqual(op.createTime));
+    if (!untouched || !unwritten) return { status: 'stale' as const };
     tx.delete(ref);
     return { status: 'undone' as const };
   });

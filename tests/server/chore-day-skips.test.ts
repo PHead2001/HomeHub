@@ -61,6 +61,26 @@ describe('skipping days on the server', () => {
     assert.deepEqual(op.removed.map((entry: { id: string }) => entry.id), [id('2026-11-06')]);
   });
 
+  test('a day sent as planned that upkeep generated meanwhile is found and skipped (review round 2)', async () => {
+    await seed('2026-11-12'); // generated after the calendar planned it: its deterministic id
+    await chores().doc('legacy-trash-day').set({ // an older id that holds the key
+      task: 'Trash', templateId: 'trash', occurrenceKey: key('2026-11-13'), originalDueDate: '2026-11-13', isCompleted: false,
+    });
+    await seed('2026-11-14', { isCompleted: true });
+    const outcome = await skipChoreDays(adminDb, HOUSE, { items: [
+      { templateId: 'trash', key: key('2026-11-12') },
+      { templateId: 'trash', key: key('2026-11-13') },
+      { templateId: 'trash', key: key('2026-11-14') },
+    ] }, 'sk-owner', NOW);
+    assert.equal(outcome.deleted, 2);
+    assert.equal((await chores().doc(id('2026-11-12')).get()).exists, false);
+    assert.equal((await chores().doc('legacy-trash-day').get()).exists, false);
+    assert.equal((await chores().doc(id('2026-11-14')).get()).get('isCompleted'), true, 'never a completion');
+    // Undo puts both back.
+    assert.deepEqual(await undoSkipChoreDays(adminDb, HOUSE, { opId: outcome.opId }, 'sk-owner', NOW), { restored: 2, regenerate: 0 });
+    assert.equal((await chores().doc('legacy-trash-day').get()).exists, true);
+  });
+
   test('refuses keys of another template, one-time chores and malformed input', async () => {
     assert.equal(await code(skipChoreDays(adminDb, HOUSE, { items: [{ templateId: 'trash', key: 'other|general|2026-11-06' }] }, 'sk-owner', NOW)), 'invalid');
     assert.equal(await code(skipChoreDays(adminDb, HOUSE, { items: [] }, 'sk-owner', NOW)), 'invalid');

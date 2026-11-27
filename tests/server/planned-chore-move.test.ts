@@ -134,6 +134,13 @@ describe('moving a planned day of a repeating chore', () => {
     assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { opId: second.opId }, 'pm-owner', NOW), { status: 'stale' });
     assert.equal((await chores().doc(second.choreId).get()).exists, true);
 
+    // A reassignment changes only assignee fields: any write since the move makes Undo stale (review round 2).
+    await chores().doc(second.choreId).update({ completedSubTasks: [] });
+    const third0 = await movePlannedOccurrence(adminDb, HOUSE, { templateId: 'trash', roomId: 'general', day: '2027-01-11', toDay: '2027-01-13' }, NOW, 'pm-owner');
+    await chores().doc(third0.choreId).update({ assignedToUid: 'pm-left', assignedToDisplayName: 'Gone' });
+    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { opId: third0.opId }, 'pm-owner', NOW), { status: 'stale' });
+    assert.equal((await chores().doc(third0.choreId).get()).get('assignedToUid'), 'pm-left', 'the reassigned chore stays');
+
     // An open generated chore that no move of this person created can never be deleted by Undo.
     await chores().doc(second.choreId).update({ completedSubTasks: [] });
     assert.equal(await code(undoPlannedMove(adminDb, HOUSE, { opId: second.opId }, 'pm-owner', NOW)), 'invalid');

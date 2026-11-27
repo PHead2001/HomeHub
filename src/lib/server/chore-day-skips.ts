@@ -7,7 +7,7 @@ import { isGeneratedInstance } from '@/lib/chores/recurrence-edits';
 import { withoutSkippedOccurrences } from '@/lib/chores/calendar';
 import { safeTimeZone } from '@functions/shared/calendar';
 import { isDocId } from '@functions/shared/push-media';
-import { storedOccurrenceKey } from '@functions/shared/ids';
+import { occurrenceChoreId, storedOccurrenceKey } from '@functions/shared/ids';
 import { occurrenceKeyDay, withSkippedOccurrences } from '@functions/shared/skips';
 import { CALENDAR_OPS, CALENDAR_OP_UNDO_MS, readCalendarOp } from '@/lib/server/planned-chore-move';
 
@@ -17,7 +17,9 @@ import { CALENDAR_OPS, CALENDAR_OP_UNDO_MS, readCalendarOp } from '@/lib/server/
  * the server action verified the caller and `chores.delete`:
  * - records each day's occurrence key on its template (`withSkippedOccurrences`, as
  *   deleting a day on Chores does), only keys of that template, today or later;
- * - re-reads every chore the calendar asked to remove and deletes it only while it is
+ * - resolves every requested day to the chores that hold it (the id the calendar saw, the
+ *   occurrence's deterministic id, and an occurrence-key query, so a day sent as planned
+ *   that upkeep generated meanwhile is found), and deletes each only while it is
  *   still that open generated occurrence (same template and occurrence key, not completed,
  *   no one-time `sourceType`): a chore completed or changed into another day's chore
  *   meanwhile is kept, so a completion is never deleted;
@@ -67,12 +69,23 @@ export async function skipChoreDays(db: Firestore, householdId: string, input: {
     if (!home.exists || home.get('deletingAt')) throw new ChoreSkipError('not-found');
     const today = householdToday(now, safeTimeZone(home.get('timeZone')));
     const templateIds = [...new Set(items.map(item => item.templateId))];
-    const choreIds = [...new Set(items.flatMap(item => (item.choreId ? [item.choreId] : [])))];
-    const [templates, chores] = await Promise.all([
+    // Every chore that may hold a requested day (review round 2): the id the calendar saw, the
+    // occurrence's deterministic id, and any chore carrying its occurrence key, so a day sent
+    // as planned that upkeep generated meanwhile is found and skipped too.
+    const candidateIds = (item: SkipItem) => [...new Set([
+      ...(item.choreId ? [item.choreId] : []),
+      occurrenceChoreId(item.templateId, item.key.split('|')[1], occurrenceKeyDay(item.key) as string),
+    ])];
+    const choreIds = [...new Set(items.flatMap(candidateIds))];
+    const keys = [...new Set(items.map(item => item.key))];
+    const [templates, chores, holders] = await Promise.all([
       Promise.all(templateIds.map(id => tx.get(house.collection('chore-templates').doc(id)))),
       Promise.all(choreIds.map(id => tx.get(house.collection('chores').doc(id)))),
+      Promise.all(keys.map(key => tx.get(house.collection('chores').where('occurrenceKey', '==', key).limit(10)))),
     ]);
-    const choreById = new Map(chores.map(snap => [snap.id, snap]));
+    const choreById = new Map<string, FirebaseFirestore.DocumentSnapshot>(chores.map(snap => [snap.id, snap]));
+    const holdersByKey = new Map(keys.map((key, index) => [key, holders[index].docs]));
+    holders.forEach(result => result.docs.forEach(snap => choreById.set(snap.id, snap)));
     const keysByTemplate = new Map<string, string[]>();
     const removed: { id: string; key: string; data: FirebaseFirestore.DocumentData }[] = [];
     let kept = 0;
@@ -82,15 +95,17 @@ export async function skipChoreDays(db: Firestore, householdId: string, input: {
       const list = keysByTemplate.get(item.templateId) ?? [];
       if (!list.includes(item.key)) list.push(item.key);
       keysByTemplate.set(item.templateId, list);
-      if (!item.choreId) continue;
-      const snap = choreById.get(item.choreId);
-      if (!snap?.exists || removed.some(entry => entry.id === snap.id)) continue;
-      const data = snap.data() ?? {};
-      // Only the open generated occurrence the calendar showed; never a completion.
-      const same = data.isCompleted !== true && data.templateId === item.templateId &&
-        isGeneratedInstance({ id: snap.id, ...data }) && storedOccurrenceKey(snap.id, data) === item.key;
-      if (same) removed.push({ id: snap.id, key: item.key, data });
-      else kept += 1;
+      const ids = new Set([...candidateIds(item), ...(holdersByKey.get(item.key) ?? []).map(snap => snap.id)]);
+      for (const choreId of ids) {
+        const snap = choreById.get(choreId);
+        if (!snap?.exists || removed.some(entry => entry.id === snap.id)) continue;
+        const data = snap.data() ?? {};
+        // Only an open generated chore of that very occurrence; never a completion.
+        const same = data.isCompleted !== true && data.templateId === item.templateId &&
+          isGeneratedInstance({ id: snap.id, ...data }) && storedOccurrenceKey(snap.id, data) === item.key;
+        if (same) removed.push({ id: snap.id, key: item.key, data });
+        else if (choreId === item.choreId) kept += 1;
+      }
     }
     let skipped = 0;
     templates.forEach((snap) => {
