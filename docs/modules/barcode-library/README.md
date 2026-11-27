@@ -107,7 +107,7 @@ Storage rules accept barcode-image creates and updates only when the object is 5
 - Save, load and delete failures use `toastError`, so raw Firebase text never reaches users.
 - Library deletes stay immediate (no confirmation) and metadata deletion stays prompt, with a 10 s Undo; image cleanup waits for the Undo window and is best effort.
 - Photos come from stored URLs without a Next.js remote-host allowlist (`unoptimized`, so uploads are shrunk on the device instead) and `next/image` loads them lazily; the blurred backdrop is decorative (`aria-hidden`, empty `alt`). The card's Edit and Delete buttons are 44 px (48 px on coarse pointers).
-- Shelf tiles in the pantry reuse library photos when a pantry item's name matches a product name exactly (case-insensitive).
+- Shelf tiles in the pantry reuse library photos by the batches' stored barcode first (either form), and by exact (case-insensitive) name only for stock without a barcode (BL-16).
 - Household data takes precedence over Open Food Facts when the Firestore read succeeds.
 - Unknown products and public API failures return no product rather than inventing data; an outage, timeout or rate limit is reported as `unavailable`, never as `none`.
 - Camera permission/decode failures produce an error toast (an outcome, not a field problem).

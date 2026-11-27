@@ -14,7 +14,7 @@ import { isBrowserOffline } from '@/lib/firestore-offline';
 import { daysUntilDay, EXPIRY_CHIPS, MAX_PACKAGE_SIZE, PANTRY_NAME_MAX, USED_UP_UNDO_MS, batchAmountLabel, editPackagesLimit, planAddOne, stepPackages, PantryChangeRefused, dayFromPicker, expiryFromChip, findPantryMergeTarget, groupPantryBatches, isCountUnit, pantryBatchFields, pickerDateForDay, readPantryBatch, repairEditError, repairEditPrefill, usableRecipeItems, usedUpOutcome, packageChangeToast, EMPTY_BATCH_GRACE_MS, groceryListChoice, type PantryBatch, type RecipeStockItem, type PantryBatchInput, type PantryProduct } from '@/lib/shopping/pantry-batches';
 import { addToGroceryList, changePackagesTogether, createGroceriesList, readShoppingLists, deleteBatches, deleteEmptyBatchIfIdle, moveBatches, saveBatch } from '@/lib/shopping/pantry-batch-writes';
 import { categorizationNotice } from '@/lib/shopping/save-status';
-import { expiryStateForDays, productPhotoForName } from '@/lib/shopping/pantry';
+import { expiryStateForDays, productPhotoFor } from '@/lib/shopping/pantry';
 import { recipeProductKeys } from '@/lib/shopping/recipe';
 import { readRecentList, rememberRecentList } from '@/lib/shopping/recent-list';
 import { pluralize } from '@/lib/shopping/items';
@@ -868,7 +868,6 @@ export function PantryInventoryClient({
   });
   // Product photos for tiles: the live Barcode Library (matched by name), the same source as shopping rows.
   const libraryPhotos = useLibraryPhotos(currentUser?.householdId ?? null);
-  const library = useMemo(() => (libraryPhotos ? [...libraryPhotos.values()] : []), [libraryPhotos]);
   const [liftedIds, setLiftedIds] = useState<ReadonlySet<string>>(new Set());
 
   const [isItemDialogOpen, setIsItemDialogOpen] = useState(false);
@@ -951,7 +950,7 @@ export function PantryInventoryClient({
   }, [batches, householdId, canDelete, timeZone]);
 
 
-  const photos = useMemo(() => Object.fromEntries(products.map(product => [product.key, productPhotoForName(product.name, library)])), [products, library]);
+  const photos = useMemo(() => Object.fromEntries(products.map(product => [product.key, productPhotoFor(product, libraryPhotos)])), [products, libraryPhotos]);
 
   // Stable, so the recipe dialog does not regenerate when the lifted tiles change.
   const productsRef = useRef(products);

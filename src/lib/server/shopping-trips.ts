@@ -4,7 +4,8 @@ import { FieldValue, Timestamp, type DocumentSnapshot, type Firestore } from 'fi
 import { slugify } from '@/lib/utils';
 import { safeTimeZone } from '../../../functions/src/shared/calendar';
 import { usualId } from '@/lib/shopping/usual-id';
-import { pantryBatchFields, planLegacyUpgrade, readPantryBatch } from '@/lib/shopping/pantry-batches';
+import { clampPantryName, pantryBatchFields, planLegacyUpgrade, readPantryBatch } from '@/lib/shopping/pantry-batches';
+import { itemNameKey } from '@/lib/shopping/items';
 import {
   MAX_TRIP_DOCUMENT_BYTES,
   MAX_TRIP_WRITES,
@@ -209,11 +210,22 @@ export async function applyTrip(
     const build = (entries: readonly Entry[]) => {
       const writes: Array<() => void> = [];
       const effects: PantryEffect[] = [];
+      // BL-16: a new batch keeps the barcode its scanned shopping item carried, so the
+      // pantry finds its photo (and a scan finds its stock) by barcode, not by name.
+      const barcodeKey = (name: string, location: string) => `${itemNameKey(clampPantryName(name))}|${location}`;
+      const barcodes = new Map<string, string>();
+      for (const entry of entries) {
+        const code = entry.data.barcode;
+        if (!entry.credit || typeof code !== 'string' || !code || code.length > 128) continue;
+        const key = barcodeKey(String(entry.data.name), entry.choice.location!);
+        if (!barcodes.has(key)) barcodes.set(key, code);
+      }
       const createBatch = (plan: TripPantryPlan, packages: number) => {
         const ref = pantry.doc(slugify(plan.name));
         effects.push({ pantryId: ref.id, kind: 'create', packages, name: plan.name, location: plan.location, expiryDate: plan.expiryDate });
+        const barcode = barcodes.get(barcodeKey(plan.name, plan.location)) ?? null;
         writes.push(() => transaction.set(ref, {
-          ...pantryBatchFields({ name: plan.name, location: plan.location, unit: 'items', packages, packageSize: null, expiryDate: plan.expiryDate }),
+          ...pantryBatchFields({ name: plan.name, location: plan.location, unit: 'items', packages, packageSize: null, expiryDate: plan.expiryDate, barcode }),
           addedByUid: uid,
           ...stamp(),
         }));

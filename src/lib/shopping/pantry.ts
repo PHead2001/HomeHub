@@ -7,6 +7,7 @@
 
 import type { PantryItem, PantryItemLocation, ShoppingListItem } from '@/lib/types';
 import { itemNameKey } from './items';
+import { lookupIds } from '@/lib/barcode/gtin';
 import { clampPantryName, daysUntilDay, householdToday, pantryMergeKey, readPantryBatch } from './pantry-batches';
 
 export const PANTRY_LOCATIONS: readonly PantryItemLocation[] = ['Pantry', 'Fridge', 'Freezer'];
@@ -232,6 +233,28 @@ export function pantryEmoji(name: string, location: PantryItemLocation): string 
     if (pattern.test(key)) return emoji;
   }
   return LOCATION_EMOJI[location] ?? '🫙';
+}
+
+/**
+ * A pantry product's photo (BL-16): the library product its batches' barcode
+ * names (either barcode form) wins, so renaming the product or the pantry item
+ * keeps the photo; a product with a barcode in the library but no photo has
+ * none. Without a stored barcode (stock added by hand, older batches) the
+ * product's exact name is matched, as before.
+ */
+export function productPhotoFor(
+  product: { name: string; batches: readonly { barcode?: string | null }[] },
+  library: ReadonlyMap<string, { name: string; imageUrl?: string }> | null,
+): string | undefined {
+  if (!library) return undefined;
+  for (const batch of product.batches) {
+    if (!batch.barcode) continue;
+    for (const id of lookupIds(batch.barcode)) {
+      const entry = library.get(id);
+      if (entry) return entry.imageUrl || undefined;
+    }
+  }
+  return productPhotoForName(product.name, [...library.values()]);
 }
 
 /** Finds a barcode-library product photo for a pantry item by exact (case-insensitive) name. */

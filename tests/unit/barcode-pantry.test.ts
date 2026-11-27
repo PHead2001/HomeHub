@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { planRestock, planUsedUp, pantryProductFor } from '../../src/lib/barcode/pantry-by-barcode';
 import { readPantryBatch } from '../../src/lib/shopping/pantry-batches';
+import { productPhotoFor } from '../../src/lib/shopping/pantry';
 
 const batch = (id: string, data: Record<string, unknown>) => readPantryBatch(id, {
   nameKey: String(data.name).toLowerCase(), location: 'Pantry', unit: 'items', packageSize: null, expiryDate: null, schemaVersion: 2, ...data,
@@ -46,5 +47,20 @@ describe('a scanned product in the pantry (BL-13, BL-16, BL-20, BL-21)', () => {
       kind: 'new',
       input: { name: 'Pasta', location: 'Pantry', unit: 'items', packages: 1, packageSize: null, expiryDate: null, barcode: '4006381333931' },
     });
+  });
+
+  test('a tile photo follows the barcode first, so renaming either side keeps it (BL-16)', () => {
+    const library = new Map([
+      ['0012345678905', { name: 'Heinz Beans', imageUrl: 'https://images.openfoodfacts.org/beans.jpg' }],
+      ['4006381333931', { name: 'Rice', imageUrl: '' }],
+      ['other', { name: 'Pasta', imageUrl: 'https://images.openfoodfacts.org/pasta.jpg' }],
+    ]);
+    // Renamed pantry item, UPC-A stored: still the product's photo.
+    assert.equal(productPhotoFor({ name: 'Beans for chili', batches: [{ barcode: '012345678905' }] }, library), 'https://images.openfoodfacts.org/beans.jpg');
+    // A barcode product without a photo has none (no name fallback to another product).
+    assert.equal(productPhotoFor({ name: 'Pasta', batches: [{ barcode: '4006381333931' }] }, library), undefined);
+    // No barcode: the exact name, as before.
+    assert.equal(productPhotoFor({ name: 'pasta', batches: [{}] }, library), 'https://images.openfoodfacts.org/pasta.jpg');
+    assert.equal(productPhotoFor({ name: 'pasta', batches: [] }, null), undefined);
   });
 });
