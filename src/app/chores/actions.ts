@@ -10,6 +10,7 @@ import type { SubTaskRestore } from '@/lib/chores/completion';
 import { personalOperationContext } from '@/lib/server/operation-context';
 import { PlannedMoveError, movePlannedOccurrence, undoPlannedMove } from '@/lib/server/planned-chore-move';
 import { ChoreSkipError, skipChoreDays, undoSkipChoreDays } from '@/lib/server/chore-day-skips';
+import { ChorePauseError, pauseChoresAs, type PauseOutcome } from '@/lib/server/chore-pause';
 
 // functions/ pins its own firebase-admin version; the Firestore calls used are
 // identical across versions, so the instance is passed through untyped.
@@ -127,4 +128,32 @@ export async function skipChoreDaysAction(input: ChoreActionContext & { items: {
 /** Undo of `skipChoreDaysAction`, by its `opId` only: restores the deleted days while they are free. */
 export async function undoSkipChoreDaysAction(input: ChoreActionContext & { opId: string }) {
   return runCalendarAction(input, 'chores.delete', user => undoSkipChoreDays(adminDb, user.householdId, { opId: input?.opId }, user.uid, upkeepNow()));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Away / sick pause (CH-32)                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Skips (or, with `resume`, brings back) a member's repeating chores for a range of
+ * days. Needs `chores.edit`; someone else's chores also need `chores.delete`
+ * (checked in src/lib/server/chore-pause.ts).
+ */
+export async function pauseChores(input: ChoreActionContext & { memberUid: string; from: string; to: string; resume?: boolean }): Promise<ChoreActionResult<PauseOutcome>> {
+  try {
+    const user = await authorizeHouseholdAction({ idToken: input?.idToken, householdId: input?.householdId }, 'chores.edit');
+    const outcome = await pauseChoresAs(adminDb, user.householdId, { uid: user.uid }, input, upkeepNow());
+    if (outcome.status !== 'refused') {
+      // Resumed days come back at once; paused ones are already gone.
+      await runHouseholdReminders(adminDb as never, user.householdId, upkeepNow(), d => Timestamp.fromDate(d) as never).catch(() => undefined);
+    }
+    return { ok: true, data: outcome };
+  } catch (error) {
+    if (error instanceof HomeHubAiError) {
+      return { ok: false, code: error.code === 'forbidden' ? 'forbidden' : error.code === 'unauthenticated' ? 'unauthenticated' : 'failed' };
+    }
+    if (error instanceof ChorePauseError) return { ok: false, code: error.code };
+    console.error('Chore pause failed', error);
+    return { ok: false, code: 'failed' };
+  }
 }
