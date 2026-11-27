@@ -152,17 +152,22 @@ export const toResponse = (statusCode: number | undefined, chunks: Buffer[]): Re
 };
 
 /**
- * GET over https whose socket can only connect to public addresses (see
+ * GET (or a POST with a string body, for AU-14 service calls) over https whose socket can only connect to public addresses (see
  * `publicOnlyLookup`). Never follows redirects, caps the body, and honours the
  * abort signal. Returns a standard `Response`.
  */
 export const pinnedFetch = (resolve: Resolver): Fetcher => (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input));
   if (url.protocol !== 'https:') throw new HomeAssistantError(`Use an https:// address. ${UNREACHABLE_HINT}`);
+  const method = init?.method === 'POST' ? 'POST' : 'GET';
+  const body = method === 'POST' && typeof init?.body === 'string' ? init.body : undefined;
   return new Promise<Response>((resolvePromise, reject) => {
     const request = httpsRequest(url, {
-      method: 'GET',
-      headers: init?.headers as Record<string, string> | undefined,
+      method,
+      headers: {
+        ...(init?.headers as Record<string, string> | undefined),
+        ...(body !== undefined ? { 'Content-Length': String(Buffer.byteLength(body)) } : {}),
+      },
       lookup: publicOnlyLookup(resolve) as never,
       signal: init?.signal ?? undefined,
     }, incoming => {
@@ -190,7 +195,7 @@ export const pinnedFetch = (resolve: Resolver): Fetcher => (async (input: Reques
       incoming.on('error', reject);
     });
     request.on('error', reject);
-    request.end();
+    request.end(body);
   });
 }) as Fetcher;
 
@@ -232,6 +237,9 @@ const trimEntity = (item: unknown): HomeAssistantEntitySummary[] => {
       unit_of_measurement: pick('unit_of_measurement'),
       device_class: pick('device_class'),
       ...(typeof temperature === 'number' && Number.isFinite(temperature) ? { current_temperature: temperature } : {}),
+      ...(entity.entity_id.startsWith('scene.') && Array.isArray(attributes.entity_id)
+        ? { entity_id: attributes.entity_id.filter((id): id is string => typeof id === 'string').slice(0, 200) }
+        : {}),
     },
     ...(changed ? { last_changed: changed } : {}),
   }];
@@ -274,3 +282,26 @@ export const fetchHomeAssistantStates = async (
   options: FetchOptions = {}
 ): Promise<HomeAssistantEntitySummary[]> => (await fetchHomeAssistantSnapshot(rawUrl, accessToken, options)).entities;
 
+/**
+ * AU-14: `POST /api/services/{domain}/{service}` for one entity. Callers pass only what
+ * `controlService` (src/lib/automation/controls.ts) produced: lights, fans and scenes,
+ * explicit on or off. Same address checks, pinning, timeout and size cap as the read.
+ */
+export const callHomeAssistantService = async (
+  rawUrl: string,
+  accessToken: string,
+  call: { domain: 'light' | 'fan' | 'scene'; service: 'turn_on' | 'turn_off'; entityId: string },
+  { resolve = defaultResolver, fetchImpl = pinnedFetch(resolve) }: FetchOptions = {}
+): Promise<void> => {
+  if (!['light', 'fan', 'scene'].includes(call.domain) || !['turn_on', 'turn_off'].includes(call.service)
+    || !new RegExp(`^${call.domain}\\.[a-z0-9_]{1,200}$`).test(call.entityId)) {
+    throw new HomeAssistantError('HomeHub can only switch lights, fans and scenes.');
+  }
+  const base = await normalizeHomeAssistantUrl(rawUrl, resolve);
+  const response = await send(`${base}/api/services/${call.domain}/${call.service}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_id: call.entityId }),
+  }, fetchImpl);
+  if (!response.ok) throw answerError(response.status);
+};

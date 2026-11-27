@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { adminAuth, adminDb } from '../../src/lib/server/firebase-admin';
 import {
+  controlHomeAssistantEntity,
   disconnectHomeAssistant,
   getHomeAssistantStatus,
   getHomeStatus,
@@ -12,7 +13,7 @@ import {
 
 // The automation server actions against the Auth and Firestore emulators. Home Assistant
 // itself is never contacted here (the transport only reaches public addresses): every
-// path tested decides before any request. AU-6, AU-11, AU-13, AU-15.
+// path tested decides before any request. AU-6, AU-11, AU-13, AU-14, AU-15.
 const HOUSE = 'ha-actions-house';
 const house = adminDb.collection('households').doc(HOUSE);
 
@@ -64,6 +65,27 @@ beforeEach(async () => {
 });
 
 after(() => adminDb.recursiveDelete(house));
+
+describe('AU-14: controls are enforced on the server', () => {
+  test('a member without automation.control is refused before anything else', async () => {
+    const result = await controlHomeAssistantEntity(as('member'), { entityId: 'light.k', desired: 'on' });
+    assert.deepEqual(result, { ok: false, message: 'You do not have permission to do that in this household.' });
+  });
+
+  test('locks, alarms, garage doors, covers and cameras are refused even with the permission', async () => {
+    for (const entityId of ['lock.front', 'alarm_control_panel.home', 'cover.garage', 'camera.door', 'switch.heater', 'script.open']) {
+      const result = await controlHomeAssistantEntity(as('controller'), { entityId, desired: 'off' });
+      assert.equal(result.ok, false, entityId);
+      assert.match((result as { message: string }).message, /only switch lights, fans and scenes/, entityId);
+    }
+  });
+
+  test('a light when Home Assistant is not connected says so', async () => {
+    const result = await controlHomeAssistantEntity(as('controller'), { entityId: 'light.k', desired: 'on' });
+    assert.equal(result.ok, false);
+    assert.match((result as { message: string }).message, /not connected/);
+  });
+});
 
 describe('settings and what each person is sent', () => {
   test('AU-11: a settings change answers with what the caller may see, never sensitive favourites for a child or guest manager', async () => {
@@ -143,6 +165,12 @@ describe('settings and what each person is sent', () => {
     const status = await getHomeAssistantStatus(as('member'));
     assert.ok(status.ok && status.data.configured && status.data.host === 'ha.example.test');
     assert.deepEqual((await house.get()).get('homeAssistant'), { connected: true });
+  });
+
+  test('a scene can only be turned on', async () => {
+    const result = await controlHomeAssistantEntity(as('controller'), { entityId: 'scene.movie', desired: 'off' });
+    assert.equal(result.ok, false);
+    assert.match((result as { message: string }).message, /only switch lights, fans and scenes/);
   });
 
   test('members cannot disconnect', async () => {
