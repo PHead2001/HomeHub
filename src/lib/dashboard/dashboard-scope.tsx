@@ -14,6 +14,7 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { useAuth } from '@/hooks/use-auth';
 import type { HouseholdPermission } from '@/lib/types';
 import { readWeekStartsOn } from '@/lib/chores/week-start';
+import { greetingNameFor } from '@/lib/profile/names';
 
 export type DashboardScope = {
   kind: 'personal' | 'device';
@@ -53,7 +54,8 @@ export function useDashboardScope(): DashboardScope {
     weekStartsOn: readWeekStartsOn(household?.weekStartsOn),
     uid: currentUser?.uid ?? '',
     email: currentUser?.email ?? '',
-    greetingName: currentUser?.firstName || currentUser?.displayName || null,
+    // PR-3: the name the person chose in Profile, never Google's first name first.
+    greetingName: greetingNameFor(currentUser),
     permissions,
   };
 }

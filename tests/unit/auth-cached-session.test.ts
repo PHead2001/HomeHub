@@ -54,8 +54,8 @@ describe('repeat-visit fast path (H01)', () => {
     const publish = source.slice(source.indexOf('const publishProfile = useCallback'), source.indexOf('}, []);', source.indexOf('const publishProfile = useCallback')));
     // Unchanged profile: nothing happens at all.
     assert.match(publish, /if \(sameProfile\(profileRef\.current, next\)\) return;/);
-    // Both server-profile paths (session restore and the sign-in handler) go through it.
-    assert.equal((source.match(/publishProfile\(userProfile\)/g) ?? []).length, 2);
+    // Every server-profile path (session restore, the sign-in handler and the PR-7 retry) goes through it.
+    assert.equal((source.match(/publishProfile\(userProfile\)/g) ?? []).length, 3);
     // Loading is derived from the membership view (a pointer not watched yet is loading,
     // see tests/unit/live-membership.test.ts); no flag can be left on.
     assert.match(source, /const householdLoading = profile \? view\.phase === 'loading' : loading;/);
@@ -109,7 +109,8 @@ describe('repeat-visit fast path (H01)', () => {
 
   it('syncs appearance only from the server-confirmed profile', () => {
     const source = readFileSync(resolve(__dirname, '../../src/components/appearance-provider.tsx'), 'utf8');
-    const sync = source.slice(source.indexOf('const syncedProfileFor = useRef'));
-    assert.ok(sync.indexOf('if (!profileConfirmed) return;') < sync.indexOf('syncedProfileFor.current = currentUser.email'));
+    const sync = source.slice(source.indexOf('const pendingThemeWrites = useRef'));
+    assert.ok(sync.indexOf('if (!profileConfirmed) return;') > 0);
+    assert.ok(sync.indexOf('if (!profileConfirmed) return;') < sync.indexOf('reconcileProfileTheme('));
   });
 });

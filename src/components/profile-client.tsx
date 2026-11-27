@@ -6,7 +6,7 @@ import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { BellRing, Camera, Loader2, Trash2 } from 'lucide-react';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { deleteObject, getStorage, ref, uploadBytes, getDownloadURL, type StorageReference } from 'firebase/storage';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -19,7 +19,9 @@ import { FieldError } from '@/components/field-error';
 import { MemberAvatar } from '@/components/member-avatar';
 import { cn } from '@/lib/utils';
 import { roleLabel } from '@/components/household/household-model';
-import { AVATAR_ACCEPT, avatarFileError } from '@/components/profile/profile-validation';
+import { AVATAR_MAX_BYTES } from '@/components/profile/profile-validation';
+import { downscaleImage } from '@/lib/images/downscale';
+import { AVATAR_MAX_EDGE, PROFILE_PHOTO_ACCEPT, avatarExtensionFor, ownAvatarPath, photoReplacedAndSafe, profilePhotoError } from '@/lib/profile/avatar';
 import { PushNotificationSettings } from './PushNotificationSettings';
 import { AppearanceSettings } from './appearance-settings';
 import { TabletPinCard } from '@/components/profile/tablet-pin-card';
@@ -42,9 +44,9 @@ function ChoreReminderSettings() {
     setIsSaving(true);
     try {
       // Silent: one outcome toast here instead of the generic "Profile Updated".
-      // A failed write still shows updateUser's error toast.
-      await updateUser({ choreSettings: { reminderEnabled: enabled, reminderTime: time, overdueAlerts } }, undefined, { silent: true });
-      toast({ title: 'Reminder saved', description: enabled ? `We'll remind you at ${time} each day.` : 'Daily chore reminders are off.' });
+      // A failed write shows updateUser's error toast and nothing else (PR-1).
+      const saved = await updateUser({ choreSettings: { reminderEnabled: enabled, reminderTime: time, overdueAlerts } }, { silent: true });
+      if (saved) toast({ title: 'Reminder saved', description: enabled ? `We'll remind you at ${time} each day.` : 'Daily chore reminders are off.' });
     } finally {
       setIsSaving(false);
     }
@@ -96,6 +98,7 @@ export function ProfileClient() {
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [removePhoto, setRemovePhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [preparingPhoto, setPreparingPhoto] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -113,25 +116,53 @@ export function ProfileClient() {
     if (photoPreview) URL.revokeObjectURL(photoPreview);
   }, [photoPreview]);
 
-  const uploadAvatar = async (file: File): Promise<string> => {
+  const uploadAvatar = async (file: File): Promise<{ url: string; storageRef: StorageReference }> => {
     if (!currentUser?.uid) throw new Error('User not authenticated');
     const storage = getStorage();
-    const fileExtension = file.name.split('.').pop();
-    const fileName = `${crypto.randomUUID()}.${fileExtension}`;
+    // PR-9: the extension comes from the encoded type, never the picked file's name.
+    const fileName = `${crypto.randomUUID()}.${avatarExtensionFor(file.type)}`;
     // Keyed by the account ID, so the photo's download URL carries no email.
     const storageRef = ref(storage, `users/${currentUser.uid}/avatars/${fileName}`);
-    await uploadBytes(storageRef, file);
-    return getDownloadURL(storageRef);
+    await uploadBytes(storageRef, file, { contentType: file.type });
+    return { url: await getDownloadURL(storageRef), storageRef };
   };
 
-  const choosePhoto = (file: File | undefined) => {
+  // PR-9: every photo is redrawn at 512 px before it is shown or uploaded, which also
+  // drops EXIF metadata (GPS location included). HEIC works where the browser reads it.
+  // The photo choice as of now (not as of the render that started a save), so a save
+  // that finishes never clears a photo chosen after it began.
+  const photoChoiceRef = useRef<File | null>(null);
+  useEffect(() => { photoChoiceRef.current = photoFile; }, [photoFile]);
+
+  const choosePhoto = async (file: File | undefined) => {
     if (!file) return;
-    const error = avatarFileError(file);
+    const error = profilePhotoError(file);
     setPhotoError(error);
     if (error) return;
-    setPhotoFile(file);
-    setRemovePhoto(false);
-    setPhotoPreview(URL.createObjectURL(file));
+    setPreparingPhoto(true);
+    try {
+      const result = await downscaleImage(file, { maxEdge: AVATAR_MAX_EDGE, maxBytes: AVATAR_MAX_BYTES, force: true });
+      if (!result.ok) {
+        setPhotoError(result.reason === 'unreadable'
+          ? 'This photo could not be read on this device. Choose a JPG or PNG photo.'
+          : 'This photo is too large even after shrinking it. Choose another one.');
+        return;
+      }
+      setPhotoFile(result.file);
+      setRemovePhoto(false);
+      setPhotoPreview(URL.createObjectURL(result.file));
+    } finally {
+      setPreparingPhoto(false);
+    }
+  };
+
+  // After a successful save, the replaced or removed photo is deleted when it is one of
+  // this person's own uploads (never the Google account photo). Best effort.
+  const deletePreviousPhoto = (previousUrl: string | null | undefined, keptUrl: string | null) => {
+    if (!currentUser?.uid || !previousUrl || previousUrl === keptUrl) return;
+    const storage = getStorage();
+    const path = ownAvatarPath(previousUrl, { uid: currentUser.uid, email: currentUser.email }, storage.app.options.storageBucket);
+    if (path) void deleteObject(ref(storage, path)).catch(() => undefined);
   };
 
   const clearPhotoChoice = () => {
@@ -142,21 +173,45 @@ export function ProfileClient() {
   };
 
   const onSubmit = async (values: z.infer<typeof profileSchema>) => {
-    if (!currentUser) return;
+    // A photo still being prepared is not saved half-way: Save waits for it (the button
+    // is disabled meanwhile).
+    if (!currentUser || preparingPhoto) return;
+    const savedPhoto = photoFile;
     setIsSubmitting(true);
     try {
+      const previousUrl = currentUser.avatarUrl;
       let avatarUrl = removePhoto ? null : currentUser.avatarUrl;
-      if (photoFile) {
-        avatarUrl = await uploadAvatar(photoFile);
+      let uploaded: StorageReference | null = null;
+      if (savedPhoto) {
+        const upload = await uploadAvatar(savedPhoto);
+        avatarUrl = upload.url;
+        uploaded = upload.storageRef;
       }
 
-      await updateUser({
+      const newUrl = avatarUrl || null;
+      const saved = await updateUser({
         displayName: values.displayName.trim(),
-        avatarUrl: avatarUrl || null,
+        avatarUrl: newUrl,
+      }, {
+        // The old photo is deleted only once nothing housemates read can still point at
+        // it: no household, or the membership record confirmed with the new photo.
+        // Otherwise it is kept (an orphaned file, never a broken avatar).
+        onMemberSync: (sync) => {
+          if (photoReplacedAndSafe(sync, newUrl)) deletePreviousPhoto(previousUrl, newUrl);
+        },
       });
+      // PR-1: a failed save keeps the chosen photo and the edited name on screen (the
+      // error toast has been shown) and removes the file it uploaded, which nothing uses.
+      if (!saved) {
+        if (uploaded) void deleteObject(uploaded).catch(() => undefined);
+        return;
+      }
 
-      clearPhotoChoice();
-      setRemovePhoto(false);
+      // Only the photo this save uploaded is cleared; one chosen meanwhile stays pending.
+      if (photoChoiceRef.current === savedPhoto) {
+        clearPhotoChoice();
+        setRemovePhoto(false);
+      }
       form.reset({ displayName: values.displayName.trim() });
     } catch (error) {
       console.error('Failed to update profile', error);
@@ -211,23 +266,23 @@ export function ProfileClient() {
                         ref={fileInputRef}
                         id="profile-photo"
                         type="file"
-                        accept={AVATAR_ACCEPT}
+                        accept={PROFILE_PHOTO_ACCEPT}
                         className="sr-only"
                         tabIndex={-1}
                         aria-label="Profile photo"
-                        onChange={(event) => choosePhoto(event.target.files?.[0])}
-                        disabled={isSubmitting}
+                        onChange={(event) => void choosePhoto(event.target.files?.[0])}
+                        disabled={isSubmitting || preparingPhoto}
                       />
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        disabled={isSubmitting}
+                        disabled={isSubmitting || preparingPhoto}
                         aria-describedby={photoError ? 'profile-photo-error' : 'profile-photo-hint'}
                         aria-invalid={photoError ? true : undefined}
                         onClick={() => fileInputRef.current?.click()}
                       >
-                        <Camera className="mr-2 h-4 w-4" />
+                        {preparingPhoto ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Camera className="mr-2 h-4 w-4" />}
                         {hasPhoto ? 'Change photo' : 'Add photo'}
                       </Button>
                       {photoFile ? (
@@ -249,7 +304,7 @@ export function ProfileClient() {
                     <p id="profile-photo-hint" className="text-xs text-muted-foreground">
                       {photoChanged
                         ? 'Save changes to update your photo.'
-                        : 'JPG, PNG, GIF or WebP, up to 5 MB. Without a photo you get a gradient in your member color.'}
+                        : 'JPG, PNG, GIF, WebP or HEIC. Photos are shrunk to 512 px and their location data is removed. Without a photo you get a gradient in your member color.'}
                     </p>
                   </div>
                 </div>
@@ -271,7 +326,7 @@ export function ProfileClient() {
                   <Input id="profile-email" disabled value={currentUser.email || ''} />
                 </div>
 
-                <Button type="submit" disabled={isSubmitting}>
+                <Button type="submit" disabled={isSubmitting || preparingPhoto}>
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Changes
                 </Button>

@@ -203,8 +203,7 @@ service cloud.firestore {
           'birthday',
           'gender',
           'preferences',
-          'timeZone',
-          'forcePasswordChange'
+          'timeZone'
         ]) &&
         (!('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid) &&
         noNewDemographics() &&

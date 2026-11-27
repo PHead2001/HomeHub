@@ -242,11 +242,13 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     const householdName = typeof householdSnap.get('name') === 'string' ? householdSnap.get('name') as string : '';
     // A photo removed in Profile stays removed; see membershipAvatarUrl.
     const avatarUrl = membershipAvatarUrl(profileSnap.exists ? profileSnap.data() : undefined, caller.avatarUrl);
+    // PR-2: the name chosen in Profile, else the Google name from the token.
+    const chosenName = publicMemberName(profileSnap.exists ? profileSnap.get('displayName') : undefined) || publicMemberName(caller.displayName);
     // No email on the record: it goes only into the protected contact document below.
     const member: HouseholdMember = {
       uid: caller.uid,
       // Public member data: never an email as the name (see syncMemberProfile).
-      ...(publicMemberName(caller.displayName) ? { displayName: publicMemberName(caller.displayName) } : {}),
+      ...(chosenName ? { displayName: chosenName } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
       role: 'newuser',
       status: 'pending',
@@ -278,7 +280,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
     transaction.set(householdRef.collection('auditLogs').doc(), {
       actorUid: caller.uid,
       actorEmail: caller.email,
-      actorName: caller.displayName || null,
+      actorName: chosenName || null,
       action: 'member.joined_pending',
       targetUid: caller.uid,
       targetEmail: caller.email,
@@ -286,7 +288,7 @@ export const redeemInvite = async (caller: VerifiedCaller, rawCode: string, now 
       details: { inviteCode: code },
     });
 
-    const name = caller.displayName || caller.email;
+    const name = chosenName || caller.email;
     const createdAt = Timestamp.fromDate(now);
     const expires = Timestamp.fromMillis(now.getTime() + NOTIFICATION_TTL_MS);
     // One document per join event and approver: a rejoin creates new documents (so the
@@ -550,6 +552,8 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     const chores = assignedDocs(choresByEmail, choresByUid, caller.email);
     const templates = assignedDocs(templatesByEmail, templatesByUid, caller.email);
     const tabletState = await readMemberTabletState(transaction, householdRef, caller.uid);
+    // PR-2: the member record's name (kept in step with Profile), else the token's.
+    const leaverName = publicMemberName(member.displayName) || caller.displayName || null;
 
     transaction.delete(memberRef);
     transaction.delete(memberContactRef(householdRef, caller.uid));
@@ -562,13 +566,13 @@ export const leaveHousehold = async (caller: VerifiedCaller, householdId: string
     chores.filter(d => !d.data().isCompleted).forEach(d => transaction.update(d.ref, unassignChoreFields()));
     templates.forEach(d => transaction.update(d.ref, unassignTemplateFields(d)));
     transaction.set(householdRef.collection('auditLogs').doc(), {
-      actorUid: caller.uid, actorEmail: caller.email, actorName: caller.displayName || null,
+      actorUid: caller.uid, actorEmail: caller.email, actorName: leaverName,
       action: 'member.left', targetUid: caller.uid, targetEmail: caller.email, createdAt: iso,
     });
     approverNotices(householdRef, approvers.docs.filter(d => d.id !== caller.uid), now, {
       title: 'Member left',
       // Sent to owners and admins only (member managers), who may see the email.
-      message: `${caller.displayName || caller.email} left the household.`,
+      message: `${leaverName || caller.email} left the household.`,
       sourceType: 'household-member-left',
       sourceId: caller.uid,
     }).forEach(([ref, data]) => transaction.set(ref, data));

@@ -89,7 +89,7 @@ No email is written into a document housemates can read. Household creation writ
 
 Invites keep `createdByEmail` and activity-log entries keep `actorEmail`/`targetEmail`; both are readable only by people who manage invites or members (owners and admins by role).
 
-Members cannot write their own record under the rules, so a change of name or photo reaches it through `syncMyMemberProfileAction` (below): `updateUser` calls it after a profile save that touches `displayName` or `avatarUrl`, and `AuthProvider` calls it whenever a confirmed load finds the record's name or photo differing from the profile (`memberProfileDiffers`), which heals older drift. Both are best effort: a failure is logged and retried on the next load.
+Members cannot write their own record under the rules, so a change of name or photo reaches it through `syncMyMemberProfileAction` (below): `updateUser` calls it after a profile save that touches `displayName` or `avatarUrl`, and `AuthProvider` calls it whenever a confirmed load finds the record's name or photo differing from the profile (`memberProfileDiffers`), which heals older drift. Both are best effort: a failure is logged and retried on the next load. A person joining with an invite gets the name they chose in Profile on their new record (else the Google name from the sign-in token), and the approvers' "joined with an invite code" notice and the activity entry use it; the "left the household" notice and activity entry use the leaver's membership record name, which follows Profile (PR-2, `tests/server/household-membership.test.ts`).
 
 ## Management Policy
 

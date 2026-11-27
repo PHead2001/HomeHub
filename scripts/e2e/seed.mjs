@@ -106,7 +106,6 @@ set(`users/${OWNER.email}`, {
   role: "owner",
   permissions: {},
   householdId: HOUSEHOLD_ID,
-  forcePasswordChange: false,
   fcmTokens: [],
   theme: null,
 });
