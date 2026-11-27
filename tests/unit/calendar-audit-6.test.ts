@@ -4,7 +4,7 @@ import { weekStartKey, type ChoreRecord } from '../../src/lib/chores/dates';
 import { occurrenceChoreId } from '../../functions/src/shared/ids';
 import {
   awayEvents, careEvents, choreEvents, skipPlan, withoutSkippedOccurrences, choreHref, filterEvents, foldedOverdueRail, laneRows, monthGrid, monthSelection, moveQuickPicks,
-  overdueRail, pantryExpiryEvents, plannedRecurringEvents, projectedMaintenanceEvents, weekDays, withUniqueIds,
+  overdueRail, pantryExpiryEvents, pantryExpiryInputs, plannedRecurringEvents, projectedMaintenanceEvents, weekDays, withUniqueIds,
   type CalendarEvent,
 } from '../../src/lib/chores/calendar';
 import { parseHighlightChore } from '../../src/lib/chores/url-state';
@@ -223,6 +223,24 @@ describe('skipping days (CA-27) and the Chores highlight (CA-17)', () => {
 });
 
 describe('review fixes (Codex, PR #234)', () => {
+  it('reads legacy pantry expiries (ISO timestamps, quantities) through the pantry reader, on the household day', () => {
+    const inputs = pantryExpiryInputs([
+      { id: 'milk', data: { name: 'Milk', packages: 1, expiryDate: '2026-08-04T03:00:00.000Z' } },
+      { id: 'flour', data: { name: 'Flour', unit: 'items', quantity: 2, expiryDate: '2026-08-10' } },
+      { id: 'gone', data: { name: 'Eggs', packages: 0, expiryDate: '2026-08-05' } },
+    ], 'America/Chicago');
+    const events = pantryExpiryEvents(inputs, '2026-08-01');
+    assert.deepEqual(events.map(e => [e.title, e.day]), [['Milk expires', '2026-08-03'], ['Flour expires', '2026-08-10']]);
+  });
+
+  it('projects a snoozed calendar schedule from its real cycle, then without the snooze', () => {
+    const events = projectedMaintenanceEvents([{ id: 'hvac', name: 'HVAC', schedules: [{
+      id: 's1', scheduleName: 'Filter', frequencyType: 'months', intervalValue: 1, anchor: 'calendar',
+      nextDueDate: '2026-08-17', snoozedUntil: '2026-08-17', snoozedFrom: '2026-08-10',
+    }] }], [], 'America/Chicago', '2026-08-01', '2026-10-31');
+    assert.deepEqual(events.map(e => e.day), ['2026-09-10', '2026-10-10']);
+  });
+
   it('skips and planned-move Undo go through the server, bound to the operation', () => {
     const calendar = readFileSync(resolve(process.cwd(), 'src/components/chores/calendar/household-calendar.tsx'), 'utf8');
     assert.match(calendar, /skipChoreDaysAction\(/);

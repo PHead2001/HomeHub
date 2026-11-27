@@ -41,7 +41,7 @@ import { computeChoreStats } from '@/lib/chores/stats';
 import { readWeekStartsOn, weekdayLabels } from '@/lib/chores/week-start';
 import {
   ALL_KINDS, awayEvents, careEvents, choreEvents, courseDueEvents, filterEvents, foldedOverdueRail, groupByDay, isSameMonth, laneRows,
-  maintenanceCalendarItems, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, monthSelection, pantryExpiryEvents,
+  maintenanceCalendarItems, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, monthSelection, pantryExpiryEvents, pantryExpiryInputs,
   plannedRecurringEvents, projectedMaintenanceEvents, rescheduleFields, shiftMonth, skipPlan, weekDays, withUniqueIds,
   type CalendarEvent, type CalendarEventKind, type CalendarMember, type CareEntry, type CourseEntry, type MedicationEntry, type RecurringTemplate,
 } from '@/lib/chores/calendar';
@@ -201,7 +201,8 @@ export function HouseholdCalendar() {
 
   const assets = useMemo(() => (sources.docs.get('assets') ?? []).map(d => ({ ...(d.data as HomeAsset), id: d.id })), [sources.docs]);
   const vehicles = useMemo(() => (sources.docs.get('vehicles') ?? []).map(d => ({ ...(d.data as Vehicle), id: d.id })), [sources.docs]);
-  const pantry = useMemo(() => (sources.docs.get('pantry') ?? []).map(d => ({ id: d.id, name: d.data.name as string | undefined, expiryDate: d.data.expiryDate as string | null | undefined, packages: typeof d.data.packages === 'number' ? d.data.packages : undefined })), [sources.docs]);
+  // Through the pantry's own reader: legacy timestamp expiries land on their household day (review finding 4).
+  const pantry = useMemo(() => pantryExpiryInputs(sources.docs.get('pantry') ?? [], timeZone), [sources.docs, timeZone]);
   // Medication: every dose of each pet (the countdown needs each pet's whole history, CA-20).
   const { medication, courses, care } = useMemo(() => {
     const medicationList: MedicationEntry[] = [];

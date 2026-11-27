@@ -24,6 +24,7 @@ import { addDaysToKey, choreDueKey, dayFromKey, dayKey, isDayKey, weekStartKey, 
 import { DEFAULT_WEEK_STARTS_ON, type WeekStartsOn } from './week-start';
 import { collapseMissedRecurring } from './list';
 import { isGeneratedInstance } from './recurrence-edits';
+import { readPantryBatch } from '../shopping/pantry-batches';
 import { nextDueDay, type IntervalUnit } from '../../../functions/src/shared/maintenance-schedule';
 
 /** `pantry`: an expiry date in the pantry; `care`: a pet care entry that was logged (CA-23). */
@@ -571,6 +572,18 @@ export function monthSelection(monthAnchor: string, today: string): string {
 export type PantryExpiryInput = { id: string; name?: string; expiryDate?: string | null; packages?: number };
 
 /**
+ * Pantry documents as the calendar reads them (review finding 4): through the pantry's own
+ * reader (`readPantryBatch`), so a legacy ISO timestamp expiry lands on its household day
+ * and a legacy item's quantity counts as its packages, instead of being dropped.
+ */
+export function pantryExpiryInputs(docs: readonly { id: string; data: Record<string, unknown> }[], timeZone?: string | null): PantryExpiryInput[] {
+  return docs.map(({ id, data }) => {
+    const batch = readPantryBatch(id, data, timeZone);
+    return { id, name: batch.name, expiryDate: batch.expiryDate, packages: batch.packages };
+  });
+}
+
+/**
  * Pantry expiry dates (CA-23): one item per dated pantry entry still in stock
  * (no packages left means used up), on its expiry day, linking to the pantry.
  * Informational: an expired item is never "overdue".
@@ -616,6 +629,7 @@ export function careEvents(entries: readonly CareEntry[], timeZone?: string | nu
 type ProjectedSchedule = {
   id?: string; mode?: string; scheduleName?: string; serviceName?: string; frequencyType?: string; intervalValue?: number;
   intervalMonths?: number; nextDueDate?: string; anchor?: 'completion' | 'calendar'; anchorDay?: number; anchorMonth?: number;
+  snoozedUntil?: string; snoozedFrom?: string;
 };
 type ProjectedAsset = { id: string; name: string; status?: string; schedules?: ProjectedSchedule[] };
 type ProjectedVehicle = { id: string; nickname: string; status?: string; serviceSchedules?: ProjectedSchedule[] };
@@ -645,7 +659,11 @@ export function projectedMaintenanceEvents(
     if (!due) return [];
     const events: CalendarEvent[] = [];
     for (let i = 0; i < 400 && events.length < MAX_PROJECTED; i++) {
-      const next = nextDueDay({ unit: unit as IntervalUnit, value, anchor: schedule.anchor, anchorDay: schedule.anchorDay, anchorMonth: schedule.anchorMonth, nextDueDate: due }, due);
+      // The first completion is of the schedule as stored, snooze included (as
+      // `nextDueAfterCompletion` does: a snoozed calendar schedule keeps its real cycle);
+      // completion ends a snooze, so later steps have none.
+      const snooze = i === 0 ? { snoozedUntil: schedule.snoozedUntil, snoozedFrom: schedule.snoozedFrom } : {};
+      const next = nextDueDay({ unit: unit as IntervalUnit, value, anchor: schedule.anchor, anchorDay: schedule.anchorDay, anchorMonth: schedule.anchorMonth, nextDueDate: due, ...snooze }, due);
       if (!next || next <= due || next > rangeEnd) break;
       due = next;
       if (due < rangeStart) continue;
