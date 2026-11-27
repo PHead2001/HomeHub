@@ -173,6 +173,24 @@ describe('household upkeep', () => {
     assert.ok((await trash('2026-11-19').get()).exists);
   });
 
+  test('a missed day of a repeat leaves To Do after a week and is recorded as missed; one-time chores stay (CH-7)', async () => {
+    const base = { task: 'Trash', templateId: 'trash', roomIds: [], assignedToUid: 'o1', assignedToDisplayName: 'Owner', isCompleted: false };
+    const day = (d: string) => occurrenceChoreId('trash', 'general', d);
+    await house().collection('chores').doc(day('2026-10-22')).set({ ...base, originalDueDate: '2026-10-22', occurrenceKey: 'trash|general|2026-10-22' });
+    await house().collection('chores').doc(day('2026-10-29')).set({ ...base, originalDueDate: '2026-10-29', occurrenceKey: 'trash|general|2026-10-29' });
+    await house().collection('chores').doc('one-time').set({ ...base, sourceType: 'temporary', originalDueDate: '2026-10-01' });
+    const now = new Date('2026-11-05T15:00:00Z'); // Thursday Nov 5 in Chicago
+    const result = await run(now);
+    assert.equal(result.expiredChores, 1, 'Oct 22 is more than a week old; Oct 29 is exactly a week');
+    assert.equal((await house().collection('chores').doc(day('2026-10-22')).get()).exists, false);
+    assert.ok((await house().collection('chores').doc(day('2026-10-29')).get()).exists);
+    assert.ok((await house().collection('chores').doc('one-time').get()).exists, 'one-time chores never expire');
+    const missed = (await house().collection('stats').doc('missed-recent').get()).data();
+    assert.deepEqual(missed?.entries, [{ key: 'trash|general|2026-10-22', day: '2026-10-22', task: 'Trash', assignedToUid: 'o1', assignedToDisplayName: 'Owner' }]);
+    assert.equal((await run(now)).expiredChores, 0, 'idempotent');
+    assert.equal((await house().collection('chores').doc(day('2026-10-22')).get()).exists, false, 'a past day is never regenerated');
+  });
+
   test('a template assigned by uid only (email no longer known to its writer) still generates', async () => {
     await house().collection('chore-templates').doc('trash').delete();
     await house().collection('chore-templates').doc('mop').set({
