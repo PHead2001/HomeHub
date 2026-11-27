@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { AnimatePresence } from 'motion/react';
-import { AlertTriangle, Copy, Home, Loader2, LogOut, Shield, UserPlus, Users } from 'lucide-react';
+import { AlertTriangle, Copy, Home, Loader2, LogOut, QrCode as QrCodeIcon, Shield, UserPlus, Users } from 'lucide-react';
+import dynamic from 'next/dynamic';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { auth } from '@/lib/firebase';
@@ -18,6 +19,7 @@ import {
   canRemindPendingMembers,
   canRenameHousehold,
   canTransferOwnership,
+  rank,
 } from '@/lib/household-policy';
 import { assignableRoles } from '@/lib/permissions';
 import { memberColorMap } from '@/lib/member-colors';
@@ -81,12 +83,16 @@ import {
 import { MemberCard, type MemberActions } from '@/components/household/member-card';
 import { PendingMemberBanner } from '@/components/household/pending-member-banner';
 import { ALL_ROLES, RolesPanel } from '@/components/household/roles-panel';
+import { InviteRoleSelect, type InviteRoleChoice } from '@/components/household/invite-role-select';
 import { useHouseholdLiveData } from '@/components/household/use-household-live-data';
 import { SignInPrompt } from '@/components/profile/sign-in-prompt';
 import { canSeeMemberEmails } from '@/lib/member-directory';
 import { DevicesTab } from '@/components/household/devices-tab';
 import { useMemberTabletControls } from '@/components/household/member-tablet-controls';
 import { useServerNow } from '@/components/household/use-server-now';
+
+// Loaded on first use: the QR encoder is only needed when an invite is shared.
+const InviteShareDialog = dynamic(() => import('@/components/household/invite-share-dialog'), { ssr: false });
 
 // Wall tablets ship dark behind the public devices flag (docs/modules/devices/README.md).
 const devicesEnabled = process.env.NEXT_PUBLIC_HOMEHUB_DEVICES === 'true';
@@ -175,6 +181,11 @@ export function HouseholdManagementClient() {
   const [nameSubmitted, setNameSubmitted] = useState(false);
   const [isSavingName, setIsSavingName] = useState(false);
   const [isGeneratingInvite, setIsGeneratingInvite] = useState(false);
+  // HO-16, HO-23: an optional suggested role for the next code, and the invite whose
+  // QR code and link are shown.
+  const [inviteRole, setInviteRole] = useState<InviteRoleChoice>('none');
+  const [shareInvite, setShareInvite] = useState<InviteCode | null>(null);
+  const inviteRoles = assignableRoles.filter((role) => rank(role) < rank(currentMember?.role));
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [matrixSelection, setMatrixSelection] = useState<string>(ALL_ROLES);
 
@@ -269,8 +280,10 @@ export function HouseholdManagementClient() {
     try {
       const householdId = household.id;
       const invite = await runAction('Could not create an invite code', (idToken) =>
-        createInviteAction({ idToken, householdId }));
+        createInviteAction({ idToken, householdId, suggestedRole: inviteRole === 'none' ? null : inviteRole }));
       if (!invite) return;
+      // The big QR code and share sheet open at once (HO-16, HO-23).
+      setShareInvite(invite);
       // The code exists now; copying is a convenience that must not turn a successful
       // invite into a reported failure (iOS often blocks clipboard writes after an await).
       const copied = await copyText(invite.code);
@@ -576,6 +589,7 @@ export function HouseholdManagementClient() {
                   <CardDescription>Codes last {INVITE_TTL_MINUTES} minutes and work once. New people wait for you to choose their role before they see anything.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  <InviteRoleSelect value={inviteRole} roles={inviteRoles} onChange={setInviteRole} disabled={isGeneratingInvite} />
                   {invites.length > 0 && (
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Button onClick={generateInvite} disabled={isGeneratingInvite || !inviteReady}>
@@ -611,6 +625,7 @@ export function HouseholdManagementClient() {
                               </div>
                               <p className="break-words text-sm text-muted-foreground">
                                 Created by {invite.createdByEmail}
+                                {invite.suggestedRole ? ` · suggests ${roleLabel(invite.suggestedRole)}` : ''}
                                 {active ? ` · expires ${relativeTime(invite.expiresAt, inviteNow)}` : ` · ${relativeTime(invite.createdAt, inviteNow)}`}
                               </p>
                             </div>
@@ -621,6 +636,9 @@ export function HouseholdManagementClient() {
                                   toast(copied ? { title: 'Copied', description: invite.code } : { title: 'Copy not available', description: `Share ${invite.code} manually.` });
                                 }}>
                                   <Copy className="h-4 w-4" />
+                                </Button>
+                                <Button variant="outline" size="icon" aria-label={`Show QR code and link for ${invite.code}`} onClick={() => setShareInvite(invite)}>
+                                  <QrCodeIcon className="h-4 w-4" />
                                 </Button>
                                 <Button variant="outline" onClick={() => revokeInvite(invite)} aria-label={`Revoke invite code ${invite.code}`}>
                                   Revoke
@@ -834,6 +852,7 @@ export function HouseholdManagementClient() {
       )}
 
       <ConfirmActionDialog request={confirm} onClose={() => setConfirm(null)} />
+      {shareInvite && <InviteShareDialog invite={shareInvite} onClose={() => setShareInvite(null)} />}
 
       <Dialog open={isDeleteOpen} onOpenChange={(open) => { setIsDeleteOpen(open); if (!open) setDeleteConfirm(''); }}>
         <DialogContent className="max-w-md">

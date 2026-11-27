@@ -99,8 +99,8 @@ export async function renameHouseholdAction(input: { idToken: string; householdI
   return manage(input?.idToken, caller => renameHousehold(caller, input.householdId, input.name));
 }
 
-export async function createInviteAction(input: { idToken: string; householdId: string }): Promise<HouseholdActionResult<InviteCode>> {
-  return manage(input?.idToken, caller => createInvite(caller, input.householdId));
+export async function createInviteAction(input: { idToken: string; householdId: string; suggestedRole?: HouseholdRole | null }): Promise<HouseholdActionResult<InviteCode>> {
+  return manage(input?.idToken, caller => createInvite(caller, input.householdId, new Date(), { suggestedRole: input?.suggestedRole }));
 }
 
 export async function revokeInviteAction(input: { idToken: string; householdId: string; code: string }): Promise<HouseholdActionResult<{ code: string }>> {

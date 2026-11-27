@@ -522,6 +522,8 @@ export type HouseholdMember = {
   householdName?: string;
   lastActiveAt?: string;
   lastNewUserReminderAt?: string;
+  /** Pending people only: the role their invite suggested (HO-16), a default for the approval banner. */
+  suggestedRole?: HouseholdRole;
   approvedAt?: string;
   approvedByUid?: string;
   /**
@@ -626,6 +628,8 @@ export type InviteCode = {
   usedAt?: string;
   maxUses?: number;
   useCount?: number;
+  /** A role suggested to whoever approves (HO-16); server-written, never granted by itself. */
+  suggestedRole?: HouseholdRole;
 };
 
 export type AuditLog = {

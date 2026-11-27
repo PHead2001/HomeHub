@@ -765,3 +765,45 @@ describe('removal keeps history and scales (HO-5, HO-22)', () => {
     assert.equal(template?.recurrence?.assignedToEmail, undefined);
   });
 });
+
+describe('invite links and suggested roles (HO-16, HO-23)', () => {
+  test('an invite may suggest a role below its creator; joining copies it to the pending record only as a suggestion', async () => {
+    const invite = await createInvite(admin, HOUSE, NOW, { suggestedRole: 'child' });
+    assert.equal(invite.suggestedRole, 'child');
+    assert.equal((await adminDb.collection('inviteCodes').doc(invite.code).get()).get('suggestedRole'), 'child');
+    const [entry] = await audits('invite.generated');
+    assert.equal(entry.details?.suggestedRole, 'child');
+    await redeemInvite(stranger, invite.code, new Date(NOW.getTime() + 60_000));
+    const record = (await memberRef(stranger).get()).data();
+    assert.equal(record?.role, 'newuser', 'a suggestion grants nothing');
+    assert.equal(record?.status, 'pending');
+    assert.equal(record?.suggestedRole, 'child');
+    // The approver still chooses: approving as Member is allowed.
+    await changeMemberRole(admin, HOUSE, stranger.uid, 'member', new Date(NOW.getTime() + 120_000));
+    assert.equal((await memberRef(stranger).get()).get('role'), 'member');
+  });
+
+  test('a role at or above the creator, or not assignable, is refused; no suggestion is fine', async () => {
+    await refused(createInvite(admin, HOUSE, NOW, { suggestedRole: 'admin' }), 'role_too_high');
+    await refused(createInvite(admin, HOUSE, NOW, { suggestedRole: 'owner' }), 'role_too_high');
+    await refused(createInvite(owner, HOUSE, NOW, { suggestedRole: 'newuser' }), 'role_too_high');
+    await refused(createInvite(owner, HOUSE, NOW, { suggestedRole: 'superuser' }), 'role_too_high');
+    await grant(member, { 'household.manageInvites': true });
+    await refused(createInvite(member, HOUSE, NOW, { suggestedRole: 'member' }), 'role_too_high');
+    const plain = await createInvite(member, HOUSE, NOW, { suggestedRole: null });
+    assert.equal(plain.suggestedRole, undefined);
+    const owners = await createInvite(owner, HOUSE, NOW, { suggestedRole: 'admin' });
+    assert.equal(owners.suggestedRole, 'admin');
+  });
+
+  test('a suggestion is dropped when its creator has since been demoted below it', async () => {
+    const invite = await createInvite(owner, HOUSE, NOW, { suggestedRole: 'admin' });
+    // The code stays valid only while its creator may invite; an owner can't be demoted,
+    // so use a stored invite from an admin who is then made a member with invites granted.
+    await seedInvite('SUGG-ESTX-XX', { createdByUid: admin.uid, suggestedRole: 'member' });
+    await memberRef(admin).update({ role: 'member', permissions: { 'household.manageInvites': true } });
+    await redeemInvite(stranger, 'SUGG-ESTX-XX', NOW);
+    assert.equal((await memberRef(stranger).get()).get('suggestedRole'), undefined);
+    assert.equal(invite.maxUses, 1, 'codes stay single-use (16.3)');
+  });
+});

@@ -36,7 +36,9 @@ export function PendingMemberBanner({
   onDeny: (member: HouseholdMember) => void;
 }) {
   const reduced = useReducedMotion();
-  const [role, setRole] = useState<HouseholdRole>(roles.includes('member') ? 'member' : roles[0] ?? 'member');
+  // The invite's suggested role (HO-16) when the viewer may assign it, else Member.
+  const suggested = member.suggestedRole && roles.includes(member.suggestedRole) ? member.suggestedRole : null;
+  const [role, setRole] = useState<HouseholdRole>(suggested ?? (roles.includes('member') ? 'member' : roles[0] ?? 'member'));
   const [busy, setBusy] = useState(false);
   const name = memberName(member);
   const first = memberFirstName(member);
