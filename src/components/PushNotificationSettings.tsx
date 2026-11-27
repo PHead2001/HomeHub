@@ -37,7 +37,7 @@ const detectSupport = (): PushSupport => {
  * the Home Screen first), one outcome toast per action, and a short explanation
  * before the browser's permission prompt, whose "Block" is usually permanent.
  */
-export function PushNotificationSettings() {
+export function PushNotificationSettings({ embedded = false }: { embedded?: boolean } = {}) {
     const { currentUser } = useAuth();
     const { toast } = useToast();
     const email = currentUser?.email;
@@ -178,6 +178,16 @@ export function PushNotificationSettings() {
                 );
         }
     };
+
+    // PR-17: inside Profile's Notifications card it is a section, not a card of its own.
+    if (embedded) {
+        return (
+            <section aria-labelledby="push-heading" className="space-y-3" data-testid="push-settings">
+                <h3 id="push-heading" className="font-semibold">On this device</h3>
+                {renderContent()}
+            </section>
+        );
+    }
 
     return (
         <Card>

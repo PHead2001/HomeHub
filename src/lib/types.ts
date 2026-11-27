@@ -567,7 +567,7 @@ export type LegacyProfileTheme = {
 export type User = {
   uid: string; // From Firebase Auth
   email: string;
-  /** IANA timezone captured from the browser; used for daily chore reminders. */
+  /** Legacy: the browser's IANA zone, no longer written or read (reminders use the household's zone, D-6 / PR-5). */
   timeZone?: string;
   firstName: string;
   lastName: string;

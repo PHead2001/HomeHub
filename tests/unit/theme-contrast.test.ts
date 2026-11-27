@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { blend, contrastRatio, hslTokenToRgb, tokenContrast } from '../../src/lib/theme/contrast';
 import {
   COLOR_TOKEN_NAMES,
+  HIGH_CONTRAST_PRESET_IDS,
   MEMBER_COLOR_COUNT,
   PRESET_LIST,
   type ColorTokenName,
@@ -76,6 +77,43 @@ function check(preset: ThemePreset) {
   }
   return failures;
 }
+
+// PR-20: the high-contrast pair meets AAA (7:1) for body text, secondary text,
+// text on filled controls and the accent used as link text.
+const AAA_MIN = 7;
+const aaaPairs: Array<[ColorTokenName, ColorTokenName]> = [
+  ...SURFACES.map((s) => ['foreground', s] as [ColorTokenName, ColorTokenName]),
+  ['card-foreground', 'card'],
+  ['popover-foreground', 'popover'],
+  ...[...SURFACES, 'muted', 'secondary'].map((s) => ['muted-foreground', s as ColorTokenName] as [ColorTokenName, ColorTokenName]),
+  ['primary-foreground', 'primary'],
+  ['secondary-foreground', 'secondary'],
+  ['accent-foreground', 'accent'],
+  ['destructive-foreground', 'destructive'],
+  ['success-foreground', 'success'],
+  ['warning-foreground', 'warning'],
+  ['info-foreground', 'info'],
+  ...(['primary', 'destructive', 'success', 'warning', 'info'] as ColorTokenName[]).flatMap((c) =>
+    SURFACES.map((s) => [c, s] as [ColorTokenName, ColorTokenName]),
+  ),
+];
+
+describe('the high-contrast presets meet WCAG AAA (PR-20)', () => {
+  for (const preset of PRESET_LIST.filter((p) => (HIGH_CONTRAST_PRESET_IDS as readonly string[]).includes(p.id))) {
+    it(`${preset.id} (${preset.kind})`, () => {
+      const failures = aaaPairs.flatMap(([fg, bg]) => {
+        const ratio = tokenContrast(preset.colors[fg], preset.colors[bg]);
+        return ratio < AAA_MIN ? [`${fg} on ${bg}: ${ratio.toFixed(2)}:1`] : [];
+      });
+      assert.deepEqual(failures, []);
+    });
+  }
+
+  it('offers one dark and one light high-contrast preset', () => {
+    const kinds = PRESET_LIST.filter((p) => (HIGH_CONTRAST_PRESET_IDS as readonly string[]).includes(p.id)).map((p) => p.kind).sort();
+    assert.deepEqual(kinds, ['dark', 'light']);
+  });
+});
 
 describe('theme presets meet WCAG AA', () => {
   for (const preset of PRESET_LIST) {

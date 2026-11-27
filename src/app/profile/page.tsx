@@ -35,14 +35,15 @@ export default function ProfilePage() {
             ) : profileConfirmed ? (
                 <ProfileClient />
             ) : (
-                <div role="status" aria-busy="true" className="mx-auto grid max-w-6xl grid-cols-1 gap-8 md:grid-cols-3">
+                <div role="status" aria-busy="true" className="mx-auto flex max-w-6xl flex-wrap gap-8">
                     <span className="sr-only">Loading your profile…</span>
-                    <div aria-hidden className="space-y-8 md:col-span-2">
+                    {/* Matches the two equal columns of ProfileClient (PR-18). */}
+                    <div aria-hidden className="min-w-0 flex-[1_1_24rem] space-y-8">
                         <CardSkeleton lines={6} className="h-96" />
+                        <CardSkeleton lines={4} className="h-72" />
                     </div>
-                    <div aria-hidden className="space-y-8 md:col-span-1">
-                        <CardSkeleton lines={5} className="h-96" />
-                        <CardSkeleton lines={3} className="h-56" />
+                    <div aria-hidden className="min-w-0 flex-[1_1_24rem] space-y-8">
+                        <CardSkeleton lines={8} className="h-[36rem]" />
                     </div>
                 </div>
             )}

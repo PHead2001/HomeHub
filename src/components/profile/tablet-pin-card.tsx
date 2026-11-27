@@ -121,7 +121,7 @@ export function TabletPinCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-headline flex items-center gap-2"><KeyRound aria-hidden /> Tablet PIN</CardTitle>
+        <CardTitle as="h2" className="font-headline flex items-center gap-2"><KeyRound aria-hidden /> Tablet PIN</CardTitle>
         <CardDescription>
           Wall tablets ask for your PIN before anything that needs more than a tap of your face. Set it here, never on a tablet.
         </CardDescription>

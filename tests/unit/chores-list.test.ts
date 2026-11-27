@@ -193,7 +193,8 @@ describe('chores polish (wave 4)', () => {
     // The pill: destructive text on a 10% destructive tint, on the row's card surface.
     assert.match(list, /rounded-full bg-destructive\/10 px-1\.5 py-0\.5 font-medium text-destructive">Overdue</);
     assert.match(list, /'rounded-lg border bg-card'/);
-    assert.equal(PRESET_LIST.length, 5);
+    // Five presets plus the high-contrast pair (PR-20).
+    assert.equal(PRESET_LIST.length, 7);
     for (const preset of PRESET_LIST) {
       const tint = blend(hslTokenToRgb(preset.colors.destructive), hslTokenToRgb(preset.colors.card), 0.1);
       const ratio = contrastRatio(hslTokenToRgb(preset.colors.destructive), tint);

@@ -5,7 +5,7 @@ import { useForm, useWatch } from 'react-hook-form';
 import { useUnsavedInput } from '@/hooks/use-shell-busy';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { BellRing, Camera, Loader2, Trash2 } from 'lucide-react';
+import { Camera, Loader2, Trash2 } from 'lucide-react';
 import { deleteObject, getStorage, ref, uploadBytes, getDownloadURL, type StorageReference } from 'firebase/storage';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
@@ -13,83 +13,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { FieldError } from '@/components/field-error';
 import { MemberAvatar } from '@/components/member-avatar';
-import { cn } from '@/lib/utils';
 import { roleLabel } from '@/components/household/household-model';
 import { AVATAR_MAX_BYTES } from '@/components/profile/profile-validation';
 import { downscaleImage } from '@/lib/images/downscale';
 import { AVATAR_MAX_EDGE, PROFILE_PHOTO_ACCEPT, avatarExtensionFor, ownAvatarPath, photoReplacedAndSafe, profilePhotoError } from '@/lib/profile/avatar';
-import { PushNotificationSettings } from './PushNotificationSettings';
+import { NotificationSettings } from '@/components/profile/notification-settings';
 import { AppearanceSettings } from './appearance-settings';
 import { TabletPinCard } from '@/components/profile/tablet-pin-card';
+import { AccountCard } from '@/components/profile/account-card';
 
 const profileSchema = z.object({
   displayName: z.string().trim().min(2, 'Use at least 2 characters.').max(60, 'Keep it under 60 characters.'),
 });
-
-function ChoreReminderSettings() {
-  const { currentUser, updateUser } = useAuth();
-  const { toast } = useToast();
-  const [isSaving, setIsSaving] = useState(false);
-
-  const [enabled, setEnabled] = useState(currentUser?.choreSettings?.reminderEnabled || false);
-  const [time, setTime] = useState(currentUser?.choreSettings?.reminderTime || '17:00');
-  // NO-4: overdue pushes can be turned off; the bell still lists overdue chores.
-  const [overdueAlerts, setOverdueAlerts] = useState(currentUser?.choreSettings?.overdueAlerts !== false);
-
-  const handleSave = async () => {
-    setIsSaving(true);
-    try {
-      // Silent: one outcome toast here instead of the generic "Profile Updated".
-      // A failed write shows updateUser's error toast and nothing else (PR-1).
-      const saved = await updateUser({ choreSettings: { reminderEnabled: enabled, reminderTime: time, overdueAlerts } }, { silent: true });
-      if (saved) toast({ title: 'Reminder saved', description: enabled ? `We'll remind you at ${time} each day.` : 'Daily chore reminders are off.' });
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="font-headline flex items-center gap-2"><BellRing aria-hidden /> Chore Reminders</CardTitle>
-        <CardDescription>A daily nudge about chores you haven&apos;t finished yet. Times use the household&apos;s time zone.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center justify-between gap-3 rounded-lg border p-4">
-          <Label htmlFor="reminder-enabled" className="text-base">
-            Remind me every day
-          </Label>
-          <Switch id="reminder-enabled" checked={enabled} onCheckedChange={setEnabled} />
-        </div>
-        <div className={cn('space-y-2', !enabled && 'opacity-50')}>
-          <Label htmlFor="reminder-time">Remind me at</Label>
-          <Input
-            id="reminder-time"
-            type="time"
-            value={time}
-            disabled={!enabled}
-            onChange={(e) => setTime(e.target.value)}
-            className="w-48"
-          />
-        </div>
-        <div className="flex items-center justify-between gap-3 rounded-lg border p-4">
-          <Label htmlFor="overdue-alerts" className="text-base">
-            Alert me when a chore becomes overdue
-          </Label>
-          <Switch id="overdue-alerts" checked={overdueAlerts} onCheckedChange={setOverdueAlerts} />
-        </div>
-        <Button onClick={handleSave} disabled={isSaving} className="w-full">
-          {isSaving && <Loader2 className="mr-2 animate-spin" />}
-          Save reminder
-        </Button>
-      </CardContent>
-    </Card>
-  );
-}
 
 export function ProfileClient() {
   const { currentUser, currentMember, household, updateUser } = useAuth();
@@ -110,6 +47,17 @@ export function ProfileClient() {
   });
   // An edited name, a chosen photo or a save in progress keeps the shell from reloading on its own.
   useUnsavedInput(form.formState.isDirty || Boolean(photoFile) || removePhoto || isSubmitting);
+  // PR-15: leaving the page (reload, close, typed URL) with an unsaved name or photo asks first.
+  const unsavedChanges = form.formState.isDirty || Boolean(photoFile) || removePhoto;
+  useEffect(() => {
+    if (!unsavedChanges) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [unsavedChanges]);
 
   // Object URLs for the local preview are released when replaced or unmounted.
   useEffect(() => () => {
@@ -230,13 +178,15 @@ export function ProfileClient() {
   const photoChanged = Boolean(photoFile) || removePhoto;
 
   return (
-    // Two columns only when both fit at their rem-based minimum widths (32rem and
-    // 20rem): px breakpoints ignore the text size, so 130% text at 768-1023 px stacks.
+    // PR-18: two equal columns only when both fit at their rem-based minimum width
+    // (24rem each): px breakpoints ignore the text size, so 130% text, or a 768-800 px
+    // tablet, stacks them instead of squeezing one column. Personal information and
+    // notifications on the left, appearance beside them.
     <div className="mx-auto flex max-w-6xl flex-wrap gap-8">
-      <div className="min-w-0 flex-[2_1_32rem] space-y-8">
+      <div className="min-w-0 flex-[1_1_24rem] space-y-8">
         <Card>
           <CardHeader>
-            <CardTitle className="font-headline">Personal Information</CardTitle>
+            <CardTitle as="h2" className="font-headline">Personal Information</CardTitle>
             <CardDescription>How you appear to the rest of your household.</CardDescription>
           </CardHeader>
           <CardContent>
@@ -321,12 +271,9 @@ export function ProfileClient() {
                     </FormItem>
                   )}
                 />
-                <div className="space-y-2">
-                  <Label htmlFor="profile-email">Email</Label>
-                  <Input id="profile-email" disabled value={currentUser.email || ''} />
-                </div>
 
-                <Button type="submit" disabled={isSubmitting || preparingPhoto}>
+                {/* PR-15: enabled only when something changed. */}
+                <Button type="submit" disabled={isSubmitting || preparingPhoto || !(form.formState.isDirty || photoChanged)}>
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Changes
                 </Button>
@@ -334,11 +281,11 @@ export function ProfileClient() {
             </Form>
           </CardContent>
         </Card>
+        <NotificationSettings />
+        <AccountCard />
       </div>
-      <div className="min-w-0 flex-[1_1_20rem] space-y-8">
+      <div className="min-w-0 flex-[1_1_24rem] space-y-8">
         <AppearanceSettings />
-        <ChoreReminderSettings />
-        <PushNotificationSettings />
         <TabletPinCard />
       </div>
     </div>

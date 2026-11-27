@@ -6,7 +6,7 @@ import { registerHomeHubServiceWorker, shouldAutoRegisterServiceWorker } from '@
 /**
  * Registers the combined push + offline service worker for every visitor, once
  * the page has finished loading, so it never competes with first paint.
- * PushNotificationSettings registers the same URL/scope on push opt-in and
+ * the Profile Notifications card registers the same URL/scope on push opt-in and
  * receives this registration. No Firebase here: signed-out pages stay within the
  * first-paint budget (foreground push toasts are `PushForegroundListener`).
  */
