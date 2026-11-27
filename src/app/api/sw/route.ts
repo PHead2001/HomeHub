@@ -12,7 +12,7 @@ import { BUILD_MESSAGE, BUILD_QUERY_MESSAGE, minimumBuildId } from '@/lib/shell/
 //      and a friendly offline page for routes that were never cached.
 //
 // Registration: PushNotificationManager registers it on every production page
-// load (after the window load event). PushNotificationSettings registers the
+// load (after the window load event). The Profile Notifications card (src/components/profile/notification-settings.tsx) registers the
 // same URL and scope when a member enables push, which returns the same
 // registration, so FCM tokens keep using this worker.
 //

@@ -265,6 +265,14 @@ describe('household upkeep', () => {
     }
   });
 
+  test('chore reminders follow the household time zone, not the profile zone a device left (PR-5, D-6)', async () => {
+    // A travelling phone once wrote Tokyo; at 5:30pm Chicago it is 8:30am in Tokyo.
+    await adminDb.collection('users').doc('owner@example.test').set({ timeZone: 'Asia/Tokyo' }, { merge: true });
+    await run(new Date('2026-11-05T23:30:00Z'));
+    const reminders = await house().collection('notifications').where('sourceType', '==', 'chore-reminder').get();
+    assert.deepEqual(reminders.docs.map(d => d.id), ['o1-reminder-2026-11-05']);
+  });
+
   test('a maintenance reminder resolved while its schedule is still actionable is reopened', async () => {
     const now = new Date('2026-11-05T15:00:00Z');
     await run(now);
