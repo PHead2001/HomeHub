@@ -675,20 +675,21 @@ export function projectedMaintenanceEvents(
  * What skipping days of repeating chores writes (CA-27, the skip mechanism of CH-3):
  * per template, the occurrence keys to add to `skippedOccurrences` (today or later
  * only: upkeep never generates an earlier day), and the open generated chores to
- * delete. Planned days need only the key. Completed chores and one-time chores are
- * never skipped.
+ * delete (sent to `skipChoreDaysAction`, which re-checks each one on the server). Planned
+ * days need only the key. Completed chores and one-time chores are never skipped.
  */
-export function skipPlan(events: readonly CalendarEvent[], today: string): { keys: Map<string, string[]>; deletes: string[] } {
+export function skipPlan(events: readonly CalendarEvent[], today: string): { keys: Map<string, string[]>; items: { templateId: string; key: string; choreId?: string }[] } {
   const keys = new Map<string, string[]>();
-  const deletes: string[] = [];
+  const items: { templateId: string; key: string; choreId?: string }[] = [];
   for (const event of events) {
     if (event.kind !== 'chore' || event.completed || !event.templateId || !event.occurrenceKey || !event.occurrenceDay || event.occurrenceDay < today) continue;
     const list = keys.get(event.templateId) ?? [];
     if (!list.includes(event.occurrenceKey)) list.push(event.occurrenceKey);
     keys.set(event.templateId, list);
-    if (!event.planned && event.choreId) deletes.push(event.choreId);
+    // The server re-reads each chore and deletes it only while it is still this open occurrence.
+    items.push({ templateId: event.templateId, key: event.occurrenceKey, ...(!event.planned && event.choreId ? { choreId: event.choreId } : {}) });
   }
-  return { keys, deletes };
+  return { keys, items };
 }
 
 /** The repeating chores to skip while the household is away (CA-27): every open or planned day from `from` to `to`. */

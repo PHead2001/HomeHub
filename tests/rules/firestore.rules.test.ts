@@ -420,6 +420,16 @@ describe('independent review regressions', () => {
     await assertFails(updateDoc(doc(dbFor(users.owner), 'households', householdA), { updatedAt: 'y' }));
   });
 
+  test('calendar Undo records are server-only (CA-15, CA-27)', async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'households', householdA, 'calendar-ops', 'op1'), { kind: 'move', choreId: 'c', createdByUid: users.owner.uid });
+    });
+    for (const user of [users.owner, users.admin, users.member]) {
+      await assertFails(getDoc(doc(dbFor(user), 'households', householdA, 'calendar-ops', 'op1')));
+      await assertFails(setDoc(doc(dbFor(user), 'households', householdA, 'calendar-ops', 'forged'), { kind: 'move', choreId: 'c', createdByUid: user.uid }));
+    }
+  });
+
   test('households cannot be deleted from the client', async () => {
     await assertFails(deleteDoc(doc(dbFor(users.owner), 'households', householdA)));
   });

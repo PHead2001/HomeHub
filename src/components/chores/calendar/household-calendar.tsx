@@ -18,7 +18,7 @@ import { MemberAvatar } from '@/components/member-avatar';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { UNDO_WINDOW_MS } from '@/lib/undo-window';
-import { movePlannedChore, syncHouseholdUpkeep, undoPlannedChoreMove } from '@/app/chores/actions';
+import { movePlannedChore, skipChoreDaysAction, syncHouseholdUpkeep, undoPlannedChoreMove, undoSkipChoreDaysAction } from '@/app/chores/actions';
 import { useHouseholdToday } from '@/lib/household-day';
 import { auth, db } from '@/lib/firebase';
 import { playFeedback } from '@/lib/feedback';
@@ -39,7 +39,6 @@ import {
 } from '@/lib/chores/complete-client';
 import { computeChoreStats } from '@/lib/chores/stats';
 import { readWeekStartsOn, weekdayLabels } from '@/lib/chores/week-start';
-import { skipCalendarDays, unskipCalendarDays } from '@/lib/chores/skip-client';
 import {
   ALL_KINDS, awayEvents, careEvents, choreEvents, courseDueEvents, filterEvents, foldedOverdueRail, groupByDay, isSameMonth, laneRows,
   maintenanceCalendarItems, maintenanceEvents, medicationDueEvents, medicationEvents, monthGrid, monthSelection, pantryExpiryEvents,
@@ -417,7 +416,7 @@ export function HouseholdCalendar() {
       showUndo('Chore moved', `${event.title} is now on ${format(dayFromKey(day), 'EEE, MMM d')}.`, `chore-move:${event.id}`, async () => {
         const again = auth.currentUser;
         if (!again) return;
-        const undone = await undoPlannedChoreMove({ idToken: await again.getIdToken(), householdId, choreId: result.data.choreId, toDay: day });
+        const undone = await undoPlannedChoreMove({ idToken: await again.getIdToken(), householdId, opId: result.data.opId });
         if (!undone.ok) fail("Couldn't undo the move.");
         else if (undone.data.status === 'stale') fail('Already changed, so it stays on its new day.');
         else void runUpkeep();
@@ -460,21 +459,23 @@ export function HouseholdCalendar() {
   const skip = useCallback(async (list: readonly CalendarEvent[], label: string): Promise<boolean> => {
     if (!householdId || !canSkip) return false;
     const plan = skipPlan(list, today);
-    if (plan.keys.size === 0) return false;
-    try {
-      await skipCalendarDays(householdId, plan, today);
-    } catch {
-      fail("Couldn't skip. Try again.");
+    const user = auth.currentUser;
+    if (plan.items.length === 0 || !user) return false;
+    // On the server (review findings 2, 3): it re-reads each chore, never deletes a
+    // completion, and keeps what it deleted so Undo can put it back.
+    const result = await skipChoreDaysAction({ idToken: await user.getIdToken(), householdId, items: plan.items });
+    if (!result.ok) {
+      fail(result.code === 'forbidden' ? "You don't have permission to skip chores." : "Couldn't skip. Try again.");
       return false;
     }
     playFeedback('add');
-    showUndo('Skipped', label, 'chore-skip', async () => {
-      try {
-        await unskipCalendarDays(householdId, plan.keys);
-        void runUpkeep();
-      } catch {
-        fail("Couldn't undo the skip.");
-      }
+    showUndo('Skipped', result.data.kept > 0 ? `${label} ${result.data.kept} changed meanwhile and stayed.` : label, 'chore-skip', async () => {
+      const again = auth.currentUser;
+      if (!again) return;
+      const undone = await undoSkipChoreDaysAction({ idToken: await again.getIdToken(), householdId, opId: result.data.opId });
+      if (!undone.ok) fail("Couldn't undo the skip.");
+      // Days that could not be put back (taken meanwhile, or planned) come from upkeep.
+      else if (undone.data.regenerate > 0 || plan.items.some(item => !item.choreId)) void runUpkeep();
     });
     return true;
   }, [householdId, canSkip, today, fail, showUndo, runUpkeep]);

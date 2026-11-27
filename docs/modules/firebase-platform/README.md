@@ -80,6 +80,7 @@ Primary topology:
 - `households/{householdId}/vehicles/{vehicleId}`
 - `households/{householdId}/maintenance/{logId}`
 - `households/{householdId}/maintenance-attachments/{attachmentId}`
+- `households/{householdId}/calendar-ops/{opId}` (server-only Undo records of calendar moves and skips; rules deny all client access; see [Chores](../chores/README.md), "Data Model and Persistence")
 - `households/{householdId}/maintenance-ops/{opId}` (server-only maintenance op ledger; rules deny all client access; see [Maintenance Center](../maintenance-center/README.md), "Server operations")
 - `households/{householdId}/maintenance-deletions/{targetType}~{targetId}` (server-only tombstone of an unfinished maintenance delete with files; rules deny all client access; see [Maintenance Center](../maintenance-center/README.md), "Forms, receipts, deletes and mileage")
 - `households/{householdId}/home-automation/credentials` (server-only; rules deny all client access)

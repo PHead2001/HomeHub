@@ -44,9 +44,9 @@ after(async () => {
 
 describe('moving a planned day of a repeating chore', () => {
   test('creates the occurrence with upkeep\'s id and fields, due on the new day; upkeep never makes the old day again', async () => {
-    const outcome = await movePlannedOccurrence(adminDb, HOUSE, { templateId: 'trash', roomId: 'general', day: FAR, toDay: '2027-01-12' }, NOW);
+    const outcome = await movePlannedOccurrence(adminDb, HOUSE, { templateId: 'trash', roomId: 'general', day: FAR, toDay: '2027-01-12' }, NOW, 'pm-owner');
     const id = occurrenceChoreId('trash', 'general', FAR);
-    assert.deepEqual(outcome, { choreId: id, day: FAR, toDay: '2027-01-12' });
+    assert.deepEqual({ ...outcome, opId: typeof outcome.opId }, { choreId: id, day: FAR, toDay: '2027-01-12', opId: 'string' });
     const stored = (await chores().doc(id).get()).data()!;
     assert.equal(stored.task, 'Trash');
     assert.equal(stored.assignedToUid, 'pm-owner');
@@ -109,17 +109,45 @@ describe('moving a planned day of a repeating chore', () => {
     assert.equal(await code(movePlannedOccurrence(adminDb, HOUSE, { templateId: 'trash', roomId: 'general', day: '2027-01-09', toDay: '2027-01-12' }, NOW)), 'conflict');
   });
 
-  test('Undo removes the untouched move; a completed or changed one is kept', async () => {
-    const { choreId } = await movePlannedOccurrence(adminDb, HOUSE, { templateId: 'trash', roomId: 'general', day: FAR, toDay: '2027-01-12' }, NOW);
-    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { choreId, toDay: '2027-01-12' }), { status: 'undone' });
-    assert.equal((await chores().doc(choreId).get()).exists, false);
-    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { choreId, toDay: '2027-01-12' }), { status: 'missing' });
+  test('Undo is bound to the move: its opId, the same person, in time; a completed or changed chore is kept', async () => {
+    const move = () => movePlannedOccurrence(adminDb, HOUSE, { templateId: 'trash', roomId: 'general', day: FAR, toDay: '2027-01-12' }, NOW, 'pm-owner');
+    const first = await move();
+    // The operation record is server-only and names the chore and its day.
+    const op = (await house().collection('calendar-ops').doc(first.opId).get()).data()!;
+    assert.equal(op.kind, 'move');
+    assert.equal(op.choreId, first.choreId);
+    assert.equal(op.createdByUid, 'pm-owner');
+    // Someone else, a made-up op, a chore id in place of an op, or a late Undo: refused.
+    assert.equal(await code(undoPlannedMove(adminDb, HOUSE, { opId: first.opId }, 'pm-other', NOW)), 'invalid');
+    assert.equal(await code(undoPlannedMove(adminDb, HOUSE, { opId: 'made-up' }, 'pm-owner', NOW)), 'invalid');
+    assert.equal(await code(undoPlannedMove(adminDb, HOUSE, { opId: first.choreId }, 'pm-owner', NOW)), 'invalid');
+    assert.equal(await code(undoPlannedMove(adminDb, HOUSE, { opId: first.opId }, 'pm-owner', new Date(NOW.getTime() + 11 * 60_000))), 'invalid');
+    assert.equal((await chores().doc(first.choreId).get()).exists, true);
 
-    const again = await movePlannedOccurrence(adminDb, HOUSE, { templateId: 'trash', roomId: 'general', day: FAR, toDay: '2027-01-12' }, NOW);
-    await chores().doc(again.choreId).update({ completedSubTasks: ['Bag'] });
-    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { choreId: again.choreId, toDay: '2027-01-12' }), { status: 'stale' });
-    await chores().doc(again.choreId).update({ completedSubTasks: [], originalDueDate: '2027-01-13' });
-    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { choreId: again.choreId, toDay: '2027-01-12' }), { status: 'stale', }, 'moved again meanwhile');
-    assert.equal((await chores().doc(again.choreId).get()).exists, true);
+    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { opId: first.opId }, 'pm-owner', NOW), { status: 'undone' });
+    assert.equal((await chores().doc(first.choreId).get()).exists, false);
+    assert.equal((await house().collection('calendar-ops').doc(first.opId).get()).exists, false, 'an op is used once');
+    assert.equal(await code(undoPlannedMove(adminDb, HOUSE, { opId: first.opId }, 'pm-owner', NOW)), 'invalid');
+
+    const second = await move();
+    await chores().doc(second.choreId).update({ completedSubTasks: ['Bag'] });
+    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { opId: second.opId }, 'pm-owner', NOW), { status: 'stale' });
+    assert.equal((await chores().doc(second.choreId).get()).exists, true);
+
+    // An open generated chore that no move of this person created can never be deleted by Undo.
+    await chores().doc(second.choreId).update({ completedSubTasks: [] });
+    assert.equal(await code(undoPlannedMove(adminDb, HOUSE, { opId: second.opId }, 'pm-owner', NOW)), 'invalid');
+    assert.equal((await chores().doc(second.choreId).get()).exists, true);
+
+    const third = await move().catch(() => null);
+    assert.equal(third, null, 'the day exists, so it is a conflict');
+    await chores().doc(second.choreId).delete();
+    const fourth = await move();
+    await chores().doc(fourth.choreId).update({ isCompleted: true });
+    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { opId: fourth.opId }, 'pm-owner', NOW), { status: 'stale' });
+    await chores().doc(fourth.choreId).delete();
+    const fifth = await move();
+    await chores().doc(fifth.choreId).delete();
+    assert.deepEqual(await undoPlannedMove(adminDb, HOUSE, { opId: fifth.opId }, 'pm-owner', NOW), { status: 'missing' });
   });
 });

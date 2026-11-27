@@ -200,7 +200,11 @@ describe('skipping days (CA-27) and the Chores highlight (CA-17)', () => {
       event({ id: 'once', choreId: 'once', day: '2026-08-03' }),
     ], '2026-08-01');
     assert.deepEqual([...plan.keys.entries()], [['trash', ['trash|general|2026-08-03', 'trash|general|2026-08-04']]]);
-    assert.deepEqual(plan.deletes, ['trash-2026-08-03']);
+    // What the server re-checks: each key, and the chore only for a day already on the chart.
+    assert.deepEqual(plan.items, [
+      { templateId: 'trash', key: 'trash|general|2026-08-03', choreId: 'trash-2026-08-03' },
+      { templateId: 'trash', key: 'trash|general|2026-08-04' },
+    ]);
   });
 
   it('away picks every open repeating chore in the range; Undo removes exactly those keys', () => {
@@ -215,6 +219,15 @@ describe('skipping days (CA-27) and the Chores highlight (CA-17)', () => {
     assert.equal(parseHighlightChore(new URLSearchParams('chore=')), null);
     assert.equal(parseHighlightChore(new URLSearchParams('chore=a/b')), null);
     assert.equal(parseHighlightChore(null), null);
+  });
+});
+
+describe('review fixes (Codex, PR #234)', () => {
+  it('skips and planned-move Undo go through the server, bound to the operation', () => {
+    const calendar = readFileSync(resolve(process.cwd(), 'src/components/chores/calendar/household-calendar.tsx'), 'utf8');
+    assert.match(calendar, /skipChoreDaysAction\(/);
+    assert.match(calendar, /undoPlannedChoreMove\(\{ idToken: await again\.getIdToken\(\), householdId, opId: result\.data\.opId \}\)/);
+    assert.doesNotMatch(calendar, /skip-client/);
   });
 });
 

@@ -9,6 +9,7 @@ import { ChoreCompletionError, completeChoresAs, reopenChoreAs, undoChoreComplet
 import type { SubTaskRestore } from '@/lib/chores/completion';
 import { personalOperationContext } from '@/lib/server/operation-context';
 import { PlannedMoveError, movePlannedOccurrence, undoPlannedMove } from '@/lib/server/planned-chore-move';
+import { ChoreSkipError, skipChoreDays, undoSkipChoreDays } from '@/lib/server/chore-day-skips';
 
 // functions/ pins its own firebase-admin version; the Firestore calls used are
 // identical across versions, so the instance is passed through untyped.
@@ -90,27 +91,40 @@ export async function reopenChore(input: ChoreActionContext & { choreId: string 
 
 export type PlannedMoveResult<T> = { ok: true; data: T } | { ok: false; code: 'unauthenticated' | 'forbidden' | 'invalid' | 'not-found' | 'conflict' | 'failed' };
 
-const runPlannedAction = async <T>(context: ChoreActionContext, task: (householdId: string) => Promise<T>): Promise<PlannedMoveResult<T>> => {
+const runCalendarAction = async <T>(
+  context: ChoreActionContext,
+  permission: 'chores.edit' | 'chores.delete',
+  task: (user: { uid: string; householdId: string }) => Promise<T>,
+): Promise<PlannedMoveResult<T>> => {
   try {
-    // Moving a chore needs chores.edit, as moving a generated chore does under the rules.
-    const user = await authorizeHouseholdAction({ idToken: context?.idToken, householdId: context?.householdId }, 'chores.edit');
-    return { ok: true, data: JSON.parse(JSON.stringify(await task(user.householdId))) as T };
+    const user = await authorizeHouseholdAction({ idToken: context?.idToken, householdId: context?.householdId }, permission);
+    return { ok: true, data: JSON.parse(JSON.stringify(await task(user))) as T };
   } catch (error) {
     if (error instanceof HomeHubAiError) {
       return { ok: false, code: error.code === 'forbidden' ? 'forbidden' : error.code === 'unauthenticated' ? 'unauthenticated' : 'failed' };
     }
-    if (error instanceof PlannedMoveError) return { ok: false, code: error.code };
-    console.error('Planned chore move failed', error);
+    if (error instanceof PlannedMoveError || error instanceof ChoreSkipError) return { ok: false, code: error.code };
+    console.error('Calendar chore action failed', error);
     return { ok: false, code: 'failed' };
   }
 };
 
-/** Moves a planned (not yet generated) day of a repeating chore to `toDay` (CA-15). */
+/** Moves a planned (not yet generated) day of a repeating chore to `toDay` (CA-15); needs chores.edit, as moving any chore does. */
 export async function movePlannedChore(input: ChoreActionContext & { templateId: string; roomId: string; day: string; toDay: string }) {
-  return runPlannedAction(input, householdId => movePlannedOccurrence(adminDb, householdId, input, upkeepNow()));
+  return runCalendarAction(input, 'chores.edit', user => movePlannedOccurrence(adminDb, user.householdId, input, upkeepNow(), user.uid));
 }
 
-/** Undo of `movePlannedChore`: removes the created day while it is untouched. */
-export async function undoPlannedChoreMove(input: ChoreActionContext & { choreId: string; toDay: string }) {
-  return runPlannedAction(input, householdId => undoPlannedMove(adminDb, householdId, input));
+/** Undo of `movePlannedChore`, by the move's `opId` only (the caller's own move, review finding 1). */
+export async function undoPlannedChoreMove(input: ChoreActionContext & { opId: string }) {
+  return runCalendarAction(input, 'chores.edit', user => undoPlannedMove(adminDb, user.householdId, { opId: input?.opId }, user.uid, upkeepNow()));
+}
+
+/** Skips days of repeating chores (CA-27); needs chores.delete, the rules' skip permission. */
+export async function skipChoreDaysAction(input: ChoreActionContext & { items: { templateId: string; key: string; choreId?: string }[] }) {
+  return runCalendarAction(input, 'chores.delete', user => skipChoreDays(adminDb, user.householdId, { items: input?.items }, user.uid, upkeepNow()));
+}
+
+/** Undo of `skipChoreDaysAction`, by its `opId` only: restores the deleted days while they are free. */
+export async function undoSkipChoreDaysAction(input: ChoreActionContext & { opId: string }) {
+  return runCalendarAction(input, 'chores.delete', user => undoSkipChoreDays(adminDb, user.householdId, { opId: input?.opId }, user.uid, upkeepNow()));
 }
