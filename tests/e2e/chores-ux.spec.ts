@@ -52,6 +52,19 @@ test.describe('chores wave 2', () => {
     expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
   });
 
+  test('the leaderboard ribbon never widens the page on a phone (CH-18)', async ({ page }) => {
+    await open(page, '/chores', 'Chore Chart');
+    const ribbon = page.getByTestId('chores-leaderboard-ribbon');
+    // The ribbon shows below the wide layout; on a wide desktop the full card shows instead.
+    if (!(await ribbon.isVisible())) return;
+    // Its members' screen-reader labels (sr-only, absolutely positioned) must stay inside its
+    // scroll area: before the fix they widened the document and every tap on the phone missed.
+    expect(await documentOverflow(page)).toBeLessThanOrEqual(0);
+    const box = await ribbon.boundingBox();
+    const width = page.viewportSize()?.width ?? 0;
+    expect(box && box.x + box.width).toBeLessThanOrEqual(width);
+  });
+
   test('one tap completes a chore and Undo restores it exactly', async ({ page }) => {
     const id = 'chores-ux-one-tap';
     const ref = household.collection('chores').doc(id);

@@ -28,7 +28,9 @@ export function LeaderboardRibbon({ stats, colors, photos, expanded, onToggle, c
   const members = [...stats.members].sort((a, b) => b.weekPoints - a.weekPoints || a.name.localeCompare(b.name));
   return (
     <section aria-label="This week's leaderboard" data-testid="chores-leaderboard-ribbon" className={cn('flex items-center gap-2 rounded-xl border bg-card p-1.5 shadow-raised', className)}>
-      <ul className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
+      {/* `relative`: the members' screen-reader-only labels are absolutely positioned; without a
+          positioned scroll container they escape it and widen the whole page on phones. */}
+      <ul className="relative flex min-w-0 flex-1 gap-1 overflow-x-auto">
         {members.map(member => (
           <li key={member.uid} className="flex min-h-[var(--target-min)] shrink-0 items-center gap-1.5 rounded-lg px-2">
             <MemberAvatar uid={member.uid} name={member.name} photoUrl={photos.get(member.uid)} color={colors.get(member.uid)} size="sm" decorative />

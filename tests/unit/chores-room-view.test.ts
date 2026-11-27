@@ -44,6 +44,13 @@ describe('room view (CH-13)', () => {
     assert.match(page, /overdueCount=\{filters\.due === 'overdue' \? todoEntries\.length : null\}/);
   });
 
+  it('keeps the ribbon\'s screen-reader labels inside its scroll area, so phones never scroll sideways (CI on PR #262)', () => {
+    const ribbon = readFileSync(resolve(process.cwd(), 'src/components/chores/leaderboard-ribbon.tsx'), 'utf8');
+    // sr-only is position: absolute; the scrolling list must be their containing block.
+    assert.match(ribbon, /<ul className="relative flex min-w-0 flex-1 gap-1 overflow-x-auto">/);
+    assert.match(ribbon, /className="sr-only"/);
+  });
+
   it('is on for one room or Around the house, off for All Rooms', () => {
     assert.equal(isRoomView('all'), false);
     assert.equal(isRoomView('general'), true);
