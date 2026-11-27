@@ -13,6 +13,7 @@ import { openSubTasks, type ChoreCapabilities, type ToDoEntry } from '@/lib/chor
 import { completerLabel, isDueAfterHouseholdDay } from '@/lib/chores/completion';
 import { focusAfterCompleting, sameRowEntry } from '@/lib/chores/row-focus';
 import { disabledCheckHint, mayRemoveChore } from '@/lib/chores/rights';
+import { readProof } from '@/lib/chores/proof';
 import type { ChoreTemplate } from '@/lib/types';
 import type { MemberColor } from '@/lib/member-colors';
 import { SPRING_UI } from '@/lib/motion';
@@ -52,6 +53,8 @@ type ChoreListProps = ChoreListHandlers & {
   /** CH-24: the reader and the library chores, for who may remove what. */
   currentUid: string;
   templatesById: Map<string, ChoreTemplate>;
+  /** CH-30: the reader is a kid (a photo they sent keeps their check disabled while it waits). */
+  isKid?: boolean;
 };
 
 type RowHandlers = ChoreListHandlers;
@@ -75,6 +78,7 @@ type RowProps = {
   reduced: boolean;
   currentUid: string;
   templatesById: Map<string, ChoreTemplate>;
+  isKid: boolean;
   handlers: RowHandlers;
 };
 
@@ -108,7 +112,10 @@ function ChoreRow(props: RowProps) {
   const template = chore.templateId ? props.templatesById.get(chore.templateId) : undefined;
   const canRemove = mayRemoveChore(chore, template, props.currentUid, capabilities);
   const canClearMissed = missed.length > 0 && missed.every(day => mayRemoveChore(day, template, props.currentUid, capabilities));
-  const checkHint = isCompleted ? null : disabledCheckHint({ canComplete: capabilities.canComplete, isFuture, dueLabel: dueLabel(due, today) });
+  // CH-30: a photo a kid sent waits for a parent; one sent back can be sent again.
+  const proof = isCompleted ? null : readProof(chore.proof);
+  const waitingForParent = proof?.status === 'pending' && props.isKid;
+  const checkHint = isCompleted ? null : waitingForParent ? 'Waiting for a parent to check the photo.' : disabledCheckHint({ canComplete: capabilities.canComplete, isFuture, dueLabel: dueLabel(due, today) });
   const remaining = openSubTasks(chore).length;
   const total = chore.subTasks?.length || 0;
   const completedAt = completionInstant(chore);
@@ -166,7 +173,7 @@ function ChoreRow(props: RowProps) {
             ref={checkRef}
             rowCheck
             checked={isCompleted}
-            disabled={!capabilities.canComplete || isFuture}
+            disabled={!capabilities.canComplete || isFuture || waitingForParent}
             hint={checkHint}
             label={isCompleted ? `Mark ${chore.task} not done` : `Mark ${chore.task} done`}
             onToggle={() => {
@@ -195,6 +202,8 @@ function ChoreRow(props: RowProps) {
               ? <span>{completedBy ? `Done by ${completedBy} · ${format(completedAt, 'MMM d')}` : `Done ${format(completedAt, 'MMM d')}`}</span>
               : <span>{dueLabel(due, today)}</span>}
             {isOverdue && <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 font-medium text-destructive">Overdue</span>}
+            {proof?.status === 'pending' && <span className="rounded-full bg-primary/10 px-1.5 py-0.5 font-medium text-foreground">Photo sent{proof.submittedByName ? ` by ${proof.submittedByName}` : ''}, waiting for a parent</span>}
+            {proof?.status === 'rejected' && <span className="rounded-full bg-muted px-1.5 py-0.5 font-medium text-foreground">Photo sent back</span>}
             {total > 0 && !isCompleted && <span>{total - remaining}/{total} steps</span>}
             {missed.length > 0 && (
               <span className="flex items-center gap-1 font-medium text-foreground">
@@ -339,6 +348,7 @@ export function ChoreList(props: ChoreListProps) {
             reduced={reduced}
             currentUid={props.currentUid}
             templatesById={props.templatesById}
+            isKid={props.isKid === true}
             handlers={handlers}
           />
         ))}

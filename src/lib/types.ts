@@ -433,6 +433,8 @@ export type ChoreTemplate = {
     rotationStart?: string;
     /** Who created it (CH-24): set by the client on create (rules: the writer), never changed. Older templates have none. */
     createdByUid?: string;
+    /** CH-30: kids send a photo for this chore and a parent approves it (src/lib/chores/proof.ts). */
+    requiresPhoto?: boolean;
 }
 
 export type Chore = {
@@ -463,6 +465,8 @@ export type Chore = {
   completionId?: string | null;
   /** Who added a one-time chore (rules: the writer, immutable). CH-20: your own earn no points; CH-24: its creator may remove it while it is open. Generated days have none. */
   createdByUid?: string;
+  /** CH-30: a kid's photo waiting for approval (or sent back); server-written. Read with `readProof`. */
+  proof?: unknown;
 };
 
 export type UserRole = 'owner' | 'admin' | 'member' | 'child' | 'guest' | 'newuser' | 'super-admin' | 'user';

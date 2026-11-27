@@ -116,6 +116,23 @@ service firebase.storage {
       allow delete: if hasPermission(householdId, 'maintenance.delete');
     }
 
+    // CH-30: a kid's photo proof for a chore. Anyone who may complete chores uploads an
+    // image (5 MB at most) into the chore's folder, named for themselves and marked as
+    // theirs; the server action checks the same before it trusts the path. Only members
+    // who may edit chores (the approvers) and the uploader read it; nobody changes it;
+    // the server deletes it once it is reviewed (chores.delete holders may too). No device
+    // uploads (tablets have no photo proof).
+    match /households/{householdId}/chore-proofs/{choreId}/{fileName} {
+      allow read: if signedIn() && (hasPermission(householdId, 'chores.edit') ||
+        resource.metadata.get('uploadedByUid', '') == request.auth.uid);
+      allow create: if hasPermission(householdId, 'chores.complete') && isImage(5 * 1024 * 1024) &&
+        fileName.matches(request.auth.uid + '-[A-Za-z0-9]{6,40}[.](jpg|jpeg|png|webp|heic|heif)') &&
+        request.resource.metadata != null &&
+        request.resource.metadata.get('uploadedByUid', '') == request.auth.uid;
+      allow update: if false;
+      allow delete: if hasPermission(householdId, 'chores.delete');
+    }
+
     match /households/{householdId}/barcode-library/{allPaths=**} {
       allow read: if hasPermission(householdId, 'shopping.view') || deviceSectionForStorage(householdId, 'shopping');
       allow create, update: if hasPermission(householdId, 'shopping.edit') && isImage(5 * 1024 * 1024);

@@ -8,7 +8,8 @@
  * `OFFLINE_COMPLETION_MESSAGE` and the row stays open. (A queued client write
  * could not be checked for eligibility or attributed by the server.)
  */
-import { completeChores, reopenChore, undoChoreCompletion } from '@/app/chores/actions';
+import { completeChores, reopenChore, reviewChoreProof, submitChoreProof, undoChoreCompletion } from '@/app/chores/actions';
+import type { ReviewOutcome, SubmitOutcome } from './proof';
 import { auth } from '@/lib/firebase';
 import { MAX_COMPLETION_BATCH, type ChoreCompletionOutcome, type CompletionRecord, type ReopenOutcome, type SubTaskRestore, type UndoOutcome } from './completion';
 import type { ChoreRecord } from './dates';
@@ -63,6 +64,16 @@ export function undoCompletionOnServer(householdId: string, input: { choreId: st
 
 export function reopenChoreOnServer(householdId: string, choreId: string): Promise<Result<ReopenOutcome>> {
   return call(householdId, context => reopenChore({ ...context, choreId }));
+}
+
+/** CH-30: a kid sends the photo already uploaded to `photoPath`; the chore waits for a parent. */
+export function submitProofOnServer(householdId: string, choreId: string, photoPath: string): Promise<Result<SubmitOutcome>> {
+  return call(householdId, context => submitChoreProof({ ...context, choreId, photoPath }));
+}
+
+/** CH-30: approve (completes the chore for the kid) or send back a photo. */
+export function reviewProofOnServer(householdId: string, choreId: string, approve: boolean): Promise<Result<ReviewOutcome>> {
+  return call(householdId, context => reviewChoreProof({ ...context, choreId, approve }));
 }
 
 /** The local fields of a completed chore, from what the server recorded. */

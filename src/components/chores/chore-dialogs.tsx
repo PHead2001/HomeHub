@@ -269,6 +269,8 @@ export function ChoreTemplateEditDialog({
   const [notes, setNotes] = useState('');
   const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
   const [subTasks, setSubTasks] = useState(['']);
+  // CH-30: kids send a photo for this chore and a parent approves it.
+  const [requiresPhoto, setRequiresPhoto] = useState(false);
   const [errors, setErrors] = useState<{ task?: string; rooms?: string }>({});
   const [saving, setSaving] = useState(false);
 
@@ -280,6 +282,7 @@ export function ChoreTemplateEditDialog({
       setNotes(chore?.notes || '');
       setSelectedRoomIds(chore?.roomIds || []);
       setSubTasks(chore?.subTasks && chore.subTasks.length > 0 ? chore.subTasks : ['']);
+      setRequiresPhoto(chore?.requiresPhoto === true);
       setErrors({});
       setSaving(false);
     }
@@ -303,6 +306,8 @@ export function ChoreTemplateEditDialog({
       notes: notes.trim(),
       roomIds: selectedRoomIds,
       subTasks: subTasks.map(st => st.trim()).filter(Boolean),
+      // Written only when on, or to turn it off, so older library chores keep their shape.
+      ...(requiresPhoto || chore?.requiresPhoto === true ? { requiresPhoto } : {}),
     }, chore?.id);
     setSaving(false);
     if (saved) onOpenChange(false);
@@ -359,6 +364,13 @@ export function ChoreTemplateEditDialog({
               </div>
               <Button type="button" variant="outline" size="sm" onClick={() => setSubTasks(p => [...p, ''])}><PlusCircle className="mr-2 h-4 w-4" /> Add Sub-task</Button>
             </div>
+            <label className="flex min-h-[var(--target-min)] cursor-pointer items-start gap-3 rounded-md border p-3">
+              <Checkbox checked={requiresPhoto} onCheckedChange={checked => setRequiresPhoto(checked === true)} aria-describedby="template-photo-help" className="mt-0.5 h-5 w-5" />
+              <span>
+                <span className="text-sm font-medium">Kids send a photo</span>
+                <span id="template-photo-help" className="block text-xs text-muted-foreground">A kid&apos;s Done asks for a photo. It counts once a parent approves it.</span>
+              </span>
+            </label>
           </div>
           <DialogFooter className="pt-4">
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>Cancel</Button>
