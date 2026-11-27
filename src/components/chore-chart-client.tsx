@@ -47,6 +47,7 @@ import { RoomIcon } from '@/components/chores/room-icons';
 import { useChoreSettings } from '@/components/chores/use-chore-settings';
 import { useChoreLiveData } from '@/components/chores/use-chore-live-data';
 import { mergeLiveRows } from '@/lib/chores/live';
+import { MissedRecently } from '@/components/chores/missed-recently';
 import { useHouseholdToday, useToday } from '@/components/chores/use-today';
 import { applyRefreshedChores, applyUndoSettlement, completionFields, restoreChoreFields, settleUndo } from '@/lib/chores/patch';
 import { memberName } from '@/components/chores/assignee-select';
@@ -1253,6 +1254,10 @@ export function ChoreChartClient() {
                       action={capabilities.canCreate ? { label: 'Add Chore', icon: <Plus className="h-4 w-4" />, onClick: openAdd } : undefined}
                     />
                   )}
+                  <MissedRecently householdId={currentUser?.householdId} today={householdDay} nameOf={entry => {
+                    const user = entry.assignedToUid ? usersByUid.get(entry.assignedToUid) : undefined;
+                    return user ? memberName(user) : entry.assignedToDisplayName || 'Unassigned';
+                  }} />
                 </AccordionContent>
               </AccordionItem>
 

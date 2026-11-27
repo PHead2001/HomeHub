@@ -28,7 +28,13 @@ import {
   choreOccurrenceKey, deterministicNotificationId, occurrenceChoreId,
   storedOccurrenceKey,
 } from "./shared/ids";
-import {skippedOccurrenceKeys} from "./shared/skips";
+import {
+  skippedOccurrenceKeys, withSkippedOccurrences,
+} from "./shared/skips";
+import {
+  MISSED_DOC_ID, effectiveDueDay, missedDayExpired, readMissedEntries,
+  withMissedEntries, type MissedEntry,
+} from "./shared/missed";
 import {
   actionableReminders, buildMaintenanceReminders,
   type AssetInput, type VehicleInput,
@@ -75,6 +81,8 @@ export type HouseholdRunResult = {
   householdId: string;
   generatedChores: number;
   purgedChores: number;
+  /** Missed days of repeating chores removed after the expiry window (CH-7). */
+  expiredChores: number;
   createdNotifications: number;
   refreshedNotifications: number;
   resolvedNotifications: number;
@@ -214,7 +222,7 @@ export const runHouseholdReminders = async (
   ts: (d: Date) => Timestamp,
 ): Promise<HouseholdRunResult> => {
   const result: HouseholdRunResult = {
-    householdId, generatedChores: 0, purgedChores: 0,
+    householdId, generatedChores: 0, purgedChores: 0, expiredChores: 0,
     createdNotifications: 0, refreshedNotifications: 0,
     resolvedNotifications: 0, reopenedNotifications: 0,
   };
@@ -238,9 +246,11 @@ export const runHouseholdReminders = async (
       kind: "create"; ref: Ref; data: Record<string, unknown>;
       template: Ref; templateVersion: FirestoreTimestamp | undefined;
     } |
-    {kind: "purge"; ref: Ref; completedAt: string; year: number};
+    {kind: "purge"; ref: Ref; completedAt: string; year: number} |
+    {kind: "expire"; ref: Ref; key: string; day: string; template?: Ref};
+  const missedRef = house.collection("stats").doc(MISSED_DOC_ID);
   const commitGuarded = (ops: ChoreOp[]):
-    Promise<{created: number; purged: number} | null> =>
+    Promise<{created: number; purged: number; expired: number} | null> =>
     db.runTransaction(async (tx) => {
       const templateRefs = [...new Map(ops.flatMap((op) =>
         op.kind === "create" ? [[op.template.path, op.template]] : []))
@@ -251,6 +261,14 @@ export const runHouseholdReminders = async (
         op.kind === "purge" ? [op.year] : []))];
       const statsRefs = statsYears.map((year) =>
         house.collection("stats").doc(choreStatsDocId(year)));
+      // Expired missed days are recorded in stats/missed-recent (CH-7).
+      const expiring = ops.some((op) => op.kind === "expire");
+      // A moved chore whose own occurrence day is still to come: its template
+      // records the key as skipped when it expires, or generation would
+      // bring that day back.
+      const skipTemplateRefs = [...new Map(ops.flatMap((op) =>
+        op.kind === "expire" && op.template ?
+          [[op.template.path, op.template] as const] : [])).values()];
       // Occurrences that already have a chore under another id (reassigned
       // or created by an overlapping run): never create a second one.
       const keys = [...new Set(ops.flatMap((op) =>
@@ -263,7 +281,8 @@ export const runHouseholdReminders = async (
       }
       const [[home, ...rest], keySnaps] = await Promise.all([
         tx.getAll(house, ...templateRefs, ...ops.map((op) => op.ref),
-          ...statsRefs),
+          ...statsRefs, ...(expiring ? [missedRef] : []),
+          ...skipTemplateRefs),
         Promise.all(keyQueries),
       ]);
       if (!home.exists || home.get("deletingAt")) return null;
@@ -275,12 +294,51 @@ export const runHouseholdReminders = async (
         [ref.path, rest[index]]));
       const current = rest.slice(templateRefs.length,
         templateRefs.length + ops.length);
-      const statsSnaps = rest.slice(templateRefs.length + ops.length);
+      const statsSnaps = rest.slice(templateRefs.length + ops.length,
+        templateRefs.length + ops.length + statsRefs.length);
+      const missedSnap = expiring ?
+        rest[templateRefs.length + ops.length + statsRefs.length] : undefined;
+      const skipTemplates = new Map(skipTemplateRefs.map((ref, index) =>
+        [ref.path, rest[templateRefs.length + ops.length + statsRefs.length +
+          (expiring ? 1 : 0) + index]]));
+      const skipKeys = new Map<string, string[]>();
+      const missed: MissedEntry[] = [];
+      let expired = 0;
       const purgedByYear = new Map<number, PurgedChore[]>();
       let created = 0;
       let purged = 0;
       ops.forEach((op, index) => {
         const snap = current[index];
+        if (op.kind === "expire") {
+          // Still open, still that occurrence, still a generated day.
+          // Still due long enough ago: a reschedule meanwhile keeps it.
+          const data = snap.exists ? snap.data() ?? {} : null;
+          const dueNow = data ? effectiveDueDay(data, timeZone) : null;
+          if (data && data.isCompleted !== true &&
+              (data.sourceType === undefined || data.sourceType === null) &&
+              storedOccurrenceKey(snap.id, data) === op.key &&
+              dueNow !== null && missedDayExpired(dueNow, today)) {
+            const uid = resolveAssigneeUid(data, members) || null;
+            const person = uid ? memberByUid.get(uid) : undefined;
+            tx.delete(op.ref);
+            expired++;
+            if (op.template && skipTemplates.get(op.template.path)?.exists) {
+              const keys = skipKeys.get(op.template.path) ?? [];
+              keys.push(op.key);
+              skipKeys.set(op.template.path, keys);
+            }
+            missed.push({
+              key: op.key, day: dueNow,
+              task: typeof data.task === "string" ? data.task : "Chore",
+              // Resolved like every reader (an older chore's email first).
+              assignedToUid: uid,
+              assignedToDisplayName: person?.displayName ||
+                (typeof data.assignedToDisplayName === "string" ?
+                  data.assignedToDisplayName : null),
+            });
+          }
+          return;
+        }
         if (op.kind === "create") {
           const template = templates.get(op.template.path);
           const unchanged = Boolean(template?.exists && op.templateVersion &&
@@ -322,7 +380,20 @@ export const runHouseholdReminders = async (
           readChoreStats(statsSnaps[index]?.data(), year), chores, members);
         tx.set(statsRefs[index], {...stats, updatedAt: ts(now)});
       });
-      return {created, purged};
+      for (const [path, keys] of skipKeys) {
+        const snap = skipTemplates.get(path);
+        if (!snap) continue;
+        tx.update(snap.ref, {skippedOccurrences: withSkippedOccurrences(
+          snap.get("skippedOccurrences"), keys, today)});
+      }
+      if (missed.length > 0) {
+        tx.set(missedRef, {
+          entries: withMissedEntries(
+            readMissedEntries(missedSnap?.data()), missed, today),
+          updatedAt: ts(now),
+        });
+      }
+      return {created, purged, expired};
     });
   const timeZone = safeTimeZone(houseSnap.get("timeZone"));
   const today = localDay(now, timeZone);
@@ -377,7 +448,9 @@ export const runHouseholdReminders = async (
     return key ? [key] : [];
   }));
   const choreOps: ChoreOp[] = [];
-  const stopped = {...result, generatedChores: 0, purgedChores: 0};
+  const stopped = {
+    ...result, generatedChores: 0, purgedChores: 0, expiredChores: 0,
+  };
   for (const templateDoc of templatesSnap.docs) {
     const template = templateDoc.data();
     const recurrence = normalizeRecurrence(template.recurrence, today);
@@ -465,11 +538,35 @@ export const runHouseholdReminders = async (
       });
     }
   }
+  // Missed days (CH-7): an open generated day older than the expiry window
+  // leaves To Do and is recorded in stats/missed-recent (functions/src/
+  // shared/missed.ts). One-time chores never expire.
+  for (const choreDoc of choresSnap.docs) {
+    const chore = choreDoc.data();
+    if (chore.isCompleted === true || choreOps.length >= 450) continue;
+    if (chore.sourceType !== undefined && chore.sourceType !== null) continue;
+    const key = storedOccurrenceKey(choreDoc.id, chore);
+    // The day it is due now (a moved chore keeps its key but not its day).
+    const day = effectiveDueDay(chore, timeZone);
+    if (!key || !day || !missedDayExpired(day, today)) continue;
+    // An older chore assigned by email is named only once the members'
+    // emails are known (the uid beside it may be stale): it waits.
+    if (assigneeEmailOf(chore) && !emailsKnown) continue;
+    const keyDay = key.slice(key.lastIndexOf("|") + 1);
+    const templateId = typeof chore.templateId === "string" ?
+      chore.templateId : "";
+    choreOps.push({
+      kind: "expire", ref: choreDoc.ref, key, day,
+      ...(keyDay >= today && templateId ?
+        {template: house.collection("chore-templates").doc(templateId)} : {}),
+    });
+  }
   if (choreOps.length > 0) {
     const done = await commitGuarded(choreOps);
     if (!done) return stopped;
     result.generatedChores = done.created;
     result.purgedChores = done.purged;
+    result.expiredChores = done.expired;
   }
 
   // Returns false when the household disappeared or started deleting,
@@ -697,7 +794,8 @@ export const runHouseholdReminders = async (
   // Chore reminders (per person, in their own timezone). Reminder documents
   // are fixed per day once written, so they must see this run's generated
   // and purged chores: re-read when this run changed any.
-  const choreDocs = result.generatedChores > 0 || result.purgedChores > 0 ?
+  const choreDocs = result.generatedChores > 0 || result.purgedChores > 0 ||
+    result.expiredChores > 0 ?
     (await house.collection("chores").get()).docs :
     choresSnap.docs;
   const chores = choreDocs.map((d) => ({id: d.id, ...d.data()}) as
